@@ -50,9 +50,15 @@ These repository-level helpers are intentionally shared with non-Lai simulation 
 ## Tests
 
 - `tests/smoke_lai_helpers.R`: one-replication smoke test for the Study 1 path through the full Lai runner.
+- `../tests/test_lai_openmx_inputs.R`: unit checks for shared Lai/OpenMx EB measurement input construction.
+- `../tests/test_openmx_lai_wrapper.R`: small synthetic check for the shared Lai structural-slope OpenMx wrapper.
+- `../tests/test_helper_source_order.R`: smoke check that the repository-level helpers used by the Lai runner source cleanly in script order.
 
-Run it from the repository root:
+Run them from the repository root:
 
 ```sh
+Rscript tests/test_lai_openmx_inputs.R
+Rscript tests/test_openmx_lai_wrapper.R
+Rscript tests/test_helper_source_order.R
 Rscript lai_replication/tests/smoke_lai_helpers.R
 ```
