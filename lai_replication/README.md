@@ -21,7 +21,12 @@ Arguments are:
 5. maximum number of conditions,
 6. chunk index,
 7. chunk size,
-8. resume existing outputs (`1`/`0`; default is resume).
+8. resume existing outputs (`1`/`0`; default is resume),
+9. include tempered EIV sensitivity rows (`1`/`0`; default is core methods only).
+
+By default, the runner excludes the tempered EIV regularization path from the
+core method set. Set argument 9 to `1` to append
+`tempered_eiv_dual_corrected_l25/l50/l75` for sensitivity analyses.
 
 Outputs are written under the requested output directory. For each selected condition, the runner writes condition-level replication, summary, issue-summary, and stage-1-diagnostic files under `conditions/`. It also writes aggregate files with the prefix `lai_apples_to_apples_<selection>`; for the full unchunked selection it additionally writes compatibility filenames without the selection suffix.
 

@@ -326,8 +326,10 @@ fit_ridge_dual <- function(stage2_df, outcome, predictor_u0, predictor_u1, lambd
 #' `(intercept, predictor_u0, predictor_u1)`. The measurement-error variances
 #' and covariance (`meas11`, `meas12`, `meas22`) fill the predictor block only;
 #' the intercept is treated as measured without error. `measurement_weight`
-#' scales the supplied covariance terms, enabling sensitivity checks that
-#' attenuate or amplify the correction.
+#' scales the supplied covariance terms. Values below 1 define a tempered EIV
+#' sensitivity path: they deliberately under-subtract sampling-error covariance
+#' to regularize the deconvolution, so they should not be interpreted as the
+#' classical full EIV correction unless there is a separate calibration reason.
 #'
 #' A sandwich variance is computed from the empirical estimating-function
 #' residuals. If `stabilize_a_mat` is `TRUE`, the full corrected cross-product
@@ -361,7 +363,8 @@ fit_ridge_dual <- function(stage2_df, outcome, predictor_u0, predictor_u1, lambd
 #' @param ridge_min_eigen Numeric minimum eigenvalue targeted by the predictor
 #' block ridge.
 #' @param measurement_weight Numeric multiplier applied to the supplied
-#' predictor measurement-error covariance terms.
+#' predictor measurement-error covariance terms. The default `1` is full EIV;
+#' values between `0` and `1` are tempered/regularized EIV variants.
 #'
 #' @return
 #' A one-row tibble with scaled `estimate`, sandwich `se`, Wald-normal

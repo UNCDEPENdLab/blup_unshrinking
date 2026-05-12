@@ -58,8 +58,29 @@ if (length(missing_methods) > 0L) {
   stop("Missing expected methods: ", paste(missing_methods, collapse = ", "))
 }
 
+unexpected_tempered <- intersect(tempered_eiv_methods(), unique(res$results$method))
+if (length(unexpected_tempered) > 0L) {
+  stop("Tempered EIV methods should be opt-in only: ", paste(unexpected_tempered, collapse = ", "))
+}
+
 if (nrow(res$summary) == 0L) {
   stop("Smoke run did not produce a summary.")
+}
+
+out_dir_tempered <- file.path(tempdir(), paste0("lai_smoke_tempered_", Sys.getpid()))
+res_tempered <- run_simulation(
+  n_sim = 1L,
+  study_arg = "1",
+  out_dir = out_dir_tempered,
+  n_cores = 1L,
+  max_conditions = 1L,
+  resume_existing = FALSE,
+  include_tempered_eiv = TRUE
+)
+
+missing_tempered <- setdiff(tempered_eiv_methods(), unique(res_tempered$results$method))
+if (length(missing_tempered) > 0L) {
+  stop("Missing opt-in tempered EIV methods: ", paste(missing_tempered, collapse = ", "))
 }
 
 cat("lai helper smoke test ok\n")

@@ -5,23 +5,26 @@ This repository contains reusable R helpers, simulation drivers, and technical n
 ## Repository Layout
 
 - `R/`: shared helper modules used by multiple simulations.
+- `blup_outcome/`: focused BLUP-as-stage-2-outcome simulation modules.
 - `lai_replication/`: Lai and Liu apples-to-apples replication modules and runner.
 - `documentation/`: technical notes, manuscripts, references, and rendered PDFs.
 - `archive/`: removed legacy or experimental helpers retained for reference.
 - `src/`: TMB C++ source used by the TMB derivative backend.
 - `tests/`: lightweight checks for shared calculations.
 
-Top-level simulation and analysis scripts include:
+Simulation and analysis scripts include:
 
-- `mlm_blup_correction_sim.R`: simple random-intercept BLUP correction simulation.
-- `mlm_random_slope_blup_correction_sim.R`: random-slope correction simulation.
+- `archive/mlm_blup_correction_sim.R`: archived scalar random-intercept BLUP correction demo.
+- `archive/mlm_random_slope_blup_correction_sim.R`: archived random-slope full-matrix correction demo.
 - `mlm_random_slope_blup_predictor_comparison_sim.R`: predictor comparison simulation.
-- `mlm_random_slope_blup_sandwich_coverage_sim.R`: random-slope corrected-score sandwich coverage simulation.
+- `blup_outcome/mlm_random_slope_blup_outcome_sim.R`: random-slope BLUP/corrected-score-as-outcome simulation.
+- `mlm_random_slope_blup_sandwich_coverage_sim.R`: compatibility wrapper for the BLUP-outcome simulation entry point.
 - `plot_blup_correction_summaries.R`, `plot_zoomed.R`, and `anova_analysis.R`: plotting and summary analyses for generated outputs.
 
 ## Shared Helpers
 
 - `R/core_utils.R`: small shared utilities such as NA-stable means, compact diagnostics, quiet `lmer()` fitting, and matrix regularization.
+- `R/simulation_runner_helpers.R`: shared chunking, progress-file, and atomic CSV helpers for condition-grid simulations.
 - `R/blup_helpers.R`: EB/BLUP extraction, Vig-style prior unweighting, and closed-form corrected cluster scores.
 - `R/sim_helpers.R`: common simulation data-generation helpers.
 - `R/sim_diagnostics.R`: first-stage singularity, EB collinearity, and design-condition diagnostics.
@@ -53,14 +56,20 @@ Arguments are:
 5. maximum number of conditions,
 6. chunk index,
 7. chunk size,
-8. resume existing outputs (`1`/`0`; default is resume).
+8. resume existing outputs (`1`/`0`; default is resume),
+9. include tempered EIV sensitivity rows (`1`/`0`; default is core methods only).
 
-## Sandwich Coverage Simulation
+The core Lai simulation excludes the tempered EIV regularization path. Passing
+argument 9 as `1` appends `tempered_eiv_dual_corrected_l25/l50/l75`, which use
+lambda-weighted covariance subtraction as sensitivity checks rather than as the
+classical full EIV correction.
 
-The command-line entry point is `mlm_random_slope_blup_sandwich_coverage_sim.R`. It uses the shared derivative, TMB, Lai/OpenMx, and stacked-sandwich helper modules in `R/`.
+## BLUP-Outcome Simulation
+
+The command-line entry point is `blup_outcome/mlm_random_slope_blup_outcome_sim.R`. The historical `mlm_random_slope_blup_sandwich_coverage_sim.R` filename is retained as a compatibility wrapper with the same argument order.
 
 ```sh
-Rscript mlm_random_slope_blup_sandwich_coverage_sim.R 1 /private/tmp/blup_sandwich_smoke 1 handcoded base screen
+Rscript blup_outcome/mlm_random_slope_blup_outcome_sim.R 1 /private/tmp/blup_outcome_smoke 1 handcoded smoke screen
 ```
 
 Arguments are:
@@ -69,10 +78,44 @@ Arguments are:
 2. output directory,
 3. number of cores,
 4. derivative backend (`handcoded`, `numDeriv`, `merDeriv`, `tmb`, or `analytical`),
-5. grid mode (`base`, `heteroscedastic`, `heteroscedastic_sparse`, or `expanded`),
-6. analysis mode (`screen` or `full`).
+5. grid mode (`smoke`, `base`, `heteroscedastic`, `heteroscedastic_sparse`, or `expanded`),
+6. analysis mode (`screen` or `full`),
+7. chunk index,
+8. chunk size,
+9. resume existing outputs (`1`/`0`; default is resume),
+10. execution mode (`run` or `aggregate`; default is `run`),
+11. maximum number of conditions to select before chunking.
 
-`screen` mode skips the full stacked sandwich/OpenMx path and is useful for quick checks. `full` mode includes Lai 2S-PA and stacked sandwich HC0-HC3 estimators.
+`screen` mode skips the full stacked sandwich/OpenMx path and is useful for quick checks. `full` mode includes Lai 2S-PA/2S-PAA and stacked sandwich HC0-HC3 estimators.
+
+The BLUP-outcome grids now explicitly test:
+
+- raw EB/BLUPs as stage-2 outcomes alongside diagonal, full-matrix, and closed-form corrected outcomes;
+- null, small, and moderate `x -> random slope` effects;
+- negative, zero, and positive random intercept/slope correlations;
+- balanced, randomly unbalanced, and informative cluster-size imbalance;
+- sparse through high-trial first-stage regimes;
+- fully crossed random-slope variance (`tau1`) and level-1 noise (`sigma`).
+
+Chunked runs mirror the Lai runner model. In `run` mode, the script writes only
+condition-level files under `conditions/` plus a chunk-specific manifest and
+progress file. It does not rewrite aggregate outputs, which makes it safe for
+SLURM array jobs that share an output directory. If `chunk_index` is omitted,
+the script uses `SLURM_ARRAY_TASK_ID` when available; if `n_cores` is omitted,
+it uses `SLURM_CPUS_PER_TASK` when available. `chunk_size` can also be supplied
+through `BLUP_OUTCOME_CHUNK_SIZE`.
+
+Example chunk run:
+
+```sh
+Rscript blup_outcome/mlm_random_slope_blup_outcome_sim.R 100 /path/to/out 1 handcoded base full 3 5 1 run
+```
+
+After all chunks finish, run aggregation separately:
+
+```sh
+Rscript blup_outcome/mlm_random_slope_blup_outcome_sim.R 100 /path/to/out 1 handcoded base full NA NA 1 aggregate
+```
 
 ## Dependencies
 
@@ -86,6 +129,7 @@ them from the repository root.
 ```sh
 Rscript tests/test_hc2_hc3_leverage.R
 Rscript tests/test_helper_source_order.R
+Rscript tests/test_blup_outcome_designs.R
 Rscript tests/test_lai_openmx_inputs.R
 Rscript tests/test_openmx_lai_wrapper.R
 Rscript tests/test_stacked_sandwich_helpers.R
@@ -97,6 +141,7 @@ Coverage is intentionally focused on shared pipeline pieces:
 
 - `test_hc2_hc3_leverage.R`: leverage scaling used by HC2/HC3 stacked-sandwich variants.
 - `test_helper_source_order.R`: root helper source order and availability of key shared functions.
+- `test_blup_outcome_designs.R`: BLUP-outcome condition-grid coverage for null effects, sparse trials, balance modes, signed correlations, and fully crossed `tau1`/`sigma`.
 - `test_lai_openmx_inputs.R`: Lai/OpenMx EB measurement input construction, output naming, and subject ordering.
 - `test_openmx_lai_wrapper.R`: small synthetic check for the Lai structural-slope OpenMx wrapper.
 - `test_stacked_sandwich_helpers.R`: parameter packing, cluster precomputation, likelihood equivalence, corrected scores, and stacked-sandwich covariance output shape.
