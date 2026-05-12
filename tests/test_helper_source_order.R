@@ -9,12 +9,14 @@ suppressPackageStartupMessages({
 
 helper_files <- c(
   "R/core_utils.R",
+  "R/simulation_runner_helpers.R",
   "R/derivative_backends.R",
   "R/tmb_stage1_helpers.R",
   "R/stacked_sandwich_helpers.R",
   "R/stats_helpers.R",
   "R/stage2_estimators.R",
   "R/blup_helpers.R",
+  "R/sim_diagnostics.R",
   "R/lai_openmx_helpers.R"
 )
 
@@ -24,12 +26,14 @@ for (helper_file in helper_files) {
 
 expected_functions <- c(
   "safe_lmer",
+  "slice_condition_chunk",
   "make_derivative_backend",
   "make_tmb_stage1_data",
   "stacked_sandwich_for_corrected_scores",
   "extract_lm_stats",
   "format_stacked_sandwich_rows",
   "get_corrected_scores",
+  "get_stage1_diagnostics",
   "fit_lai_2spa"
 )
 

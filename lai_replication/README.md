@@ -42,6 +42,60 @@ Outputs are written under the requested output directory. For each selected cond
 
 - `runner.R`: generic condition chunking, replication loops, result aggregation, progress writing, summaries, and study dispatch.
 
+## SLURM Array Runs
+
+`slurm/lai_condition_array.sbatch` runs the existing Lai command-line entry
+point as a SLURM array job. The script defaults to the full current Lai grid
+(`all` studies, 582 conditions) with `LAI_CHUNK_SIZE=5`, so the default array
+range is 117 tasks:
+
+```sh
+sbatch lai_replication/slurm/lai_condition_array.sbatch
+```
+
+Common overrides can be supplied as environment variables:
+
+```sh
+sbatch \
+  --export=ALL,LAI_N_SIM=1000,LAI_STUDY=all,LAI_OUT_DIR=/path/to/lai_outputs,LAI_CHUNK_SIZE=5 \
+  lai_replication/slurm/lai_condition_array.sbatch
+```
+
+For study-specific runs with `LAI_CHUNK_SIZE=5`, override the array range:
+
+```sh
+sbatch --array=1-98  --export=ALL,LAI_STUDY=1 lai_replication/slurm/lai_condition_array.sbatch
+sbatch --array=1-10  --export=ALL,LAI_STUDY=2 lai_replication/slurm/lai_condition_array.sbatch
+sbatch --array=1-10  --export=ALL,LAI_STUDY=3 lai_replication/slurm/lai_condition_array.sbatch
+```
+
+The wrapper accepts these variables:
+
+- `LAI_REPO_ROOT`: repository checkout path; defaults to the wrapper's parent
+  repository.
+- `LAI_RSCRIPT`: Rscript executable; defaults to `Rscript`.
+- `LAI_N_SIM`: replications per condition; defaults to `1000`.
+- `LAI_STUDY`: `all`, `1`, `2`, `3`, or comma-separated selectors; defaults
+  to `all`.
+- `LAI_OUT_DIR`: shared output directory; defaults to
+  `outputs/lai_apples_to_apples_slurm` under the repository.
+- `LAI_N_CORES`: cores passed to the R runner; defaults to
+  `SLURM_CPUS_PER_TASK`.
+- `LAI_MAX_CONDITIONS`: optional pre-chunk condition cap; defaults to `NA`.
+- `LAI_CHUNK_INDEX`: explicit chunk index; defaults to `SLURM_ARRAY_TASK_ID`.
+- `LAI_CHUNK_SIZE`: conditions per array task; defaults to `5`.
+- `LAI_RESUME_EXISTING`: skip completed condition outputs; defaults to `1`.
+- `LAI_INCLUDE_TEMPERED_EIV`: append tempered EIV sensitivity rows; defaults
+  to `0`.
+
+After all array jobs finish, rebuild the full aggregate files by running the
+standard entry point once with no chunk arguments and resume enabled:
+
+```sh
+Rscript lai_replication/mlm_random_slope_lai_apples_to_apples_sim.R \
+  1000 all /path/to/lai_outputs 1 NA NA NA 1 0
+```
+
 ## Shared Code Outside This Folder
 
 These repository-level helpers are intentionally shared with non-Lai simulation scripts:

@@ -64,6 +64,12 @@ argument 9 as `1` appends `tempered_eiv_dual_corrected_l25/l50/l75`, which use
 lambda-weighted covariance subtraction as sensitivity checks rather than as the
 classical full EIV correction.
 
+For SLURM clusters, `lai_replication/slurm/lai_condition_array.sbatch` wraps
+the same entry point as a job array over condition chunks. It defaults to
+`LAI_CHUNK_SIZE=5` and `#SBATCH --array=1-117`, which covers the current
+582-condition all-studies Lai grid. See `lai_replication/README.md` for the
+override variables and study-specific array ranges.
+
 ## BLUP-Outcome Simulation
 
 The command-line entry point is `blup_outcome/mlm_random_slope_blup_outcome_sim.R`. The historical `mlm_random_slope_blup_sandwich_coverage_sim.R` filename is retained as a compatibility wrapper with the same argument order.
