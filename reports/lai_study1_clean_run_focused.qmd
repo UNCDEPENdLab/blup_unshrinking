@@ -1,0 +1,642 @@
+---
+title: "Study 1 Clean Run: Bias, RMSE, Standard Errors, and Coverage"
+author: "Codex"
+date: "May 12, 2026"
+format:
+  html:
+    toc: true
+    code-fold: true
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+  message: false
+params:
+  output_dir: "/Users/hallquist/Data_Analysis/blup_unshrinking/lai_replication/outputs/study1_clean_run"
+---
+
+## Purpose
+
+This report reuses the useful data-handling and diagnostic patterns from `lai_study1_summary.qmd`, but all calculations are recomputed from the replication-level files in:
+
+`r params$output_dir`
+
+The main comparison is deliberately narrow:
+
+- naive OLS regression using dual BLUP predictors (`naive_dual_eb`, with `naive_dual_eb_hc3` used only as a standard-error variant);
+- the dual EIV approach (`eiv_dual_corrected`);
+- Lai's 2S-PA approach (`lai_2spa`).
+
+Other estimators are retained in the appendix so the main conclusions can be checked against the wider simulation output without distracting from the focal comparison.
+
+## Setup
+
+```{r setup}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(scales)
+library(data.table)
+
+report_input <- tryCatch(knitr::current_input(dir = TRUE), error = function(e) "")
+report_helper_dir <- if (nzchar(report_input)) {
+  report_input <- normalizePath(report_input, mustWork = FALSE)
+  if (dir.exists(report_input)) report_input else dirname(report_input)
+} else {
+  getwd()
+}
+source(file.path(report_helper_dir, "_report_paths.R"))
+
+safe_mean <- function(x) {
+  if (length(x) == 0L || all(is.na(x))) {
+    return(NA_real_)
+  }
+  mean(x, na.rm = TRUE)
+}
+
+safe_sd <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) < 2L) {
+    return(NA_real_)
+  }
+  stats::sd(x)
+}
+
+fmt_num <- function(x, digits = 3) {
+  ifelse(is.na(x), NA_character_, formatC(x, digits = digits, format = "f"))
+}
+
+fmt_sci <- function(x, digits = 2) {
+  ifelse(is.na(x), NA_character_, formatC(x, digits = digits, format = "e"))
+}
+
+fmt_mixed <- function(x, digits = 3, sci_cut = 1000) {
+  ifelse(
+    is.na(x),
+    NA_character_,
+    ifelse(abs(x) >= sci_cut, fmt_sci(x, 2), fmt_num(x, digits))
+  )
+}
+
+fmt_pct <- function(x, accuracy = 0.1) {
+  ifelse(is.na(x), NA_character_, scales::percent(x, accuracy = accuracy))
+}
+
+metric_summary <- function(df, group_vars = character()) {
+  df %>%
+    mutate(
+      success = !is.na(estimate),
+      covered = ifelse(!is.na(ci_low) & !is.na(ci_high), ci_low <= truth & ci_high >= truth, NA),
+      bias = estimate - truth,
+      sq_error = bias^2
+    ) %>%
+    group_by(across(all_of(group_vars))) %>%
+    summarise(
+      Replications = n(),
+      Conditions = n_distinct(condition_id),
+      Success_Rate = safe_mean(success),
+      Mean_Bias = safe_mean(bias),
+      Median_Bias = stats::median(bias, na.rm = TRUE),
+      RMSE = if (all(is.na(sq_error))) NA_real_ else sqrt(mean(sq_error, na.rm = TRUE)),
+      Mean_SE = safe_mean(se),
+      Empirical_SD = safe_sd(estimate),
+      SE_to_SD = Mean_SE / Empirical_SD,
+      Coverage = safe_mean(covered),
+      .groups = "drop"
+    )
+}
+
+format_metric_table <- function(df) {
+  df %>%
+    mutate(
+      Success_Rate = fmt_pct(Success_Rate),
+      Mean_Bias = fmt_mixed(Mean_Bias),
+      Median_Bias = fmt_mixed(Median_Bias),
+      RMSE = fmt_mixed(RMSE),
+      Mean_SE = fmt_mixed(Mean_SE),
+      Empirical_SD = fmt_mixed(Empirical_SD),
+      SE_to_SD = fmt_num(SE_to_SD, 2),
+      Coverage = fmt_pct(Coverage)
+    )
+}
+
+read_replication_results_file <- function(path) {
+  out <- tibble::as_tibble(data.table::fread(path))
+
+  numeric_cols <- intersect(
+    c(
+      "estimate", "se", "ci_low", "ci_high", "truth",
+      "mx_condition_number",
+      "stage1_re_corr", "stage1_eb_corr", "stage1_design_kappa",
+      "icc", "vr_u1_u0", "cor_u0_u1", "beta_zu1",
+      "sigma2", "var_u1", "sigma_z"
+    ),
+    names(out)
+  )
+  integer_cols <- intersect(
+    c("condition_id", "rep", "num_clus", "clus_size", "status_code"),
+    names(out)
+  )
+  logical_cols <- intersect(
+    c("stage1_singular_problem", "stage1_lmer_singular", "mx_info_definite"),
+    names(out)
+  )
+
+  if (length(numeric_cols) > 0L) {
+    out <- out %>% mutate(across(all_of(numeric_cols), ~ suppressWarnings(as.numeric(.x))))
+  }
+  if (length(integer_cols) > 0L) {
+    out <- out %>% mutate(across(all_of(integer_cols), ~ suppressWarnings(as.integer(.x))))
+  }
+  if (length(logical_cols) > 0L) {
+    out <- out %>% mutate(across(all_of(logical_cols), as.logical))
+  }
+
+  out
+}
+
+run_dir <- report_resolve_path(params$output_dir)
+condition_dir <- file.path(run_dir, "conditions")
+
+replication_files <- list.files(
+  condition_dir,
+  pattern = "^condition_[0-9]{4}_replication_results[.]csv([.]gz)?$",
+  full.names = TRUE
+)
+
+if (length(replication_files) == 0L) {
+  stop("No replication result files found in: ", condition_dir, call. = FALSE)
+}
+
+replication_df <- bind_rows(lapply(replication_files, read_replication_results_file)) %>%
+  filter(study == "study1")
+
+method_labels <- c(
+  oracle_dual = "Oracle dual",
+  naive_slope_only = "Naive BLUP slope only",
+  naive_slope_only_hc3 = "Naive BLUP slope only + HC3 SE",
+  centered_slope_only = "Centered BLUP slope only",
+  centered_slope_only_hc3 = "Centered BLUP slope only + HC3 SE",
+  naive_dual_eb = "Naive dual BLUP OLS",
+  naive_dual_eb_hc3 = "Naive dual BLUP OLS + HC3 SE",
+  eiv_dual_corrected = "Dual EIV",
+  eiv_dual_corrected_nearpd = "Dual EIV + near-PD",
+  eiv_dual_corrected_ridge = "Dual EIV + ridge",
+  partial_eiv_dual_corrected_l25 = "Partial dual EIV (lambda = 0.25)",
+  partial_eiv_dual_corrected_l50 = "Partial dual EIV (lambda = 0.50)",
+  partial_eiv_dual_corrected_l75 = "Partial dual EIV (lambda = 0.75)",
+  ridge_dual_eb = "Ridge dual BLUP",
+  corrected_slope_only = "Corrected slope only",
+  corrected_slope_only_hc3 = "Corrected slope only + HC3 SE",
+  corrected_dual = "Corrected dual",
+  corrected_dual_hc3 = "Corrected dual + HC3 SE",
+  lai_2spa = "Lai 2S-PA",
+  lai_2spaa = "Lai 2S-PAA"
+)
+
+method_order <- unname(method_labels)
+focus_methods <- c("naive_dual_eb", "naive_dual_eb_hc3", "eiv_dual_corrected", "lai_2spa")
+primary_methods <- c("naive_dual_eb", "eiv_dual_corrected", "lai_2spa")
+
+replication_df <- replication_df %>%
+  mutate(
+    method_label = factor(unname(method_labels[method]), levels = method_order),
+    stage1_stratum = ifelse(stage1_singular_problem, "Stage 1 singular", "Stage 1 regular")
+  )
+
+study1_completed_conditions <- n_distinct(replication_df$condition_id)
+study1_total_replications <- n_distinct(paste(replication_df$condition_id, replication_df$rep, sep = ":"))
+stage1_singular_rate <- replication_df %>%
+  distinct(condition_id, rep, stage1_singular_problem) %>%
+  summarise(rate = safe_mean(stage1_singular_problem)) %>%
+  pull(rate)
+
+focus_overall_raw <- replication_df %>%
+  filter(method %in% focus_methods) %>%
+  metric_summary("method_label")
+
+focus_by_stage1_raw <- replication_df %>%
+  filter(method %in% focus_methods) %>%
+  metric_summary(c("method_label", "stage1_stratum"))
+
+get_metric <- function(tbl, method_label_value, metric) {
+  tbl %>%
+    filter(as.character(method_label) == method_label_value) %>%
+    pull({{ metric }}) %>%
+    .[1]
+}
+
+naive_rmse <- get_metric(focus_overall_raw, "Naive dual BLUP OLS", RMSE)
+eiv_rmse <- get_metric(focus_overall_raw, "Dual EIV", RMSE)
+lai_rmse <- get_metric(focus_overall_raw, "Lai 2S-PA", RMSE)
+naive_success <- get_metric(focus_overall_raw, "Naive dual BLUP OLS", Success_Rate)
+eiv_success <- get_metric(focus_overall_raw, "Dual EIV", Success_Rate)
+lai_success <- get_metric(focus_overall_raw, "Lai 2S-PA", Success_Rate)
+naive_coverage <- get_metric(focus_overall_raw, "Naive dual BLUP OLS", Coverage)
+eiv_coverage <- get_metric(focus_overall_raw, "Dual EIV", Coverage)
+lai_coverage <- get_metric(focus_overall_raw, "Lai 2S-PA", Coverage)
+
+lai_converged_reps <- replication_df %>%
+  filter(method == "lai_2spa", !is.na(estimate)) %>%
+  distinct(condition_id, rep)
+
+lai_converged_subset_raw <- replication_df %>%
+  semi_join(lai_converged_reps, by = c("condition_id", "rep")) %>%
+  filter(method %in% primary_methods) %>%
+  metric_summary("method_label")
+
+eiv_gate_df <- replication_df %>%
+  filter(method == "eiv_dual_corrected") %>%
+  transmute(
+    condition_id,
+    rep,
+    estimate,
+    se,
+    ci_low,
+    ci_high,
+    truth,
+    stage1_singular_problem,
+    stage1_design_kappa
+  ) %>%
+  left_join(
+    replication_df %>%
+      filter(method == "lai_2spa") %>%
+      transmute(condition_id, rep, lai_converged = !is.na(estimate)),
+    by = c("condition_id", "rep")
+  )
+
+summarise_eiv_gate <- function(label, keep) {
+  dat <- eiv_gate_df[keep, , drop = FALSE]
+  dat %>%
+    mutate(
+      covered = ci_low <= truth & ci_high >= truth,
+      bias = estimate - truth,
+      sq_error = bias^2
+    ) %>%
+    summarise(
+      Gate = label,
+      Kept = n(),
+      Kept_Rate = n() / nrow(eiv_gate_df),
+      Lai_Converged_Rate = safe_mean(lai_converged),
+      Mean_Bias = safe_mean(bias),
+      RMSE = sqrt(mean(sq_error, na.rm = TRUE)),
+      Mean_SE = safe_mean(se),
+      Empirical_SD = safe_sd(estimate),
+      SE_to_SD = Mean_SE / Empirical_SD,
+      Coverage = safe_mean(covered),
+      .groups = "drop"
+    )
+}
+
+eiv_gate_raw <- bind_rows(
+  summarise_eiv_gate("No gate", rep(TRUE, nrow(eiv_gate_df))),
+  summarise_eiv_gate("Drop Stage 1 singular flag", !eiv_gate_df$stage1_singular_problem),
+  summarise_eiv_gate("stage1_design_kappa <= 100", eiv_gate_df$stage1_design_kappa <= 100),
+  summarise_eiv_gate("stage1_design_kappa <= 30", eiv_gate_df$stage1_design_kappa <= 30),
+  summarise_eiv_gate("stage1_design_kappa <= 10", eiv_gate_df$stage1_design_kappa <= 10),
+  summarise_eiv_gate("Lai 2S-PA converged", eiv_gate_df$lai_converged)
+)
+
+eiv_kappa30 <- eiv_gate_raw %>% filter(Gate == "stage1_design_kappa <= 30")
+eiv_no_gate <- eiv_gate_raw %>% filter(Gate == "No gate")
+eiv_lai_gate <- eiv_gate_raw %>% filter(Gate == "Lai 2S-PA converged")
+```
+
+The clean-run input contains `r study1_completed_conditions` Study 1 conditions and `r format(study1_total_replications, big.mark = ",")` condition-replication pairs. Across the run, `r fmt_pct(stage1_singular_rate)` of Stage 1 fits were flagged as singular or near-singular, so the singular subset is large enough to affect practical conclusions rather than being a rare corner case.
+
+Coverage below is computed among rows where an interval is available. The success rate is therefore reported alongside coverage throughout; a method that covers well only after dropping many replications is not equivalent to a fully usable method.
+
+## Main Results
+
+```{r focal-overall-table}
+focus_overall_tbl <- focus_overall_raw %>%
+  format_metric_table()
+
+kable(
+  focus_overall_tbl,
+  col.names = c(
+    "Method", "Replications", "Conditions", "Success Rate", "Mean Bias",
+    "Median Bias", "RMSE", "Mean SE", "Empirical SD", "SE / SD", "Coverage"
+  ),
+  align = "lrrrrrrrrrr"
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+The overall table gives a compact version of the main result. Lai 2S-PA has the best point-estimation profile among the focal methods that successfully return estimates: its overall RMSE is `r fmt_mixed(lai_rmse)`, compared with `r fmt_mixed(eiv_rmse)` for dual EIV and `r fmt_mixed(naive_rmse)` for naive dual BLUP OLS. Dual EIV has `r fmt_pct(eiv_success)` success because it is a direct algebraic calculation, but its standard errors are much larger than its empirical sampling variability. Naive dual BLUP OLS looks ordinary in many regular cases, but the full-run RMSE is dominated by singular Stage 1 replications.
+
+Lai 2S-PA's practical weakness is not coverage conditional on convergence. Its coverage is `r fmt_pct(lai_coverage)`, close to nominal, but its usable-estimate rate is only `r fmt_pct(lai_success)` overall. That success-rate penalty is central to the interpretation.
+
+## Stage 1 Regular Versus Singular Fits
+
+```{r focal-stage1-table}
+focus_by_stage1_tbl <- focus_by_stage1_raw %>%
+  arrange(method_label, stage1_stratum) %>%
+  format_metric_table()
+
+kable(
+  focus_by_stage1_tbl,
+  col.names = c(
+    "Method", "Stage 1 Stratum", "Replications", "Conditions",
+    "Success Rate", "Mean Bias", "Median Bias", "RMSE", "Mean SE",
+    "Empirical SD", "SE / SD", "Coverage"
+  ),
+  align = "llrrrrrrrrrr"
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+This split is the most important diagnostic in the clean run.
+
+In regular Stage 1 replications, naive dual BLUP OLS and Lai 2S-PA are close on RMSE: the naive method is not intrinsically poor when the BLUP intercept and slope form a well-conditioned predictor pair. Lai has somewhat better coverage and a better standard-error calibration profile.
+
+In singular Stage 1 replications, the methods separate sharply. Naive dual BLUP OLS becomes numerically unstable because the two BLUP predictors can collapse toward an almost one-dimensional design. HC3 changes the reported standard errors but cannot repair the point estimates. Lai 2S-PA avoids those explosive point estimates largely by failing to return usable solutions in almost all singular replications. Dual EIV always returns an estimate, but the singular subset shows much larger RMSE and inflated standard errors.
+
+```{r focal-stage1-plot, fig.height=6.5, fig.width=10}
+plot_stage1 <- focus_by_stage1_raw %>%
+  select(method_label, stage1_stratum, Success_Rate, RMSE, Mean_SE, Empirical_SD, Coverage) %>%
+  pivot_longer(
+    cols = c(Success_Rate, RMSE, Mean_SE, Empirical_SD, Coverage),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  mutate(
+    metric = factor(
+      metric,
+      levels = c("Success_Rate", "RMSE", "Mean_SE", "Empirical_SD", "Coverage"),
+      labels = c("Success rate", "RMSE", "Mean SE", "Empirical SD", "Coverage")
+    )
+  )
+
+ggplot(plot_stage1, aes(x = method_label, y = value, fill = stage1_stratum)) +
+  geom_col(position = position_dodge(width = 0.78), width = 0.68) +
+  facet_wrap(~ metric, scales = "free_y", ncol = 1) +
+  scale_fill_manual(values = c("Stage 1 regular" = "#5a8bb0", "Stage 1 singular" = "#bf5b4a")) +
+  labs(
+    title = "Focal Method Performance by Stage 1 Singularity",
+    x = NULL,
+    y = NULL,
+    fill = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1))
+```
+
+## Bias, RMSE, SE, and Coverage by Design Cell
+
+The next figure averages over the remaining Study 1 design dimensions and shows how the focal methods behave across cluster count, cluster size, and ICC. RMSE is plotted on a pseudo-log scale because naive dual BLUP OLS has extreme singular-cell values.
+
+```{r design-cell-summary, fig.height=11, fig.width=12}
+design_cell_summary <- replication_df %>%
+  filter(method %in% c("naive_dual_eb", "eiv_dual_corrected", "lai_2spa")) %>%
+  metric_summary(c("method_label", "num_clus", "clus_size", "icc")) %>%
+  select(method_label, num_clus, clus_size, icc, Mean_Bias, RMSE, Mean_SE, Coverage, Success_Rate) %>%
+  pivot_longer(
+    cols = c(Success_Rate, Mean_Bias, RMSE, Mean_SE, Coverage),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  mutate(
+    metric = factor(
+      metric,
+      levels = c("Success_Rate", "Mean_Bias", "RMSE", "Mean_SE", "Coverage"),
+      labels = c("Success rate", "Mean bias", "RMSE", "Mean SE", "Coverage")
+    ),
+    clus_size = factor(clus_size),
+    icc = factor(icc)
+  )
+
+ggplot(design_cell_summary, aes(x = clus_size, y = value, color = icc, group = icc)) +
+  geom_hline(data = tibble(metric = factor("Coverage", levels = levels(design_cell_summary$metric)), yint = 0.95), aes(yintercept = yint), inherit.aes = FALSE, color = "#555555", linetype = "dashed", linewidth = 0.35) +
+  geom_line(linewidth = 0.55, alpha = 0.85) +
+  geom_point(size = 1.7) +
+  facet_grid(metric ~ method_label + num_clus, scales = "free_y", labeller = label_both) +
+  scale_y_continuous(trans = scales::pseudo_log_trans(sigma = 0.01)) +
+  scale_color_brewer(palette = "Dark2") +
+  labs(
+    title = "Bias, RMSE, Standard Errors, and Coverage by Design Cell",
+    subtitle = "Values are averaged over the non-displayed Study 1 design factors; the dashed line marks 95% coverage.",
+    x = "Cluster size",
+    y = NULL,
+    color = "ICC"
+  ) +
+  theme_minimal(base_size = 9) +
+  theme(
+    strip.text = element_text(size = 8),
+    panel.spacing = unit(0.6, "lines")
+  )
+```
+
+The design-cell pattern reinforces the Stage 1 split. Naive dual BLUP OLS is competitive in better-conditioned regions, but its low-information cells create a heavy-tailed error profile. Dual EIV is less visibly catastrophic than naive dual BLUP OLS, yet its SE and RMSE profiles show that full covariance subtraction is too aggressive in parts of this design. Lai 2S-PA is the best-calibrated focal method where it converges, but low-information cells pay for that calibration through nonconvergence and inadmissible solutions.
+
+## EIV Screening with `stage1_design_kappa <= 30`
+
+The clean run suggests that EIV needs an admissibility screen before it attempts the full covariance-subtraction solution. The existing Stage 1 singularity flag is useful but too coarse: it catches exact or near-boundary cases, but it misses some replications where the two-predictor Stage 2 design is merely ill-conditioned enough to make full EIV unstable.
+
+`stage1_design_kappa` is a simple available proxy for that problem. It is the condition number of the Stage 2 design matrix formed from the Stage 1 BLUP intercept and slope. Although EIV is fit to the unshrunk OLS score pair rather than to the BLUP pair, the BLUP design kappa is still a good warning signal for the same low-information geometry: the latent intercept and slope are not being separately recovered well enough for an unregularized two-predictor correction.
+
+```{r eiv-kappa-gate-table}
+eiv_gate_tbl <- eiv_gate_raw %>%
+  mutate(
+    Kept_Rate = fmt_pct(Kept_Rate),
+    Lai_Converged_Rate = fmt_pct(Lai_Converged_Rate),
+    Mean_Bias = fmt_mixed(Mean_Bias),
+    RMSE = fmt_mixed(RMSE),
+    Mean_SE = fmt_mixed(Mean_SE),
+    Empirical_SD = fmt_mixed(Empirical_SD),
+    SE_to_SD = fmt_num(SE_to_SD, 2),
+    Coverage = fmt_pct(Coverage)
+  )
+
+kable(
+  eiv_gate_tbl,
+  col.names = c(
+    "Gate", "Kept", "Kept Rate", "Lai Converged Rate", "Mean Bias",
+    "RMSE", "Mean SE", "Empirical SD", "SE / SD", "Coverage"
+  ),
+  align = "lrrrrrrrrr"
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+The `stage1_design_kappa <= 30` screen is a strong practical diagnostic in this run. It keeps `r fmt_pct(eiv_kappa30$Kept_Rate)` of replications, compared with `r fmt_pct(eiv_lai_gate$Kept_Rate)` for the Lai-converged subset. It reduces EIV RMSE from `r fmt_mixed(eiv_no_gate$RMSE)` with no gate to `r fmt_mixed(eiv_kappa30$RMSE)`, very close to the `r fmt_mixed(eiv_lai_gate$RMSE)` obtained by restricting to Lai-converged replications.
+
+```{r eiv-kappa-gate-plot, fig.height=5.5, fig.width=9}
+eiv_gate_plot <- eiv_gate_raw %>%
+  select(Gate, Kept_Rate, RMSE, Mean_SE, Coverage) %>%
+  pivot_longer(cols = c(Kept_Rate, RMSE, Mean_SE, Coverage), names_to = "metric", values_to = "value") %>%
+  mutate(
+    Gate = factor(Gate, levels = eiv_gate_raw$Gate),
+    metric = factor(
+      metric,
+      levels = c("Kept_Rate", "RMSE", "Mean_SE", "Coverage"),
+      labels = c("Kept rate", "RMSE", "Mean SE", "Coverage")
+    )
+  )
+
+ggplot(eiv_gate_plot, aes(x = Gate, y = value)) +
+  geom_col(fill = "#5a8bb0", width = 0.68) +
+  geom_hline(
+    data = tibble(metric = factor("Coverage", levels = levels(eiv_gate_plot$metric)), yint = 0.95),
+    aes(yintercept = yint),
+    inherit.aes = FALSE,
+    color = "#555555",
+    linetype = "dashed",
+    linewidth = 0.35
+  ) +
+  facet_wrap(~ metric, scales = "free_y", ncol = 1) +
+  scale_y_continuous(trans = scales::pseudo_log_trans(sigma = 0.01)) +
+  labs(
+    title = "Dual EIV Performance Under Candidate Screening Rules",
+    subtitle = "The dashed line marks 95% coverage in the coverage panel.",
+    x = NULL,
+    y = NULL
+  ) +
+  theme_minimal(base_size = 10) +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1))
+```
+
+This should be interpreted as a diagnostic screen, not as a final EIV estimator. A more principled version would compute EIV-native diagnostics from the corrected predictor cross-product matrix itself: minimum eigenvalue, condition number, and the ratio of subtracted measurement-error covariance to observed predictor covariance. But the current output already shows that `stage1_design_kappa <= 30` is a useful stand-in for Lai's implicit admissibility filter.
+
+### Design-Cell Metrics After Screening
+
+The next figure repeats the design-cell view, but only after applying a strict admissibility screen. It keeps the intersection of condition-replication pairs where Lai 2S-PA converged and `stage1_design_kappa <= 30`, then recomputes the design-cell metrics on that shared subset.
+
+```{r screened-design-cell-summary, fig.height=14, fig.width=12}
+screen_keys <- replication_df %>%
+  filter(method == "lai_2spa", !is.na(estimate)) %>%
+  distinct(condition_id, rep) %>%
+  inner_join(
+    replication_df %>%
+      distinct(condition_id, rep, stage1_design_kappa) %>%
+      filter(stage1_design_kappa <= 30) %>%
+      select(condition_id, rep),
+    by = c("condition_id", "rep")
+  )
+
+screened_design_cell_summary <- replication_df %>%
+  filter(method %in% c("naive_dual_eb", "eiv_dual_corrected", "lai_2spa")) %>%
+  inner_join(screen_keys, by = c("condition_id", "rep")) %>%
+  metric_summary(c("method_label", "num_clus", "clus_size", "icc")) %>%
+  select(method_label, num_clus, clus_size, icc, Mean_Bias, RMSE, Mean_SE, Coverage) %>%
+  pivot_longer(
+    cols = c(Mean_Bias, RMSE, Mean_SE, Coverage),
+    names_to = "metric",
+    values_to = "value"
+  ) %>%
+  mutate(
+    metric = factor(
+      metric,
+      levels = c("Mean_Bias", "RMSE", "Mean_SE", "Coverage"),
+      labels = c("Mean bias", "RMSE", "Mean SE", "Coverage")
+    ),
+    clus_size = factor(clus_size),
+    icc = factor(icc)
+  )
+
+ggplot(screened_design_cell_summary, aes(x = clus_size, y = value, color = icc, group = icc)) +
+  geom_hline(
+    data = tidyr::expand_grid(
+      metric = factor("Coverage", levels = levels(screened_design_cell_summary$metric)),
+      yint = 0.95
+    ),
+    aes(yintercept = yint),
+    inherit.aes = FALSE,
+    color = "#555555",
+    linetype = "dashed",
+    linewidth = 0.35
+  ) +
+  geom_line(linewidth = 0.55, alpha = 0.85) +
+  geom_point(size = 1.7) +
+  facet_grid(metric ~ method_label + num_clus, scales = "free_y", labeller = label_both) +
+  scale_y_continuous(trans = scales::pseudo_log_trans(sigma = 0.01)) +
+  scale_color_brewer(palette = "Dark2") +
+  labs(
+    title = "Bias, RMSE, Standard Errors, and Coverage by Design Cell in the Shared Admissible Subset",
+    subtitle = "Metrics are recomputed after retaining only replications where Lai 2S-PA converged and stage1_design_kappa <= 30. The dashed line marks 95% coverage.",
+    x = "Cluster size",
+    y = NULL,
+    color = "ICC"
+  ) +
+  theme_minimal(base_size = 8) +
+  theme(
+    strip.text = element_text(size = 7),
+    panel.spacing = unit(0.45, "lines")
+  )
+```
+
+## Lai-Converged Subset
+
+A direct comparison of EIV and Lai can be distorted by survivorship: Lai drops difficult replications, whereas dual EIV produces an algebraic answer even when the implied correction is ill-conditioned. The table below restricts all focal estimators to the exact condition-replication pairs where Lai 2S-PA returned a usable estimate.
+
+```{r lai-converged-subset}
+lai_converged_subset_tbl <- lai_converged_subset_raw %>%
+  format_metric_table()
+
+kable(
+  lai_converged_subset_tbl,
+  col.names = c(
+    "Method", "Replications", "Conditions", "Success Rate", "Mean Bias",
+    "Median Bias", "RMSE", "Mean SE", "Empirical SD", "SE / SD", "Coverage"
+  ),
+  align = "lrrrrrrrrrr"
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+On the Lai-converged subset, dual EIV and Lai 2S-PA become very similar on bias, RMSE, and coverage. That supports the expected relationship between the two approaches in well-behaved cases. The important difference is what happens outside that survivable subset: EIV keeps difficult replications and absorbs the resulting instability, while Lai usually refuses them.
+
+Naive dual BLUP OLS does not become equivalently well behaved under the same restriction. Its mean bias is small, but its RMSE remains inflated by occasional partial-slope blowups, which is consistent with collinearity in the BLUP predictor pair rather than a simple standard-error problem.
+
+## Method-Specific Conclusions
+
+**Naive dual BLUP OLS.** This method is the right baseline because it represents the simplest possible second-stage use of Stage 1 BLUPs. The clean run shows that it is not uniformly bad: in regular Stage 1 cases, its RMSE is close to Lai 2S-PA. But it is fragile. When the Stage 1 fit is singular or near-singular, the dual BLUP predictor matrix can become nearly rank deficient, producing catastrophic partial-slope estimates. HC3 standard errors do not address that failure mode because the problem is in the point estimate, not only in the variance estimator.
+
+**Dual EIV.** The dual EIV estimator preserves the conceptual link to Lai's latent-variable correction and performs similarly to Lai on the subset where Lai converges. Its weakness is operational rather than theoretical: the full correction can be numerically too aggressive, leading to large RMSE and inflated standard errors when the de-noised predictor cross-product is ill-conditioned. The high full-run coverage should therefore be read with caution because it often comes from very wide intervals.
+
+**Lai 2S-PA.** Lai 2S-PA is the best focal method for calibrated inference conditional on convergence. It has near-nominal coverage and the lowest overall RMSE among the three focal approaches. The clean-run conclusion changes once success is treated as part of performance: Lai's singular-subset success rate is very low, so it is not a robust default over the full Study 1 grid.
+
+The most defensible summary is therefore conditional. If the analysis is restricted to well-conditioned Stage 1 fits, Lai 2S-PA and dual EIV behave as closely related methods, with Lai offering better finite-sample calibration. If the target is a method that can be applied without screening out low-information cases, neither naive dual BLUP OLS nor full dual EIV is satisfactory, and Lai 2S-PA has a serious usability cost.
+
+## Appendix: Other Methods
+
+The appendix keeps the broader method set visible. These results are not the focus of the report, but they help separate the focal conclusions from artifacts of only three selected estimators.
+
+```{r appendix-all-methods}
+all_method_tbl <- replication_df %>%
+  metric_summary("method_label") %>%
+  arrange(method_label) %>%
+  format_metric_table()
+
+kable(
+  all_method_tbl,
+  col.names = c(
+    "Method", "Replications", "Conditions", "Success Rate", "Mean Bias",
+    "Median Bias", "RMSE", "Mean SE", "Empirical SD", "SE / SD", "Coverage"
+  ),
+  align = "lrrrrrrrrrr"
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+```{r appendix-stage1-all-methods}
+all_stage1_tbl <- replication_df %>%
+  metric_summary(c("method_label", "stage1_stratum")) %>%
+  arrange(method_label, stage1_stratum) %>%
+  format_metric_table()
+
+kable(
+  all_stage1_tbl,
+  col.names = c(
+    "Method", "Stage 1 Stratum", "Replications", "Conditions",
+    "Success Rate", "Mean Bias", "Median Bias", "RMSE", "Mean SE",
+    "Empirical SD", "SE / SD", "Coverage"
+  ),
+  align = "llrrrrrrrrrr"
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+The broader table shows that corrected-score and partial-EIV variants are useful comparators, but they answer a different question from the focal comparison. The main report therefore treats them as context rather than as replacements for the direct naive BLUP OLS versus dual EIV versus Lai 2S-PA comparison.
