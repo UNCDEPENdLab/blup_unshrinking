@@ -26,7 +26,8 @@ Arguments are:
 
 By default, the runner excludes the tempered EIV regularization path from the
 core method set. Set argument 9 to `1` to append
-`tempered_eiv_dual_corrected_l25/l50/l75` for sensitivity analyses.
+`tempered_eiv_dual_corrected_l25/l50/l75` plus their `_hc0` and `_hc3` EIV
+standard-error variants for sensitivity analyses.
 
 Outputs are written under the requested output directory. For each selected condition, the runner writes condition-level replication, summary, issue-summary, and stage-1-diagnostic files under `conditions/`. It also writes aggregate files with the prefix `lai_apples_to_apples_<selection>`; for the full unchunked selection it additionally writes compatibility filenames without the selection suffix.
 
@@ -100,6 +101,7 @@ Rscript lai_replication/mlm_random_slope_lai_apples_to_apples_sim.R \
 
 These repository-level helpers are intentionally shared with non-Lai simulation scripts:
 
+- `../R/source_helpers.R`: canonical source order for repository-level helpers and a helper loader for script entry points.
 - `../R/core_utils.R`: small shared utilities such as `safe_lmer()`, `safe_mean()`, compact diagnostics, and positive-definite matrix projection.
 - `../R/blup_helpers.R`: EB/BLUP extraction, Vig-style prior unweighting, and closed-form corrected cluster score calculation.
 - `../R/stage2_estimators.R`: observed-score, HC3, ridge, EIV, and stacked-sandwich result-row formatting helpers.

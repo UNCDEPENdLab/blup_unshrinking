@@ -18,12 +18,12 @@ Simulation and analysis scripts include:
 - `archive/mlm_random_slope_blup_correction_sim.R`: archived random-slope full-matrix correction demo.
 - `mlm_random_slope_blup_predictor_comparison_sim.R`: predictor comparison simulation.
 - `blup_outcome/mlm_random_slope_blup_outcome_sim.R`: random-slope BLUP/corrected-score-as-outcome simulation.
-- `mlm_random_slope_blup_sandwich_coverage_sim.R`: compatibility wrapper for the BLUP-outcome simulation entry point.
 - `plot_blup_correction_summaries.R`, `plot_zoomed.R`, and `anova_analysis.R`: plotting and summary analyses for generated outputs.
 
 ## Shared Helpers
 
 - `R/core_utils.R`: small shared utilities such as NA-stable means, compact diagnostics, quiet `lmer()` fitting, and matrix regularization.
+- `R/source_helpers.R`: canonical source order for repository-level helpers and a helper loader for script entry points.
 - `R/simulation_runner_helpers.R`: shared chunking, progress-file, and atomic CSV helpers for condition-grid simulations.
 - `R/blup_helpers.R`: EB/BLUP extraction, Vig-style prior unweighting, and closed-form corrected cluster scores.
 - `R/sim_helpers.R`: common simulation data-generation helpers.
@@ -60,9 +60,10 @@ Arguments are:
 9. include tempered EIV sensitivity rows (`1`/`0`; default is core methods only).
 
 The core Lai simulation excludes the tempered EIV regularization path. Passing
-argument 9 as `1` appends `tempered_eiv_dual_corrected_l25/l50/l75`, which use
-lambda-weighted covariance subtraction as sensitivity checks rather than as the
-classical full EIV correction.
+argument 9 as `1` appends `tempered_eiv_dual_corrected_l25/l50/l75` plus their
+`_hc0` and `_hc3` EIV standard-error variants. These use lambda-weighted
+covariance subtraction as sensitivity checks rather than as the classical full
+EIV correction.
 
 For SLURM clusters, `lai_replication/slurm/lai_condition_array.sbatch` wraps
 the same entry point as a job array over condition chunks. It defaults to
@@ -72,7 +73,7 @@ override variables and study-specific array ranges.
 
 ## BLUP-Outcome Simulation
 
-The command-line entry point is `blup_outcome/mlm_random_slope_blup_outcome_sim.R`. The historical `mlm_random_slope_blup_sandwich_coverage_sim.R` filename is retained as a compatibility wrapper with the same argument order.
+The command-line entry point is `blup_outcome/mlm_random_slope_blup_outcome_sim.R`.
 
 ```sh
 Rscript blup_outcome/mlm_random_slope_blup_outcome_sim.R 1 /private/tmp/blup_outcome_smoke 1 handcoded smoke screen

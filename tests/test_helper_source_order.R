@@ -1,37 +1,30 @@
 #!/usr/bin/env Rscript
 
-# Smoke test that root helper files can be sourced in the order used by the
-# simulation entry point and that key shared functions are available.
+# Smoke test that root helper files can be sourced through the central source
+# order used by simulation entry points and that key shared functions are
+# available.
 
 suppressPackageStartupMessages({
   library(lme4)
 })
 
-helper_files <- c(
-  "R/core_utils.R",
-  "R/simulation_runner_helpers.R",
-  "R/derivative_backends.R",
-  "R/tmb_stage1_helpers.R",
-  "R/stacked_sandwich_helpers.R",
-  "R/stats_helpers.R",
-  "R/stage2_estimators.R",
-  "R/blup_helpers.R",
-  "R/sim_diagnostics.R",
-  "R/lai_openmx_helpers.R"
-)
+source(file.path("R", "source_helpers.R"), local = TRUE)
 
-for (helper_file in helper_files) {
-  source(helper_file, local = TRUE)
-}
+helper_files <- project_helper_source_order()
+source_project_helpers(".", helper_files = helper_files)
 
 expected_functions <- c(
+  "project_helper_source_order",
+  "source_project_helpers",
   "safe_lmer",
   "slice_condition_chunk",
   "make_derivative_backend",
   "make_tmb_stage1_data",
   "stacked_sandwich_for_corrected_scores",
+  "simulate_dataset",
   "extract_lm_stats",
   "format_stacked_sandwich_rows",
+  "select_eiv_result_columns",
   "get_corrected_scores",
   "get_stage1_diagnostics",
   "fit_lai_2spa"

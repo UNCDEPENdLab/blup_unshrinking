@@ -313,6 +313,54 @@ fit_ridge_dual <- function(stage2_df, outcome, predictor_u0, predictor_u1, lambd
   )
 }
 
+#' Columns returned by EIV estimators for simulation output.
+#'
+#' @return Character vector of EIV result columns to preserve in replication
+#'   outputs.
+eiv_result_columns <- function() {
+  c(
+    "method", "estimate", "se", "ci_low", "ci_high", "status_code",
+    "se_type",
+    "mx_issue_class", "mx_issue_detail",
+    "eiv_measurement_weight_requested", "eiv_measurement_weight_used",
+    "eiv_regularized", "eiv_latent_cov_min_eigen",
+    "eiv_latent_cov_condition_number"
+  )
+}
+
+#' Select the stable EIV result schema after assigning a method label.
+#'
+#' @param result One-row EIV result tibble with a `method` column.
+#'
+#' @return `result` restricted to the EIV simulation-output columns available
+#'   in the input.
+select_eiv_result_columns <- function(result) {
+  dplyr::select(result, dplyr::any_of(eiv_result_columns()))
+}
+
+#' Convert EIV standard-error variants to method-labelled estimator rows.
+#'
+#' @details
+#' `fit_eiv_dual()` returns rows keyed by `se_type`. This helper mirrors
+#' `finalize_ols_se_variants()`: the conventional model-based row keeps
+#' `base_method`, while HC0 and HC3 rows append `"_hc0"` and `"_hc3"`.
+#'
+#' @param fit_tbl Tibble returned by `fit_eiv_dual()`.
+#' @param base_method Character scalar naming the model-based EIV method.
+#'
+#' @return
+#' A tibble with method labels and the stable EIV result columns.
+finalize_eiv_se_variants <- function(fit_tbl, base_method) {
+  fit_tbl <- dplyr::mutate(
+    fit_tbl,
+    method = dplyr::case_when(
+      .data$se_type == "naive" ~ base_method,
+      TRUE ~ paste0(base_method, "_", .data$se_type)
+    )
+  )
+  select_eiv_result_columns(fit_tbl)
+}
+
 #' Fit a dual-predictor errors-in-variables corrected-score estimator.
 #'
 #' @details
@@ -332,10 +380,11 @@ fit_ridge_dual <- function(stage2_df, outcome, predictor_u0, predictor_u1, lambd
 #' classical full EIV correction unless there is a separate calibration reason.
 #'
 #' A sandwich variance is computed from the empirical estimating-function
-#' residuals. If `stabilize_a_mat` is `TRUE`, the full corrected cross-product
-#' matrix is projected to positive definite before solving. If
-#' `ridge_predictor_block` is `TRUE`, only the two-predictor block is ridged up
-#' to `ridge_min_eigen`.
+#' residuals for the HC0 and HC3 rows. The `naive` row uses a conventional
+#' homoskedastic model-based variance for the corrected normal equations. If
+#' `stabilize_a_mat` is `TRUE`, the full corrected cross-product matrix is
+#' projected to positive definite before solving. If `ridge_predictor_block` is
+#' `TRUE`, only the two-predictor block is ridged up to `ridge_min_eigen`.
 #'
 #' @param stage2_df Data frame containing outcome, predictors, and measurement
 #' error covariance columns.
@@ -365,12 +414,24 @@ fit_ridge_dual <- function(stage2_df, outcome, predictor_u0, predictor_u1, lambd
 #' @param measurement_weight Numeric multiplier applied to the supplied
 #' predictor measurement-error covariance terms. The default `1` is full EIV;
 #' values between `0` and `1` are tempered/regularized EIV variants.
+#' @param regularize Logical; if `TRUE`, adaptively reduces
+#' `measurement_weight` until the corrected latent predictor covariance is
+#' positive definite. If `FALSE`, non-admissible corrected covariance returns
+#' `NA` with `mx_issue_class = "corrected_predictor_cov_not_pd"`.
+#' @param regularize_tol Numeric tolerance for the binary search used when
+#' `regularize = TRUE`.
+#' @param se_types Character vector of EIV standard-error variants to return.
+#' Options are `"naive"`, `"hc0"`, and `"hc3"`. The HC0 variant corresponds to
+#' the empirical sandwich used by earlier one-row versions of this function.
 #'
 #' @return
-#' A one-row tibble with scaled `estimate`, sandwich `se`, Wald-normal
-#' confidence limits, and `status_code`. Status `0L` indicates success, `1L`
-#' indicates that the corrected normal equations could not be solved, and `2L`
-#' indicates a non-finite scaled estimate or standard error.
+#' A tibble with one row per requested `se_type`, containing scaled `estimate`,
+#' `se`, Wald-normal confidence limits, `status_code`, EIV diagnostics, and
+#' issue-class fields.
+#' Status `0L` indicates success, `1L` indicates that the corrected normal
+#' equations could not be solved, `2L` indicates a non-finite scaled estimate or
+#' standard error, and `3L` indicates that the corrected latent predictor
+#' covariance was not positive definite.
 fit_eiv_dual <- function(stage2_df,
                          outcome,
                          predictor_u0,
@@ -383,13 +444,85 @@ fit_eiv_dual <- function(stage2_df,
                          min_eigen = 1e-6,
                          ridge_predictor_block = FALSE,
                          ridge_min_eigen = 1e-4,
-                         measurement_weight = 1) {
+                         measurement_weight = 1,
+                         regularize = FALSE,
+                         regularize_tol = 1e-6,
+                         se_types = c("naive", "hc0", "hc3")) {
+  se_types <- unique(match.arg(se_types, choices = c("naive", "hc0", "hc3"), several.ok = TRUE))
+
+  latent_cov_diagnostics <- function(weight) {
+    sum_s <- weight * matrix(c(sum(s11), sum(s12), sum(s12), sum(s22)), nrow = 2L, byrow = TRUE)
+    sigma_x <- (crossprod(w_centered) - sum_s) / max(1, nrow(dat) - 1L)
+    sigma_x <- (sigma_x + t(sigma_x)) / 2
+    eig_values <- tryCatch(eigen(sigma_x, symmetric = TRUE, only.values = TRUE)$values, error = function(e) rep(NA_real_, 2L))
+    min_eig <- min(eig_values, na.rm = TRUE)
+    max_eig <- max(eig_values, na.rm = TRUE)
+    condition_number <- if (is.finite(min_eig) && is.finite(max_eig) && min_eig > 0) {
+      max_eig / min_eig
+    } else {
+      Inf
+    }
+    list(
+      sigma_x = sigma_x,
+      eig_values = eig_values,
+      min_eig = min_eig,
+      condition_number = condition_number,
+      admissible = all(is.finite(eig_values)) && min_eig > min_eigen
+    )
+  }
+
+  choose_measurement_weight <- function(initial_weight) {
+    full_diag <- latent_cov_diagnostics(initial_weight)
+    if (isTRUE(full_diag$admissible)) {
+      return(list(weight = initial_weight, regularized = FALSE, diag = full_diag))
+    }
+
+    if (!isTRUE(regularize)) {
+      return(list(weight = initial_weight, regularized = FALSE, diag = full_diag))
+    }
+
+    zero_diag <- latent_cov_diagnostics(0)
+    if (!isTRUE(zero_diag$admissible)) {
+      return(list(weight = 0, regularized = TRUE, diag = zero_diag))
+    }
+
+    lo <- 0
+    hi <- initial_weight
+    best_weight <- lo
+    best_diag <- zero_diag
+
+    for (iter in seq_len(60L)) {
+      mid <- (lo + hi) / 2
+      mid_diag <- latent_cov_diagnostics(mid)
+      if (isTRUE(mid_diag$admissible)) {
+        best_weight <- mid
+        best_diag <- mid_diag
+        lo <- mid
+      } else {
+        hi <- mid
+      }
+      if (abs(hi - lo) <= regularize_tol * max(1, abs(initial_weight))) {
+        break
+      }
+    }
+
+    list(weight = best_weight, regularized = TRUE, diag = best_diag)
+  }
+
   out_fail <- tibble::tibble(
+    se_type = se_types,
     estimate = NA_real_,
     se = NA_real_,
     ci_low = NA_real_,
     ci_high = NA_real_,
-    status_code = NA_integer_
+    status_code = NA_integer_,
+    mx_issue_class = NA_character_,
+    mx_issue_detail = NA_character_,
+    eiv_measurement_weight_requested = measurement_weight,
+    eiv_measurement_weight_used = NA_real_,
+    eiv_regularized = FALSE,
+    eiv_latent_cov_min_eigen = NA_real_,
+    eiv_latent_cov_condition_number = NA_real_
   )
 
   # Include the optional outcome measurement-variance column only to enforce a
@@ -421,15 +554,40 @@ fit_eiv_dual <- function(stage2_df,
   # Build the per-row measurement-error covariance array for
   # (intercept, predictor_u0, predictor_u1). The intercept row/column remains 0.
   x_mat <- cbind(1, w_mat)
+  w_centered <- scale(w_mat, center = TRUE, scale = FALSE)
+
+  weight_choice <- choose_measurement_weight(measurement_weight)
+  measurement_weight_used <- weight_choice$weight
+  latent_cov_diag <- weight_choice$diag
+
+  if (!isTRUE(latent_cov_diag$admissible)) {
+    return(dplyr::mutate(
+      out_fail,
+      status_code = 3L,
+      mx_issue_class = "corrected_predictor_cov_not_pd",
+      mx_issue_detail = sprintf(
+        "min_eigen=%0.6e; condition_number=%0.6e; requested_weight=%0.6f; used_weight=%0.6f; regularize=%s",
+        latent_cov_diag$min_eig,
+        latent_cov_diag$condition_number,
+        measurement_weight,
+        measurement_weight_used,
+        isTRUE(regularize)
+      ),
+      eiv_measurement_weight_used = measurement_weight_used,
+      eiv_regularized = isTRUE(weight_choice$regularized),
+      eiv_latent_cov_min_eigen = latent_cov_diag$min_eig,
+      eiv_latent_cov_condition_number = latent_cov_diag$condition_number
+    ))
+  }
 
   # Corrected normal equations:
   #   sum_i (x_i x_i' - S_i) beta = sum_i x_i y_i
   # where S_i is the supplied measurement-error covariance for the predictors.
   a_mat <- crossprod(x_mat)
-  a_mat[2, 2] <- a_mat[2, 2] - measurement_weight * sum(s11)
-  a_mat[2, 3] <- a_mat[2, 3] - measurement_weight * sum(s12)
-  a_mat[3, 2] <- a_mat[3, 2] - measurement_weight * sum(s12)
-  a_mat[3, 3] <- a_mat[3, 3] - measurement_weight * sum(s22)
+  a_mat[2, 2] <- a_mat[2, 2] - measurement_weight_used * sum(s11)
+  a_mat[2, 3] <- a_mat[2, 3] - measurement_weight_used * sum(s12)
+  a_mat[3, 2] <- a_mat[3, 2] - measurement_weight_used * sum(s12)
+  a_mat[3, 3] <- a_mat[3, 3] - measurement_weight_used * sum(s22)
 
   b_vec <- as.vector(crossprod(x_mat, y_vec))
 
@@ -448,7 +606,15 @@ fit_eiv_dual <- function(stage2_df,
 
   beta_hat <- tryCatch(solve(a_mat_use, b_vec), error = function(e) NULL)
   if (is.null(beta_hat) || any(!is.finite(beta_hat))) {
-    return(dplyr::mutate(out_fail, status_code = 1L))
+    return(dplyr::mutate(
+      out_fail,
+      status_code = 1L,
+      mx_issue_class = "corrected_normal_equations_solve_failed",
+      eiv_measurement_weight_used = measurement_weight_used,
+      eiv_regularized = isTRUE(weight_choice$regularized),
+      eiv_latent_cov_min_eigen = latent_cov_diag$min_eig,
+      eiv_latent_cov_condition_number = latent_cov_diag$condition_number
+    ))
   }
 
   # If stabilization changed the estimating matrix, include the average matrix
@@ -460,8 +626,8 @@ fit_eiv_dual <- function(stage2_df,
   term2 <- x_mat * as.vector(x_mat %*% beta_hat)
   
   term3 <- matrix(0, nrow = nrow(dat), ncol = 3L)
-  term3[, 2] <- measurement_weight * (s11 * beta_hat[2] + s12 * beta_hat[3])
-  term3[, 3] <- measurement_weight * (s12 * beta_hat[2] + s22 * beta_hat[3])
+  term3[, 2] <- measurement_weight_used * (s11 * beta_hat[2] + s12 * beta_hat[3])
+  term3[, 3] <- measurement_weight_used * (s12 * beta_hat[2] + s22 * beta_hat[3])
   
   adj_beta <- as.vector(a_adjustment %*% beta_hat)
   term4 <- matrix(adj_beta, nrow = nrow(dat), ncol = 3L, byrow = TRUE)
@@ -471,34 +637,73 @@ fit_eiv_dual <- function(stage2_df,
   # Empirical sandwich variance for beta_hat. The generalized inverse fallback
   # preserves a finite variance estimate in borderline stabilized cases.
   bread_inv <- tryCatch(solve(a_mat_use), error = function(e) MASS::ginv(a_mat_use))
-  meat <- crossprod(psi_mat)
-  vcov_beta <- bread_inv %*% meat %*% bread_inv
+
+  # Naive/model-based EIV variance treats the corrected normal-equation matrix
+  # as fixed and uses a homoskedastic residual variance for Var(X'y).
+  resid_vec <- y_vec - as.vector(x_mat %*% beta_hat)
+  sigma2_hat <- sum(resid_vec^2) / max(1L, nrow(dat) - ncol(x_mat))
+  vcov_naive <- sigma2_hat * bread_inv %*% crossprod(x_mat) %*% bread_inv
+
+  meat_hc0 <- crossprod(psi_mat)
+  vcov_hc0 <- bread_inv %*% meat_hc0 %*% bread_inv
+
+  # HC3-style finite-sample correction for the EIV estimating functions. The
+  # leverage is computed from the corrected bread and capped for numerical
+  # stability, matching the defensive treatment used in the stacked sandwich.
+  h_ii <- rowSums((x_mat %*% bread_inv) * x_mat)
+  h_ii <- pmin(pmax(h_ii, 0), 0.999)
+  psi_mat_hc3 <- psi_mat / pmax(1 - h_ii, sqrt(.Machine$double.eps))
+  meat_hc3 <- crossprod(psi_mat_hc3)
+  vcov_hc3 <- bread_inv %*% meat_hc3 %*% bread_inv
 
   # Estimate the latent predictor covariance by subtracting the aggregate
   # measurement-error covariance from the centered observed cross-product.
-  w_centered <- scale(w_mat, center = TRUE, scale = FALSE)
-  sum_s <- measurement_weight * matrix(c(sum(s11), sum(s12), sum(s12), sum(s22)), nrow = 2L, byrow = TRUE)
-  sigma_x_hat <- (crossprod(w_centered) - sum_s) / max(1, nrow(dat) - 1L)
-  sigma_x_hat <- project_to_pd(sigma_x_hat, min_eigen = min_eigen)
+  sigma_x_hat <- latent_cov_diag$sigma_x
   scale_u1 <- sqrt(sigma_x_hat[2, 2])
 
   # Convert the raw latent-slope coefficient and its sandwich SE to the same
   # one-SD target scale used by the observed-score estimators.
   est <- unname(beta_hat[[3]]) * scale_u1
-  se_beta1 <- if (nrow(vcov_beta) >= 3L) sqrt(unname(vcov_beta[3, 3])) else NA_real_
-  se <- se_beta1 * scale_u1
-
-  if (!is.finite(est) || !is.finite(se)) {
-    return(dplyr::mutate(out_fail, status_code = 2L))
+  vcov_by_type <- list(naive = vcov_naive, hc0 = vcov_hc0, hc3 = vcov_hc3)
+  issue_detail <- if (isTRUE(weight_choice$regularized)) {
+    sprintf(
+      "regularized_weight=%0.6f; requested_weight=%0.6f; min_eigen=%0.6e; condition_number=%0.6e",
+      measurement_weight_used,
+      measurement_weight,
+      latent_cov_diag$min_eig,
+      latent_cov_diag$condition_number
+    )
+  } else {
+    "ok"
   }
 
-  tibble::tibble(
-    estimate = est,
-    se = se,
-    ci_low = est - stats::qnorm(0.975) * se,
-    ci_high = est + stats::qnorm(0.975) * se,
-    status_code = 0L
-  )
+  purrr::map_dfr(se_types, function(se_type) {
+    vcov_beta <- vcov_by_type[[se_type]]
+    var_beta1 <- if (!is.null(vcov_beta) && nrow(vcov_beta) >= 3L) {
+      unname(vcov_beta[3, 3])
+    } else {
+      NA_real_
+    }
+    se_beta1 <- if (is.finite(var_beta1) && var_beta1 >= 0) sqrt(var_beta1) else NA_real_
+    se <- se_beta1 * scale_u1
+    ok <- is.finite(est) && is.finite(se)
+
+    tibble::tibble(
+      se_type = se_type,
+      estimate = if (ok) est else NA_real_,
+      se = if (ok) se else NA_real_,
+      ci_low = if (ok) est - stats::qnorm(0.975) * se else NA_real_,
+      ci_high = if (ok) est + stats::qnorm(0.975) * se else NA_real_,
+      status_code = if (ok) 0L else 2L,
+      mx_issue_class = if (ok) "ok" else "nonfinite_eiv_estimate_or_se",
+      mx_issue_detail = if (ok) issue_detail else NA_character_,
+      eiv_measurement_weight_requested = measurement_weight,
+      eiv_measurement_weight_used = measurement_weight_used,
+      eiv_regularized = isTRUE(weight_choice$regularized),
+      eiv_latent_cov_min_eigen = latent_cov_diag$min_eig,
+      eiv_latent_cov_condition_number = latent_cov_diag$condition_number
+    )
+  })
 }
 
 #' Format stacked-sandwich covariance variants as estimator rows.

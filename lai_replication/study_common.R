@@ -18,11 +18,18 @@ make_covu <- function(condition) {
 }
 
 tempered_eiv_methods <- function() {
-  c(
-    "tempered_eiv_dual_corrected_l25",
-    "tempered_eiv_dual_corrected_l50",
-    "tempered_eiv_dual_corrected_l75"
-  )
+  unlist(lapply(
+    c(
+      "tempered_eiv_dual_corrected_l25",
+      "tempered_eiv_dual_corrected_l50",
+      "tempered_eiv_dual_corrected_l75"
+    ),
+    eiv_se_variant_methods
+  ), use.names = FALSE)
+}
+
+eiv_se_variant_methods <- function(base_method) {
+  c(base_method, paste0(base_method, "_hc0"), paste0(base_method, "_hc3"))
 }
 
 condition_includes_tempered_eiv <- function(condition) {
@@ -45,9 +52,9 @@ matched_study_methods <- function(include_tempered_eiv = FALSE) {
     "naive_slope_only", "naive_slope_only_hc3",
     "centered_slope_only", "centered_slope_only_hc3",
     "naive_dual_eb", "naive_dual_eb_hc3",
-    "eiv_dual_corrected",
-    "eiv_dual_corrected_nearpd",
-    "eiv_dual_corrected_ridge",
+    eiv_se_variant_methods("eiv_dual_corrected"),
+    eiv_se_variant_methods("eiv_dual_corrected_nearpd"),
+    eiv_se_variant_methods("eiv_dual_corrected_ridge"),
     "ridge_dual_eb",
     "corrected_slope_only", "corrected_slope_only_hc3",
     "corrected_dual", "corrected_dual_hc3",
@@ -63,9 +70,9 @@ disparate_study_methods <- function(include_tempered_eiv = FALSE) {
   methods <- c(
     "oracle_dual",
     "naive_dual_eb", "naive_dual_eb_hc3",
-    "eiv_dual_corrected",
-    "eiv_dual_corrected_nearpd",
-    "eiv_dual_corrected_ridge",
+    eiv_se_variant_methods("eiv_dual_corrected"),
+    eiv_se_variant_methods("eiv_dual_corrected_nearpd"),
+    eiv_se_variant_methods("eiv_dual_corrected_ridge"),
     "ridge_dual_eb",
     "corrected_dual", "corrected_dual_hc3",
     "lai_2spa", "lai_2spaa"
@@ -130,8 +137,7 @@ fit_tempered_eiv_dual_set <- function(stage2_df,
       outcome_meas_var = outcome_meas_var,
       measurement_weight = weight
     ) %>%
-      dplyr::mutate(method = paste0("tempered_eiv_dual_corrected_", suffix)) %>%
-      dplyr::select(method, estimate, se, ci_low, ci_high, status_code)
+      finalize_eiv_se_variants(paste0("tempered_eiv_dual_corrected_", suffix))
   })
 }
 
@@ -193,8 +199,7 @@ run_matched_outcome_rep <- function(condition, sim) {
       meas12 = "ols_var12",
       meas22 = "ols_var22"
     ) %>%
-      dplyr::mutate(method = "eiv_dual_corrected") %>%
-      dplyr::select(method, estimate, se, ci_low, ci_high, status_code),
+      finalize_eiv_se_variants("eiv_dual_corrected"),
     fit_eiv_dual(
       stage2_df,
       outcome = "z",
@@ -205,8 +210,7 @@ run_matched_outcome_rep <- function(condition, sim) {
       meas22 = "ols_var22",
       stabilize_a_mat = TRUE
     ) %>%
-      dplyr::mutate(method = "eiv_dual_corrected_nearpd") %>%
-      dplyr::select(method, estimate, se, ci_low, ci_high, status_code),
+      finalize_eiv_se_variants("eiv_dual_corrected_nearpd"),
     fit_eiv_dual(
       stage2_df,
       outcome = "z",
@@ -217,8 +221,7 @@ run_matched_outcome_rep <- function(condition, sim) {
       meas22 = "ols_var22",
       ridge_predictor_block = TRUE
     ) %>%
-      dplyr::mutate(method = "eiv_dual_corrected_ridge") %>%
-      dplyr::select(method, estimate, se, ci_low, ci_high, status_code),
+      finalize_eiv_se_variants("eiv_dual_corrected_ridge"),
     if (isTRUE(include_tempered_eiv)) {
       fit_tempered_eiv_dual_set(
         stage2_df,

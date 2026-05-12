@@ -185,8 +185,7 @@ run_study3_rep <- function(condition) {
       meas12 = "ols_var12",
       meas22 = "ols_var22"
     ) %>%
-      dplyr::mutate(method = "eiv_dual_corrected") %>%
-      dplyr::select(method, estimate, se, ci_low, ci_high, status_code),
+      finalize_eiv_se_variants("eiv_dual_corrected"),
     fit_eiv_dual(
       stage2_df,
       outcome = "corrected_outcome",
@@ -197,8 +196,7 @@ run_study3_rep <- function(condition) {
       meas22 = "ols_var22",
       stabilize_a_mat = TRUE
     ) %>%
-      dplyr::mutate(method = "eiv_dual_corrected_nearpd") %>%
-      dplyr::select(method, estimate, se, ci_low, ci_high, status_code),
+      finalize_eiv_se_variants("eiv_dual_corrected_nearpd"),
     fit_eiv_dual(
       stage2_df,
       outcome = "corrected_outcome",
@@ -209,8 +207,7 @@ run_study3_rep <- function(condition) {
       meas22 = "ols_var22",
       ridge_predictor_block = TRUE
     ) %>%
-      dplyr::mutate(method = "eiv_dual_corrected_ridge") %>%
-      dplyr::select(method, estimate, se, ci_low, ci_high, status_code),
+      finalize_eiv_se_variants("eiv_dual_corrected_ridge"),
     if (isTRUE(include_tempered_eiv)) {
       # Optional sensitivity path: partial measurement-error subtraction can be
       # useful when the full EIV correction is numerically too aggressive.

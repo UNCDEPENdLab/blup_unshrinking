@@ -58,21 +58,8 @@ locate_repo_root <- function() {
 
 repo_root <- locate_repo_root()
 
-# Source order matters. Low-level utilities and shared simulation helpers must
-# be loaded before BLUP-outcome modules that call them; Lai/OpenMx helpers and
-# stacked-sandwich helpers must be available before `study_common.R` and
-# `runner.R` are sourced.
-source(file.path(repo_root, "R", "core_utils.R"), local = TRUE)
-source(file.path(repo_root, "R", "simulation_runner_helpers.R"), local = TRUE)
-source(file.path(repo_root, "R", "derivative_backends.R"), local = TRUE)
-source(file.path(repo_root, "R", "tmb_stage1_helpers.R"), local = TRUE)
-source(file.path(repo_root, "R", "stacked_sandwich_helpers.R"), local = TRUE)
-source(file.path(repo_root, "R", "sim_helpers.R"), local = TRUE)
-source(file.path(repo_root, "R", "stats_helpers.R"), local = TRUE)
-source(file.path(repo_root, "R", "stage2_estimators.R"), local = TRUE)
-source(file.path(repo_root, "R", "blup_helpers.R"), local = TRUE)
-source(file.path(repo_root, "R", "sim_diagnostics.R"), local = TRUE)
-source(file.path(repo_root, "R", "lai_openmx_helpers.R"), local = TRUE)
+source(file.path(repo_root, "R", "source_helpers.R"), local = TRUE)
+source_project_helpers(repo_root)
 source(file.path(repo_root, "blup_outcome", "designs.R"), local = TRUE)
 source(file.path(repo_root, "blup_outcome", "study_common.R"), local = TRUE)
 source(file.path(repo_root, "blup_outcome", "runner.R"), local = TRUE)

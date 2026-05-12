@@ -341,6 +341,8 @@ read_replication_results_file <- function(path) {
     c(
       "estimate", "se", "ci_low", "ci_high", "truth",
       "mx_condition_number",
+      "eiv_measurement_weight_requested", "eiv_measurement_weight_used",
+      "eiv_latent_cov_min_eigen", "eiv_latent_cov_condition_number",
       "stage1_re_corr", "stage1_eb_corr", "stage1_design_kappa",
       "icc", "vr_u1_u0", "cor_u0_u1", "beta_zu1",
       "sigma2", "var_u1", "sigma_z"
@@ -352,7 +354,7 @@ read_replication_results_file <- function(path) {
     names(out)
   )
   logical_cols <- intersect(
-    c("stage1_singular_problem", "stage1_lmer_singular"),
+    c("stage1_singular_problem", "stage1_lmer_singular", "eiv_regularized"),
     names(out)
   )
 

@@ -63,11 +63,8 @@ find_repo_root <- function() {
 repo_root <- find_repo_root()
 lai_dir <- file.path(repo_root, "lai_replication")
 
-source(file.path(repo_root, "R", "core_utils.R"), local = TRUE)
-source(file.path(repo_root, "R", "blup_helpers.R"), local = TRUE)
-source(file.path(repo_root, "R", "stage2_estimators.R"), local = TRUE)
-source(file.path(repo_root, "R", "sim_diagnostics.R"), local = TRUE)
-source(file.path(repo_root, "R", "lai_openmx_helpers.R"), local = TRUE)
+source(file.path(repo_root, "R", "source_helpers.R"), local = TRUE)
+source_project_helpers(repo_root)
 
 source(file.path(lai_dir, "designs.R"), local = TRUE)
 source(file.path(lai_dir, "study_common.R"), local = TRUE)

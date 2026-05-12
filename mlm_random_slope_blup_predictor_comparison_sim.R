@@ -21,12 +21,29 @@ suppressPackageStartupMessages({
   library(OpenMx)
 })
 
-# Load helpers
-# Load helpers relative to script directory
-script_dir <- if (basename(getwd()) == "mlm_blups") "." else "mlm_blups"
-source(file.path(script_dir, "R", "sim_helpers.R"), local = TRUE)
-source(file.path(script_dir, "R", "stats_helpers.R"), local = TRUE)
-source(file.path(script_dir, "R", "blup_helpers.R"), local = TRUE)
+locate_repo_root <- function() {
+  script_arg <- grep("^--file=", commandArgs(trailingOnly = FALSE), value = TRUE)
+  script_path <- if (length(script_arg) > 0L) {
+    normalizePath(sub("^--file=", "", script_arg[[1]]), mustWork = FALSE)
+  } else {
+    NA_character_
+  }
+
+  candidates <- unique(normalizePath(c(
+    getwd(),
+    if (!is.na(script_path)) dirname(script_path) else character()
+  ), mustWork = FALSE))
+
+  roots <- candidates[file.exists(file.path(candidates, "R", "source_helpers.R"))]
+  if (length(roots) == 0L) {
+    stop("Could not locate repository root containing shared R helpers.")
+  }
+  roots[[1]]
+}
+
+repo_root <- locate_repo_root()
+source(file.path(repo_root, "R", "source_helpers.R"), local = TRUE)
+source_project_helpers(repo_root)
 
 Sys.setenv(OMP_NUM_THREADS = "1", OPENBLAS_NUM_THREADS = "1", MKL_NUM_THREADS = "1")
 OpenMx::mxOption(NULL, "Number of Threads", 1L)
@@ -34,7 +51,7 @@ OpenMx::mxOption(NULL, "Number of Threads", 1L)
 # Argument handling
 args <- commandArgs(trailingOnly = TRUE)
 n_sim <- if (length(args) >= 1) as.integer(args[[1]]) else 100L
-out_dir <- if (length(args) >= 2) args[[2]] else file.path(script_dir, "outputs", "blup_predictor_comparison")
+out_dir <- if (length(args) >= 2) args[[2]] else file.path(repo_root, "outputs", "blup_predictor_comparison")
 n_cores <- if (length(args) >= 3) as.integer(args[[3]]) else 1L
 
 if (is.na(n_sim) || n_sim < 1L) {
