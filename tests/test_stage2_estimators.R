@@ -109,4 +109,86 @@ stopifnot(
   identical(edge_methods$method, c("unit_eiv", "unit_eiv_hc0", "unit_eiv_hc3"))
 )
 
+set.seed(44023)
+m_fuller <- 600L
+
+x0_true <- rnorm(m_fuller)
+x1_true <- rnorm(m_fuller)
+
+beta0 <- 0.50
+beta1 <- -0.20
+beta2 <- 0.80
+
+eps <- rnorm(m_fuller, sd = 1.0)
+y_true <- beta0 + beta1 * x0_true + beta2 * x1_true + eps
+
+var_u0 <- 0.20
+var_u1 <- 0.35
+var_uy <- 0.40
+
+u0_err <- rnorm(m_fuller, sd = sqrt(var_u0))
+u1_err <- rnorm(m_fuller, sd = sqrt(var_u1))
+uy_err <- rnorm(m_fuller, sd = sqrt(var_uy))
+
+stage2_fuller <- data.frame(
+  y_obs = y_true + uy_err,
+  x0_obs = x0_true + u0_err,
+  x1_obs = x1_true + u1_err,
+  meas11 = rep(var_u0, m_fuller),
+  meas12 = rep(0, m_fuller),
+  meas22 = rep(var_u1, m_fuller),
+  measyy = rep(var_uy, m_fuller)
+)
+
+fuller_out <- fit_fuller_dual(
+  stage2_fuller,
+  outcome = "y_obs",
+  predictor_u0 = "x0_obs",
+  predictor_u1 = "x1_obs",
+  meas11 = "meas11",
+  meas12 = "meas12",
+  meas22 = "meas22",
+  outcome_meas_var = "measyy"
+)
+
+target_scaled <- beta2 * stats::sd(x1_true)
+stopifnot(
+  isTRUE(all.equal(as.integer(fuller_out$status_code), 0L)),
+  is.finite(fuller_out$estimate),
+  is.finite(fuller_out$se),
+  fuller_out$se > 0,
+  abs(fuller_out$estimate - target_scaled) < 0.20 # not sure where 0.2 came from
+)
+
+stage2_noerr <- data.frame(
+  y_obs = y_true,
+  x0_obs = x0_true,
+  x1_obs = x1_true,
+  meas11 = rep(0, m_fuller),
+  meas12 = rep(0, m_fuller),
+  meas22 = rep(0, m_fuller),
+  measyy = rep(0, m_fuller)
+)
+
+# reduces to OLS with no measurement error
+fuller_noerr <- fit_fuller_dual(
+  stage2_noerr,
+  outcome = "y_obs",
+  predictor_u0 = "x0_obs",
+  predictor_u1 = "x1_obs",
+  meas11 = "meas11",
+  meas12 = "meas12",
+  meas22 = "meas22",
+  outcome_meas_var = "measyy"
+)
+
+ols_dual <- fit_observed_dual(stage2_noerr, outcome = "y_obs", predictor_u0 = "x0_obs", predictor_u1 = "x1_obs")
+ols_naive <- ols_dual[ols_dual$se_type == "naive", , drop = FALSE]
+
+stopifnot(
+  isTRUE(all.equal(as.integer(fuller_noerr$status_code), 0L)),
+  isTRUE(all.equal(fuller_noerr$estimate, ols_naive$estimate, tolerance = 1e-10)),
+  isTRUE(all.equal(fuller_noerr$se, ols_naive$se, tolerance = 1e-10))
+)
+
 cat("stage-2 estimator formatter tests ok\n")
