@@ -236,6 +236,17 @@ run_study3_rep <- function(condition) {
       dplyr::select(method, dplyr::everything()),
     fit_lai_2spa_disparate(stage2_df, use_average = TRUE) %>%
       dplyr::mutate(method = "lai_2spaa") %>%
+      dplyr::select(method, dplyr::everything()),
+    fit_fuller_dual(
+      stage2_df,
+      outcome = "corrected_outcome",
+      predictor_u0 = "corrected_intercept_full",
+      predictor_u1 = "corrected_slope_full",
+      meas11 = "ols_var11",
+      meas12 = "ols_var12",
+      meas22 = "ols_var22"
+    ) %>%
+      dplyr::mutate(method = "fuller") %>%
       dplyr::select(method, dplyr::everything())
   )
 

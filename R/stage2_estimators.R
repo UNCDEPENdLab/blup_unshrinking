@@ -759,6 +759,13 @@ fit_fuller_dual <- function(stage2_df,
                             meas12,
                             meas22,
                             outcome_meas_var = NULL) {
+  if (!requireNamespace("geigen", quietly = TRUE)) {
+    stop(
+      "The `geigen` package is required for `fit_fuller_dual()` (generalized eigenvalues). ",
+      "Install it with `install.packages(\"geigen\")`."
+    )
+  }
+
   out_fail <- tibble::tibble(
     estimate = NA_real_,
     se = NA_real_,
@@ -844,21 +851,6 @@ fit_fuller_dual <- function(stage2_df,
     # Note: `geigen(..., symmetric=TRUE)` requires B to be positive definite.
     # In Fuller, B is often only positive semidefinite (and can be singular),
     # so we explicitly set `symmetric = FALSE`.
-    if (!requireNamespace("geigen", quietly = TRUE)) {
-      # Best-effort install for interactive/simulation environments.
-      tryCatch({
-        repos <- getOption("repos")
-        cran <- unname(repos[["CRAN"]])
-        if (is.null(cran) || is.na(cran) || identical(cran, "@CRAN@")) {
-          repos <- c(CRAN = "https://cloud.r-project.org")
-        }
-        utils::install.packages("geigen", repos = repos, quiet = TRUE)
-      }, error = function(e) NULL)
-    }
-    if (!requireNamespace("geigen", quietly = TRUE)) {
-      return(NA_real_)
-    }
-
     ge_out <- tryCatch(
       geigen::geigen(a_mat, b_mat, symmetric = FALSE, only.values = TRUE),
       error = function(e) NULL
