@@ -345,7 +345,9 @@ read_replication_results_file <- function(path) {
       "eiv_latent_cov_min_eigen", "eiv_latent_cov_condition_number",
       "stage1_re_corr", "stage1_eb_corr", "stage1_design_kappa",
       "icc", "vr_u1_u0", "cor_u0_u1", "beta_zu1",
-      "sigma2", "var_u1", "sigma_z"
+      "sigma2", "var_u1", "sigma_z", "fuller_lambda1", "fuller_lambda2",
+      "fuller_sigma2", "fuller_weight_min", "fuller_weight_max",
+      "fuller_correction_c"
     ),
     names(out)
   )
@@ -456,7 +458,7 @@ lai_parallel_exports <- function() {
     "compute_eb_measurement_inputs", "compute_bivariate_eb_inputs",
     "compute_univariate_eb_inputs", "compute_lai_2spa_inputs",
     "fit_observed_single", "fit_observed_dual",
-    "finalize_ols_se_variants", "fit_eiv_dual", "fit_ridge_dual",
+    "finalize_ols_se_variants", "fit_eiv_dual", "fit_ridge_dual", "fit_fuller_dual",
     "fit_lai_2spa", "fit_lai_2spa_observed_outcome", "fit_lai_2spa_disparate",
     "run_mx_safe", "extract_mx_stats", "extract_mx_se_details",
     "classify_mx_issue", "compact_message", "project_to_pd"
@@ -500,7 +502,7 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
     foreach::foreach(
       rep_id = rep_ids,
       .combine = dplyr::bind_rows,
-      .packages = c("data.table", "lme4", "MASS", "dplyr", "tidyr", "purrr", "tibble", "OpenMx", "glmnet", "sandwich"),
+      .packages = c("data.table", "lme4", "MASS", "dplyr", "tidyr", "purrr", "tibble", "OpenMx", "glmnet", "sandwich", "geigen"),
       .export = lai_parallel_exports()
     ) %dopar% {
       run_single_rep(rep_id)

@@ -20,6 +20,7 @@ suppressPackageStartupMessages({
   library(OpenMx)
   library(glmnet)
   library(sandwich)
+  library(geigen)
 })
 
 current_script_path <- function() {

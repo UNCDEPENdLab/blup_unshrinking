@@ -58,7 +58,7 @@ matched_study_methods <- function(include_tempered_eiv = FALSE) {
     "ridge_dual_eb",
     "corrected_slope_only", "corrected_slope_only_hc3",
     "corrected_dual", "corrected_dual_hc3",
-    "lai_2spa", "lai_2spaa"
+    "lai_2spa", "lai_2spaa", "fuller"
   )
   if (isTRUE(include_tempered_eiv)) {
     methods <- append(methods, tempered_eiv_methods(), after = match("eiv_dual_corrected_ridge", methods))
@@ -75,7 +75,7 @@ disparate_study_methods <- function(include_tempered_eiv = FALSE) {
     eiv_se_variant_methods("eiv_dual_corrected_ridge"),
     "ridge_dual_eb",
     "corrected_dual", "corrected_dual_hc3",
-    "lai_2spa", "lai_2spaa"
+    "lai_2spa", "lai_2spaa", "fuller"
   )
   if (isTRUE(include_tempered_eiv)) {
     methods <- append(methods, tempered_eiv_methods(), after = match("eiv_dual_corrected_ridge", methods))
@@ -243,6 +243,17 @@ run_matched_outcome_rep <- function(condition, sim) {
       dplyr::select(method, dplyr::everything()),
     fit_lai_2spa_observed_outcome(stage2_df, use_average = TRUE) %>%
       dplyr::mutate(method = "lai_2spaa") %>%
+      dplyr::select(method, dplyr::everything()),
+    fit_fuller_dual(
+      stage2_df,
+      outcome = "z",
+      predictor_u0 = "corrected_intercept_full",
+      predictor_u1 = "corrected_slope_full",
+      meas11 = "ols_var11",
+      meas12 = "ols_var12",
+      meas22 = "ols_var22"
+    ) %>%
+      dplyr::mutate(method = "fuller") %>%
       dplyr::select(method, dplyr::everything())
   )
 

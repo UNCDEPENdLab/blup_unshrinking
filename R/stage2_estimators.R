@@ -706,6 +706,404 @@ fit_eiv_dual <- function(stage2_df,
   })
 }
 
+#' Fit a dual-predictor Fuller errors-in-variables (EIV) estimator.
+#'
+#' @details
+#' Implements the three-step procedure from Section \ref{sec-fuller-method} of
+#' `documentation/re_regression_vig_5-12-26.tex` (after Fuller, 1987) for the
+#' case where both the stage-2 outcome and the stage-2 predictors are measured
+#' with error.
+#'
+#' The stage-2 regression uses predictors ordered as
+#' `(intercept, predictor_u0, predictor_u1)`, where the intercept is treated as
+#' measured without error. The supplied predictor measurement-error variances
+#' and covariance (`meas11`, `meas12`, `meas22`) populate only the
+#' two-predictor block (u0/u1). Outcome measurement error is supplied via
+#' `outcome_meas_var` and is assumed uncorrelated with predictor measurement
+#' error (i.e., the outcome and predictors come from separate first-stage mixed
+#' models).
+#'
+#' The returned estimate and standard error are scaled by an estimated latent
+#' SD for `predictor_u1`, computed by subtracting the aggregate predictor
+#' measurement-error covariance from the centered observed cross-product.
+#'
+#' @param stage2_df Data frame containing outcome, predictors, and
+#' measurement-error covariance columns. This function assumes one row per
+#' cluster/unit contributing to the second-stage regression.
+#' @param outcome Character scalar naming the outcome column.
+#' @param predictor_u0 Character scalar naming the intercept-like observed
+#' predictor.
+#' @param predictor_u1 Character scalar naming the slope-like observed
+#' predictor whose coefficient is reported.
+#' @param meas11 Character scalar naming the predictor measurement-error
+#' variance column for `predictor_u0`.
+#' @param meas12 Character scalar naming the predictor measurement-error
+#' covariance column between `predictor_u0` and `predictor_u1`.
+#' @param meas22 Character scalar naming the predictor measurement-error
+#' variance column for `predictor_u1`.
+#' @param outcome_meas_var Optional character scalar naming an outcome
+#' measurement-error variance column. If `NULL`, outcome measurement error is
+#' treated as zero.
+#'
+#' @return
+#' A one-row tibble containing the scaled `estimate`, `se`, Wald-normal
+#' confidence limits, `status_code`, and Fuller step diagnostics. Status `0L`
+#' indicates success, `1L` indicates a linear system solve failure, `2L`
+#' indicates non-finite estimates/standard errors, and `3L` indicates that
+#' weights or the latent predictor variance were not admissible.
+fit_fuller_dual <- function(stage2_df,
+                            outcome,
+                            predictor_u0,
+                            predictor_u1,
+                            meas11,
+                            meas12,
+                            meas22,
+                            outcome_meas_var = NULL) {
+  if (!requireNamespace("geigen", quietly = TRUE)) {
+    stop(
+      "The `geigen` package is required for `fit_fuller_dual()` (generalized eigenvalues). ",
+      "Install it with `install.packages(\"geigen\")`."
+    )
+  }
+
+  out_fail <- tibble::tibble(
+    estimate = NA_real_,
+    se = NA_real_,
+    ci_low = NA_real_,
+    ci_high = NA_real_,
+    status_code = NA_integer_,
+    mx_issue_class = NA_character_,
+    mx_issue_detail = NA_character_,
+    fuller_lambda1 = NA_real_,
+    fuller_lambda2 = NA_real_,
+    fuller_sigma2 = NA_real_,
+    fuller_weight_min = NA_real_,
+    fuller_weight_max = NA_real_,
+    fuller_correction_c = NA_real_
+  )
+
+  cols_needed <- c(outcome, predictor_u0, predictor_u1, meas11, meas12, meas22)
+  if (!is.null(outcome_meas_var)) {
+    cols_needed <- c(cols_needed, outcome_meas_var)
+  }
+
+  dat <- stage2_df[, cols_needed, drop = FALSE]
+  dat <- dat[stats::complete.cases(dat), , drop = FALSE]
+
+  # P counts the intercept in the second-stage regression.
+  p <- 3L
+  m <- nrow(dat)
+  # EIV needs enough rows to estimate a three-parameter equation and its
+  # sandwich variance with some stability. The target predictor must also vary.
+  if (m < 8L || m <= p || !is.finite(stats::sd(dat[[predictor_u1]])) ||
+    stats::sd(dat[[predictor_u1]]) <= sqrt(.Machine$double.eps)) {
+    return(out_fail)
+  }
+
+  # Extract observed scores.
+  y_vec <- dat[[outcome]]
+  u0_vec <- dat[[predictor_u0]]
+  u1_vec <- dat[[predictor_u1]]
+  x_mat <- cbind(1, u0_vec, u1_vec)
+
+  # Predictor measurement-error covariances; clamp variances at zero.
+  s11 <- pmax(dat[[meas11]], 0)
+  s12 <- dat[[meas12]]
+  s22 <- pmax(dat[[meas22]], 0)
+
+  # y error isn't necessary but the machinery is here for the future
+  omega_y <- if (!is.null(outcome_meas_var)) pmax(dat[[outcome_meas_var]], 0) else rep(0, m)
+  omega_y_sum <- sum(omega_y)
+
+  omega_x_sum <- matrix(
+    c(
+      0, 0, 0,
+      0, sum(s11), sum(s12),
+      0, sum(s12), sum(s22)
+    ),
+    nrow = p,
+    byrow = TRUE
+  )
+
+  # Step 1: method-of-moments estimate.
+  a0_mat <- crossprod(x_mat) - omega_x_sum
+  b0_vec <- as.vector(crossprod(x_mat, y_vec) - omega_y_sum)
+  gamma0_hat <- tryCatch(as.vector(solve(a0_mat, b0_vec)), error = function(e) NULL)
+  if (is.null(gamma0_hat) || any(!is.finite(gamma0_hat))) {
+    return(dplyr::mutate(
+      out_fail,
+      status_code = 1L,
+      mx_issue_class = "fuller_gamma0_solve_failed"
+    ))
+  }
+
+  # Helper: smallest finite generalized eigenvalue of (A, B) with B
+  # positive-semidefinite but possibly singular.
+  smallest_det_root <- function(a_mat, b_mat) {
+    # We want the smallest root of det(A - lambda B) = 0.
+    # For symmetric A and PSD B, these roots are the generalized eigenvalues
+    # solving A v = lambda B v.
+    #
+    # Directly computing det(A - lambda B) is numerically unstable, so we use
+    # a generalized eigen-solver. The `geigen` package wraps LAPACK routines
+    # for the generalized eigenproblem.
+    #
+    # Note: `geigen(..., symmetric=TRUE)` requires B to be positive definite.
+    # In Fuller, B is often only positive semidefinite (and can be singular),
+    # so we explicitly set `symmetric = FALSE`.
+    ge_out <- tryCatch(
+      geigen::geigen(a_mat, b_mat, symmetric = FALSE, only.values = TRUE),
+      error = function(e) NULL
+    )
+    if (is.null(ge_out) || is.null(ge_out$values) || length(ge_out$values) == 0L) {
+      return(NA_real_)
+    }
+
+    vals <- ge_out$values
+    # In non-PD/singular cases LAPACK can return complex-valued eigenvalues.
+    # Treat tiny imaginary parts as numerical noise, otherwise drop.
+    if (is.complex(vals)) {
+      imag_tol <- sqrt(.Machine$double.eps) * max(1, max(abs(vals), na.rm = TRUE))
+      vals <- ifelse(abs(Im(vals)) <= imag_tol, Re(vals), NA_real_)
+    }
+
+    vals <- vals[is.finite(vals)]
+    if (length(vals) == 0L) {
+      return(NA_real_)
+    }
+
+    # Returning the smallest matches the "smallest determinant root" used for
+    # lambda_1 and lambda_2 in the Fuller procedure.
+    min(vals)
+  }
+
+  # Step 2: lambda_1 and sigma^2.
+  b_mat <- cbind(y_vec, x_mat)
+  bb_sum <- crossprod(b_mat)
+  omega_sum <- matrix(0, nrow = p + 1L, ncol = p + 1L)
+  omega_sum[1, 1] <- omega_y_sum
+  omega_sum[2:(p + 1L), 2:(p + 1L)] <- omega_x_sum
+
+  lambda1_hat <- smallest_det_root(bb_sum, omega_sum)
+
+  # Regression error variance estimate: SSE/(M-P) minus average measurement
+  # error in the composite residual (u_y - gamma0' u_x).
+  resid0 <- y_vec - as.vector(x_mat %*% gamma0_hat)
+  sigma2_ols <- sum(resid0^2) / max(1, m - p)
+  sigma2_corr <- mean(
+    omega_y +
+      (gamma0_hat[2]^2) * s11 +
+      2 * gamma0_hat[2] * gamma0_hat[3] * s12 +
+      (gamma0_hat[3]^2) * s22
+  )
+
+  sigma2_hat <- if (!is.na(lambda1_hat) && is.finite(lambda1_hat) && lambda1_hat < 1) {
+    0
+  } else {
+    sigma2_ols - sigma2_corr
+  }
+  if (!is.finite(sigma2_hat)) {
+    return(dplyr::mutate(
+      out_fail,
+      status_code = 2L,
+      mx_issue_class = "fuller_sigma2_nonfinite",
+      fuller_lambda1 = lambda1_hat
+    ))
+  }
+  sigma2_hat <- max(0, sigma2_hat)
+
+  # Step 3: weights, lambda_2, corrected S* matrix, and final gamma.
+  quad_x <- (gamma0_hat[2]^2) * s11 +
+    2 * gamma0_hat[2] * gamma0_hat[3] * s12 +
+    (gamma0_hat[3]^2) * s22
+  w_j <- sigma2_hat + omega_y + quad_x # assume x-y error cov is zero
+
+  if (any(!is.finite(w_j)) || any(w_j <= sqrt(.Machine$double.eps))) {
+    return(dplyr::mutate(
+      out_fail,
+      status_code = 3L,
+      mx_issue_class = "fuller_nonpositive_weights",
+      mx_issue_detail = sprintf(
+        "min_w=%0.6e; max_w=%0.6e; sigma2=%0.6e",
+        suppressWarnings(min(w_j, na.rm = TRUE)),
+        suppressWarnings(max(w_j, na.rm = TRUE)),
+        sigma2_hat
+      ),
+      fuller_lambda1 = lambda1_hat,
+      fuller_sigma2 = sigma2_hat
+    ))
+  }
+
+  w_inv <- 1 / w_j
+  bw_sum <- crossprod(b_mat * sqrt(w_inv))
+
+  omega_x_sum_w <- matrix(
+    c(
+      0, 0, 0,
+      0, sum(w_inv * s11), sum(w_inv * s12),
+      0, sum(w_inv * s12), sum(w_inv * s22)
+    ),
+    nrow = p,
+    byrow = TRUE
+  )
+  omega_sum_w <- matrix(0, nrow = p + 1L, ncol = p + 1L)
+  omega_sum_w[1, 1] <- sum(w_inv * omega_y)
+  omega_sum_w[2:(p + 1L), 2:(p + 1L)] <- omega_x_sum_w
+
+  lambda2_hat <- smallest_det_root(bw_sum, omega_sum_w)
+  c_correction <- if (!is.na(lambda2_hat) && is.finite(lambda2_hat) && lambda2_hat <= 1 + 1 / m) {
+    lambda2_hat - 1 / m - (p + 1) / m
+  } else {
+    1 - (p + 1) / m
+  }
+
+  s_star <- bw_sum - c_correction * omega_sum_w
+  s_x_star <- s_star[2:(p + 1L), 2:(p + 1L), drop = FALSE]
+  s_xy_star <- s_star[2:(p + 1L), 1, drop = FALSE]
+
+  gamma_hat <- tryCatch(as.vector(solve(s_x_star, s_xy_star)), error = function(e) NULL)
+  if (is.null(gamma_hat) || any(!is.finite(gamma_hat))) {
+    return(dplyr::mutate(
+      out_fail,
+      status_code = 1L,
+      mx_issue_class = "fuller_gamma_solve_failed",
+      fuller_lambda1 = lambda1_hat,
+      fuller_lambda2 = lambda2_hat,
+      fuller_sigma2 = sigma2_hat,
+      fuller_weight_min = min(w_j),
+      fuller_weight_max = max(w_j),
+      fuller_correction_c = c_correction
+    ))
+  }
+
+  # Standard errors (Fuller, 1987).
+  xw_sum <- crossprod(x_mat * sqrt(w_inv))
+  s_x_uncorr <- (xw_sum - omega_x_sum_w) / m
+  s_x_inv <- tryCatch(solve(s_x_uncorr), error = function(e) NULL)
+  if (is.null(s_x_inv) || any(!is.finite(s_x_inv))) {
+    return(dplyr::mutate(
+      out_fail,
+      status_code = 1L,
+      mx_issue_class = "fuller_sx_uncorrected_solve_failed",
+      fuller_lambda1 = lambda1_hat,
+      fuller_lambda2 = lambda2_hat,
+      fuller_sigma2 = sigma2_hat,
+      fuller_weight_min = min(w_j),
+      fuller_weight_max = max(w_j),
+      fuller_correction_c = c_correction
+    ))
+  }
+
+  # tilde_omega_j = omega_xyj - Omega_xj gamma0, with omega_xyj assumed 0.
+  tilde_mat <- cbind(
+    0,
+    -(s11 * gamma0_hat[2] + s12 * gamma0_hat[3]),
+    -(s12 * gamma0_hat[2] + s22 * gamma0_hat[3])
+  )
+
+  meat_sum <- xw_sum + crossprod(tilde_mat * w_inv) # w_inv is actually squared here
+  vcov_gamma <- (s_x_inv %*% meat_sum %*% s_x_inv) / (m^2)
+  vcov_gamma <- (vcov_gamma + t(vcov_gamma)) / 2 # trick to ensure symmetry
+  var_u1 <- unname(vcov_gamma[3, 3])
+  if (!is.finite(var_u1) || var_u1 < 0) {
+    return(dplyr::mutate(
+      out_fail,
+      status_code = 2L,
+      mx_issue_class = "fuller_negative_or_nonfinite_variance",
+      fuller_lambda1 = lambda1_hat,
+      fuller_lambda2 = lambda2_hat,
+      fuller_sigma2 = sigma2_hat,
+      fuller_weight_min = min(w_j),
+      fuller_weight_max = max(w_j),
+      fuller_correction_c = c_correction
+    ))
+  }
+
+  # Scale to the one-latent-SD target used elsewhere in stage-2 summaries.
+  # The Fuller estimating equations use the step-3 weights w_j, which downweight
+  # observations with large composite measurement variance. Using the same
+  # weights for the latent-SD scaling tends to be more stable than the raw
+  # unweighted corrected covariance when the supplied measurement-error
+  # variances are large.
+  # https://en.wikipedia.org/wiki/Weighted_arithmetic_mean#
+  pred_mat <- cbind(u0_vec, u1_vec)
+  w_sum <- sum(w_inv)
+  w_sq_sum <- sum(w_inv^2)
+  denom_eff <- w_sum - w_sq_sum / w_sum
+  if (!is.finite(w_sum) || !is.finite(w_sq_sum) || !is.finite(denom_eff) || denom_eff <= sqrt(.Machine$double.eps)) {
+    return(dplyr::mutate(
+      out_fail,
+      status_code = 3L,
+      mx_issue_class = "fuller_invalid_weight_sum_for_scaling",
+      fuller_lambda1 = lambda1_hat,
+      fuller_lambda2 = lambda2_hat,
+      fuller_sigma2 = sigma2_hat,
+      fuller_weight_min = min(w_j),
+      fuller_weight_max = max(w_j),
+      fuller_correction_c = c_correction
+    ))
+  }
+  pred_mean <- colSums(pred_mat * w_inv) / w_sum
+  pred_centered <- sweep(pred_mat, 2L, pred_mean, FUN = "-")
+  pred_centered_w <- pred_centered * sqrt(w_inv)
+
+  omega_x_sum_pred_w <- matrix(
+    c(sum(w_inv * s11), sum(w_inv * s12), sum(w_inv * s12), sum(w_inv * s22)),
+    nrow = 2L,
+    byrow = TRUE
+  )
+  # Use the standard effective-denominator for a weighted sample covariance so
+  # that constant weights reduce exactly to the unweighted (m - 1) denominator.
+  sigma_x_hat <- (crossprod(pred_centered_w) - omega_x_sum_pred_w) / denom_eff
+  sigma_x_hat <- (sigma_x_hat + t(sigma_x_hat)) / 2
+  if (!is.finite(sigma_x_hat[2, 2]) || sigma_x_hat[2, 2] <= sqrt(.Machine$double.eps)) {
+    return(dplyr::mutate(
+      out_fail,
+      status_code = 3L,
+      mx_issue_class = "fuller_latent_predictor_var_not_positive",
+      fuller_lambda1 = lambda1_hat,
+      fuller_lambda2 = lambda2_hat,
+      fuller_sigma2 = sigma2_hat,
+      fuller_weight_min = min(w_j),
+      fuller_weight_max = max(w_j),
+      fuller_correction_c = c_correction
+    ))
+  }
+  scale_u1 <- sqrt(sigma_x_hat[2, 2])
+
+  est <- unname(gamma_hat[3]) * scale_u1
+  se <- sqrt(var_u1) * scale_u1
+  if (!is.finite(est) || !is.finite(se)) {
+    return(dplyr::mutate(
+      out_fail,
+      status_code = 2L,
+      mx_issue_class = "fuller_nonfinite_estimate_or_se",
+      fuller_lambda1 = lambda1_hat,
+      fuller_lambda2 = lambda2_hat,
+      fuller_sigma2 = sigma2_hat,
+      fuller_weight_min = min(w_j),
+      fuller_weight_max = max(w_j),
+      fuller_correction_c = c_correction
+    ))
+  }
+
+  tibble::tibble(
+    estimate = est,
+    se = se,
+    ci_low = est - stats::qnorm(0.975) * se,
+    ci_high = est + stats::qnorm(0.975) * se,
+    status_code = 0L,
+    mx_issue_class = "ok",
+    mx_issue_detail = "ok",
+    fuller_lambda1 = lambda1_hat,
+    fuller_lambda2 = lambda2_hat,
+    fuller_sigma2 = sigma2_hat,
+    fuller_weight_min = min(w_j),
+    fuller_weight_max = max(w_j),
+    fuller_correction_c = c_correction
+  )
+}
+
 #' Format stacked-sandwich covariance variants as estimator rows.
 #'
 #' @details
