@@ -1020,9 +1020,41 @@ fit_fuller_dual <- function(stage2_df,
   }
 
   # Scale to the one-latent-SD target used elsewhere in stage-2 summaries.
-  w_centered <- scale(cbind(u0_vec, u1_vec), center = TRUE, scale = FALSE)
-  sigma_x_hat <- (crossprod(w_centered) - matrix(c(sum(s11), sum(s12), sum(s12), sum(s22)), nrow = 2L, byrow = TRUE)) /
-    max(1, m - 1L)
+  # The Fuller estimating equations use the step-3 weights w_j, which downweight
+  # observations with large composite measurement variance. Using the same
+  # weights for the latent-SD scaling tends to be more stable than the raw
+  # unweighted corrected covariance when the supplied measurement-error
+  # variances are large.
+  # https://en.wikipedia.org/wiki/Weighted_arithmetic_mean#
+  pred_mat <- cbind(u0_vec, u1_vec)
+  w_sum <- sum(w_inv)
+  w_sq_sum <- sum(w_inv^2)
+  denom_eff <- w_sum - w_sq_sum / w_sum
+  if (!is.finite(w_sum) || !is.finite(w_sq_sum) || !is.finite(denom_eff) || denom_eff <= sqrt(.Machine$double.eps)) {
+    return(dplyr::mutate(
+      out_fail,
+      status_code = 3L,
+      mx_issue_class = "fuller_invalid_weight_sum_for_scaling",
+      fuller_lambda1 = lambda1_hat,
+      fuller_lambda2 = lambda2_hat,
+      fuller_sigma2 = sigma2_hat,
+      fuller_weight_min = min(w_j),
+      fuller_weight_max = max(w_j),
+      fuller_correction_c = c_correction
+    ))
+  }
+  pred_mean <- colSums(pred_mat * w_inv) / w_sum
+  pred_centered <- sweep(pred_mat, 2L, pred_mean, FUN = "-")
+  pred_centered_w <- pred_centered * sqrt(w_inv)
+
+  omega_x_sum_pred_w <- matrix(
+    c(sum(w_inv * s11), sum(w_inv * s12), sum(w_inv * s12), sum(w_inv * s22)),
+    nrow = 2L,
+    byrow = TRUE
+  )
+  # Use the standard effective-denominator for a weighted sample covariance so
+  # that constant weights reduce exactly to the unweighted (m - 1) denominator.
+  sigma_x_hat <- (crossprod(pred_centered_w) - omega_x_sum_pred_w) / denom_eff
   sigma_x_hat <- (sigma_x_hat + t(sigma_x_hat)) / 2
   if (!is.finite(sigma_x_hat[2, 2]) || sigma_x_hat[2, 2] <= sqrt(.Machine$double.eps)) {
     return(dplyr::mutate(
