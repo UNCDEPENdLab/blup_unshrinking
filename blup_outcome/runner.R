@@ -49,6 +49,10 @@ blup_outcome_method_labels <- function() {
     single_subject_ols_hc3 = "Single-subject OLS slope (HC3)",
     lai_2spa = "Lai 2S-PA",
     lai_2spaa = "Lai 2S-PAA",
+    fuller_blup = "Fuller BLUP outcome",
+    fuller_diag_corrected = "Fuller diagonal-only corrected outcome",
+    fuller_matrix_corrected = "Fuller full-matrix corrected outcome",
+    fuller_closed_form = "Fuller closed-form score outcome",
     closed_form_stacked_hc0 = "Closed-form score + stacked sandwich",
     closed_form_stacked_hc1 = "Closed-form score + stacked sandwich (HC1)",
     closed_form_stacked_hc2 = "Closed-form score + stacked sandwich (HC2)",
@@ -203,8 +207,11 @@ write_blup_outcome_aggregate_outputs <- function(results, out_dir, prefix = "blu
     return(invisible(list(summary = summary_df, issue_summary = issue_df)))
   }
 
+  methods <- c("oracle", "naive_blup", "matrix_corrected", "closed_form", "closed_form_stacked_hc3", "lai_2spa", "fuller_blup", 
+               "fuller_diag_corrected", "fuller_matrix_corrected", "fuller_closed_form", "direct_mlm")
+
   plot_df <- summary_df %>%
-    dplyr::filter(.data$method %in% c("oracle", "naive_blup", "matrix_corrected", "closed_form", "closed_form_stacked_hc3", "lai_2spa", "direct_mlm"))
+    dplyr::filter(.data$method %in% methods)
 
   if (nrow(plot_df) > 0L) {
     # Lines require more than one x-value within a panel/group. Points are still
@@ -285,7 +292,7 @@ blup_outcome_parallel_exports <- function() {
     "get_stage1_sandwich_inputs", "stacked_sandwich_for_corrected_scores",
     "format_stacked_sandwich_rows", "make_derivative_backend",
     "ensure_tmb_stage1_dll", "make_tmb_stage1_data", "make_tmb_stage1_object",
-    "get_tmb_stage1_hessian", "project_to_pd"
+    "get_tmb_stage1_hessian", "project_to_pd", "fit_fuller"
   )
 }
 
@@ -337,7 +344,7 @@ run_blup_outcome_condition_replications <- function(condition, n_sim, n_cores, p
       rep_id = rep_ids,
       .combine = dplyr::bind_rows,
       .inorder = FALSE,
-      .packages = c("lme4", "MASS", "dplyr", "tidyr", "purrr", "tibble", "OpenMx", "sandwich", "glmnet"),
+      .packages = c("lme4", "MASS", "dplyr", "tidyr", "purrr", "tibble", "OpenMx", "sandwich", "glmnet", "geigen"),
       .export = blup_outcome_parallel_exports()
     ) %dopar% {
       run_single_rep(rep_id)

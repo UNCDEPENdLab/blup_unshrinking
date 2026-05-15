@@ -16,6 +16,7 @@ suppressPackageStartupMessages({
   library(doParallel)
   library(OpenMx)
   library(sandwich)
+  library(geigen)
 })
 
 # Keep BLAS/OpenMP and OpenMx from introducing nested parallelism. The runner

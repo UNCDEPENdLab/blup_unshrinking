@@ -35,6 +35,7 @@ blup_outcome_methods <- function(analysis_mode = "full") {
     c(
       base_methods,
       "lai_2spa", "lai_2spaa",
+      "fuller_blup", "fuller_diag_corrected", "fuller_matrix_corrected", "fuller_closed_form",
       paste0("closed_form_stacked_hc", 0:3)
     )
   } else {
@@ -366,8 +367,8 @@ make_blup_outcome_diagnostics <- function(fit_null, stage2_df, sim) {
 #'    and single-subject OLS slopes.
 #' 4. Fit Stage 2 regressions where each recovered slope score is the outcome
 #'    and the true level-2 predictor `x` is the predictor.
-#' 5. In full mode, add Lai 2S-PA/PAA and stacked-sandwich corrected-score
-#'    variants.
+#' 5. In full mode, add Lai 2S-PA/PAA, Fuller, and stacked-sandwich corrected-
+#'    score variants.
 #' 6. Attach diagnostics and realized trial-count context to every method row.
 #'
 #' The target truth is `gamma_x_on_slope`, the population effect of the level-2
@@ -480,6 +481,46 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
         dplyr::mutate(method = "lai_2spaa") %>%
         dplyr::select("method", dplyr::everything())
     )
+    
+    stage2_df_fuller <- stage2_df %>% dplyr::mutate(zero = 0)
+    fuller_rows <- dplyr::bind_rows(
+      fit_fuller(
+        stage2_df_fuller,
+        outcome = "u1_eb",
+        predictor_u1 = "x",
+        meas22 = "zero",
+        outcome_meas_var = "postvar22"
+      ) %>%
+        dplyr::mutate(method = "fuller_blup") %>%
+        dplyr::select("method", dplyr::everything()),
+      fit_fuller(
+        stage2_df_fuller,
+        outcome = "corrected_z_diag",
+        predictor_u1 = "x",
+        meas22 = "zero",
+        outcome_meas_var = "corrected_z_diag_var"
+      ) %>%
+        dplyr::mutate(method = "fuller_diag_corrected") %>%
+        dplyr::select("method", dplyr::everything()),
+      fit_fuller(
+        stage2_df_fuller,
+        outcome = "corrected_z",
+        predictor_u1 = "x",
+        meas22 = "zero",
+        outcome_meas_var = "corrected_z_var"
+      ) %>%
+        dplyr::mutate(method = "fuller_matrix_corrected") %>%
+        dplyr::select("method", dplyr::everything()),
+      fit_fuller(
+        stage2_df_fuller,
+        outcome = "corrected_slope_full",
+        predictor_u1 = "x",
+        meas22 = "zero",
+        outcome_meas_var = "ols_var22"
+      ) %>%
+        dplyr::mutate(method = "fuller_closed_form") %>%
+        dplyr::select("method", dplyr::everything())
+    )
 
     sandwich_rows <- tryCatch({
       sandwich_out <- stacked_sandwich_for_corrected_scores(
@@ -497,7 +538,7 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
         dplyr::mutate(status_code = dplyr::if_else(is.finite(.data$estimate) & is.finite(.data$se), 0L, NA_integer_))
     }, error = function(e) empty_stacked_rows("closed_form_stacked"))
 
-    dplyr::bind_rows(lai_rows, sandwich_rows)
+    dplyr::bind_rows(lai_rows, fuller_rows, sandwich_rows)
   } else {
     tibble::tibble()
   }

@@ -706,7 +706,7 @@ fit_eiv_dual <- function(stage2_df,
   })
 }
 
-#' Fit a dual-predictor Fuller errors-in-variables (EIV) estimator.
+#' Fit a Fuller errors-in-variables (EIV) estimator.
 #'
 #' @details
 #' Implements the three-step procedure from Section \ref{sec-fuller-method} of
@@ -715,10 +715,11 @@ fit_eiv_dual <- function(stage2_df,
 #' with error.
 #'
 #' The stage-2 regression uses predictors ordered as
-#' `(intercept, predictor_u0, predictor_u1)`, where the intercept is treated as
-#' measured without error. The supplied predictor measurement-error variances
-#' and covariance (`meas11`, `meas12`, `meas22`) populate only the
-#' two-predictor block (u0/u1). Outcome measurement error is supplied via
+#' `(intercept, predictor_u0, predictor_u1)` when `predictor_u0` is supplied.
+#' If `predictor_u0` is `NULL`, the regression uses `(intercept, predictor_u1)`.
+#' The intercept is treated as measured without error. The supplied predictor
+#' measurement-error variances and covariance (`meas11`, `meas12`, `meas22`)
+#' populate only the predictor block. Outcome measurement error is supplied via
 #' `outcome_meas_var` and is assumed uncorrelated with predictor measurement
 #' error (i.e., the outcome and predictors come from separate first-stage mixed
 #' models).
@@ -731,14 +732,15 @@ fit_eiv_dual <- function(stage2_df,
 #' measurement-error covariance columns. This function assumes one row per
 #' cluster/unit contributing to the second-stage regression.
 #' @param outcome Character scalar naming the outcome column.
-#' @param predictor_u0 Character scalar naming the intercept-like observed
-#' predictor.
+#' @param predictor_u0 Optional character scalar naming the intercept-like
+#' observed predictor. If `NULL`, the model uses only `predictor_u1`.
 #' @param predictor_u1 Character scalar naming the slope-like observed
 #' predictor whose coefficient is reported.
-#' @param meas11 Character scalar naming the predictor measurement-error
-#' variance column for `predictor_u0`.
-#' @param meas12 Character scalar naming the predictor measurement-error
-#' covariance column between `predictor_u0` and `predictor_u1`.
+#' @param meas11 Optional character scalar naming the predictor measurement-error
+#' variance column for `predictor_u0`. Required when `predictor_u0` is supplied.
+#' @param meas12 Optional character scalar naming the predictor measurement-error
+#' covariance column between `predictor_u0` and `predictor_u1`. Required when
+#' `predictor_u0` is supplied.
 #' @param meas22 Character scalar naming the predictor measurement-error
 #' variance column for `predictor_u1`.
 #' @param outcome_meas_var Optional character scalar naming an outcome
@@ -753,10 +755,10 @@ fit_eiv_dual <- function(stage2_df,
 #' weights or the latent predictor variance were not admissible.
 fit_fuller_dual <- function(stage2_df,
                             outcome,
-                            predictor_u0,
+                            predictor_u0 = NULL,
                             predictor_u1,
-                            meas11,
-                            meas12,
+                            meas11 = NULL,
+                            meas12 = NULL,
                             meas22,
                             outcome_meas_var = NULL) {
   if (!requireNamespace("geigen", quietly = TRUE)) {
@@ -782,7 +784,18 @@ fit_fuller_dual <- function(stage2_df,
     fuller_correction_c = NA_real_
   )
 
-  cols_needed <- c(outcome, predictor_u0, predictor_u1, meas11, meas12, meas22)
+  has_u0 <- !is.null(predictor_u0)
+  if (has_u0 && (is.null(meas11) || is.null(meas12))) {
+    stop("`meas11` and `meas12` must be supplied when `predictor_u0` is provided.")
+  }
+  if (!has_u0 && (!is.null(meas11) || !is.null(meas12))) {
+    stop("`meas11` and `meas12` should be omitted when `predictor_u0` is NULL.")
+  }
+
+  cols_needed <- c(outcome, predictor_u1, meas22)
+  if (has_u0) {
+    cols_needed <- c(outcome, predictor_u0, predictor_u1, meas11, meas12, meas22)
+  }
   if (!is.null(outcome_meas_var)) {
     cols_needed <- c(cols_needed, outcome_meas_var)
   }
@@ -791,10 +804,10 @@ fit_fuller_dual <- function(stage2_df,
   dat <- dat[stats::complete.cases(dat), , drop = FALSE]
 
   # P counts the intercept in the second-stage regression.
-  p <- 3L
+  p <- if (has_u0) 3L else 2L
   m <- nrow(dat)
-  # EIV needs enough rows to estimate a three-parameter equation and its
-  # sandwich variance with some stability. The target predictor must also vary.
+  # EIV needs enough rows to estimate a p-parameter equation and its sandwich
+  # variance with some stability. The target predictor must also vary.
   if (m < 8L || m <= p || !is.finite(stats::sd(dat[[predictor_u1]])) ||
     stats::sd(dat[[predictor_u1]]) <= sqrt(.Machine$double.eps)) {
     return(out_fail)
@@ -802,28 +815,38 @@ fit_fuller_dual <- function(stage2_df,
 
   # Extract observed scores.
   y_vec <- dat[[outcome]]
-  u0_vec <- dat[[predictor_u0]]
   u1_vec <- dat[[predictor_u1]]
-  x_mat <- cbind(1, u0_vec, u1_vec)
+  u0_vec <- if (has_u0) dat[[predictor_u0]] else NULL
+  x_mat <- if (has_u0) cbind(1, u0_vec, u1_vec) else cbind(1, u1_vec)
 
   # Predictor measurement-error covariances; clamp variances at zero.
-  s11 <- pmax(dat[[meas11]], 0)
-  s12 <- dat[[meas12]]
-  s22 <- pmax(dat[[meas22]], 0)
+  if (has_u0) {
+    s11 <- pmax(dat[[meas11]], 0)
+    s12 <- dat[[meas12]]
+    s22 <- pmax(dat[[meas22]], 0)
+  } else {
+    s11 <- pmax(dat[[meas22]], 0)
+    s12 <- rep(0, m)
+    s22 <- rep(0, m)
+  }
 
   # y error isn't necessary but the machinery is here for the future
   omega_y <- if (!is.null(outcome_meas_var)) pmax(dat[[outcome_meas_var]], 0) else rep(0, m)
   omega_y_sum <- sum(omega_y)
 
-  omega_x_sum <- matrix(
-    c(
-      0, 0, 0,
-      0, sum(s11), sum(s12),
-      0, sum(s12), sum(s22)
-    ),
-    nrow = p,
-    byrow = TRUE
-  )
+  if (has_u0) {
+    omega_x_sum <- matrix(
+      c(
+        0, 0, 0,
+        0, sum(s11), sum(s12),
+        0, sum(s12), sum(s22)
+      ),
+      nrow = p,
+      byrow = TRUE
+    )
+  } else {
+    omega_x_sum <- matrix(c(0, 0, 0, sum(s11)), nrow = p, byrow = TRUE)
+  }
 
   # Step 1: method-of-moments estimate.
   a0_mat <- crossprod(x_mat) - omega_x_sum
@@ -836,6 +859,8 @@ fit_fuller_dual <- function(stage2_df,
       mx_issue_class = "fuller_gamma0_solve_failed"
     ))
   }
+  gamma0_u0 <- gamma0_hat[2]
+  gamma0_u1 <- if (has_u0) gamma0_hat[3] else 0
 
   # Helper: smallest finite generalized eigenvalue of (A, B) with B
   # positive-semidefinite but possibly singular.
@@ -892,9 +917,9 @@ fit_fuller_dual <- function(stage2_df,
   sigma2_ols <- sum(resid0^2) / max(1, m - p)
   sigma2_corr <- mean(
     omega_y +
-      (gamma0_hat[2]^2) * s11 +
-      2 * gamma0_hat[2] * gamma0_hat[3] * s12 +
-      (gamma0_hat[3]^2) * s22
+      (gamma0_u0^2) * s11 +
+      2 * gamma0_u0 * gamma0_u1 * s12 +
+      (gamma0_u1^2) * s22
   )
 
   sigma2_hat <- if (!is.na(lambda1_hat) && is.finite(lambda1_hat) && lambda1_hat < 1) {
@@ -913,9 +938,9 @@ fit_fuller_dual <- function(stage2_df,
   sigma2_hat <- max(0, sigma2_hat)
 
   # Step 3: weights, lambda_2, corrected S* matrix, and final gamma.
-  quad_x <- (gamma0_hat[2]^2) * s11 +
-    2 * gamma0_hat[2] * gamma0_hat[3] * s12 +
-    (gamma0_hat[3]^2) * s22
+  quad_x <- (gamma0_u0^2) * s11 +
+    2 * gamma0_u0 * gamma0_u1 * s12 +
+    (gamma0_u1^2) * s22
   w_j <- sigma2_hat + omega_y + quad_x # assume x-y error cov is zero
 
   if (any(!is.finite(w_j)) || any(w_j <= sqrt(.Machine$double.eps))) {
@@ -937,15 +962,19 @@ fit_fuller_dual <- function(stage2_df,
   w_inv <- 1 / w_j
   bw_sum <- crossprod(b_mat * sqrt(w_inv))
 
-  omega_x_sum_w <- matrix(
-    c(
-      0, 0, 0,
-      0, sum(w_inv * s11), sum(w_inv * s12),
-      0, sum(w_inv * s12), sum(w_inv * s22)
-    ),
-    nrow = p,
-    byrow = TRUE
-  )
+  if (has_u0) {
+    omega_x_sum_w <- matrix(
+      c(
+        0, 0, 0,
+        0, sum(w_inv * s11), sum(w_inv * s12),
+        0, sum(w_inv * s12), sum(w_inv * s22)
+      ),
+      nrow = p,
+      byrow = TRUE
+    )
+  } else {
+    omega_x_sum_w <- matrix(c(0, 0, 0, sum(w_inv * s11)), nrow = p, byrow = TRUE)
+  }
   omega_sum_w <- matrix(0, nrow = p + 1L, ncol = p + 1L)
   omega_sum_w[1, 1] <- sum(w_inv * omega_y)
   omega_sum_w[2:(p + 1L), 2:(p + 1L)] <- omega_x_sum_w
@@ -995,16 +1024,21 @@ fit_fuller_dual <- function(stage2_df,
   }
 
   # tilde_omega_j = omega_xyj - Omega_xj gamma0, with omega_xyj assumed 0.
-  tilde_mat <- cbind(
-    0,
-    -(s11 * gamma0_hat[2] + s12 * gamma0_hat[3]),
-    -(s12 * gamma0_hat[2] + s22 * gamma0_hat[3])
-  )
+  if (has_u0) {
+    tilde_mat <- cbind(
+      0,
+      -(s11 * gamma0_u0 + s12 * gamma0_u1),
+      -(s12 * gamma0_u0 + s22 * gamma0_u1)
+    )
+  } else {
+    tilde_mat <- cbind(0, -(s11 * gamma0_u0))
+  }
 
   meat_sum <- xw_sum + crossprod(tilde_mat * w_inv) # w_inv is actually squared here
   vcov_gamma <- (s_x_inv %*% meat_sum %*% s_x_inv) / (m^2)
   vcov_gamma <- (vcov_gamma + t(vcov_gamma)) / 2 # trick to ensure symmetry
-  var_u1 <- unname(vcov_gamma[3, 3])
+  target_gamma_idx <- p
+  var_u1 <- unname(vcov_gamma[target_gamma_idx, target_gamma_idx])
   if (!is.finite(var_u1) || var_u1 < 0) {
     return(dplyr::mutate(
       out_fail,
@@ -1026,7 +1060,7 @@ fit_fuller_dual <- function(stage2_df,
   # unweighted corrected covariance when the supplied measurement-error
   # variances are large.
   # https://en.wikipedia.org/wiki/Weighted_arithmetic_mean#
-  pred_mat <- cbind(u0_vec, u1_vec)
+  pred_mat <- if (has_u0) cbind(u0_vec, u1_vec) else matrix(u1_vec, ncol = 1L)
   w_sum <- sum(w_inv)
   w_sq_sum <- sum(w_inv^2)
   denom_eff <- w_sum - w_sq_sum / w_sum
@@ -1047,16 +1081,22 @@ fit_fuller_dual <- function(stage2_df,
   pred_centered <- sweep(pred_mat, 2L, pred_mean, FUN = "-")
   pred_centered_w <- pred_centered * sqrt(w_inv)
 
-  omega_x_sum_pred_w <- matrix(
-    c(sum(w_inv * s11), sum(w_inv * s12), sum(w_inv * s12), sum(w_inv * s22)),
-    nrow = 2L,
-    byrow = TRUE
-  )
+  if (has_u0) {
+    omega_x_sum_pred_w <- matrix(
+      c(sum(w_inv * s11), sum(w_inv * s12), sum(w_inv * s12), sum(w_inv * s22)),
+      nrow = 2L,
+      byrow = TRUE
+    )
+  } else {
+    omega_x_sum_pred_w <- matrix(sum(w_inv * s11), nrow = 1L)
+  }
   # Use the standard effective-denominator for a weighted sample covariance so
   # that constant weights reduce exactly to the unweighted (m - 1) denominator.
   sigma_x_hat <- (crossprod(pred_centered_w) - omega_x_sum_pred_w) / denom_eff
   sigma_x_hat <- (sigma_x_hat + t(sigma_x_hat)) / 2
-  if (!is.finite(sigma_x_hat[2, 2]) || sigma_x_hat[2, 2] <= sqrt(.Machine$double.eps)) {
+  target_pred_idx <- ncol(pred_mat)
+  if (!is.finite(sigma_x_hat[target_pred_idx, target_pred_idx]) ||
+    sigma_x_hat[target_pred_idx, target_pred_idx] <= sqrt(.Machine$double.eps)) {
     return(dplyr::mutate(
       out_fail,
       status_code = 3L,
@@ -1069,9 +1109,9 @@ fit_fuller_dual <- function(stage2_df,
       fuller_correction_c = c_correction
     ))
   }
-  scale_u1 <- sqrt(sigma_x_hat[2, 2])
+  scale_u1 <- sqrt(sigma_x_hat[target_pred_idx, target_pred_idx])
 
-  est <- unname(gamma_hat[3]) * scale_u1
+  est <- unname(gamma_hat[target_gamma_idx]) * scale_u1
   se <- sqrt(var_u1) * scale_u1
   if (!is.finite(est) || !is.finite(se)) {
     return(dplyr::mutate(
@@ -1103,6 +1143,9 @@ fit_fuller_dual <- function(stage2_df,
     fuller_correction_c = c_correction
   )
 }
+
+# alias
+fit_fuller <- fit_fuller_dual
 
 #' Format stacked-sandwich covariance variants as estimator rows.
 #'
