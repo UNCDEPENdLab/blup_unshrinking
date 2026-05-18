@@ -1,0 +1,836 @@
+---
+title: "Lai Study 1 Replication: Fuller, EIV, Naive Dual EB, and Lai"
+author: "Codex"
+date: "May 15, 2026"
+format:
+  html:
+    toc: true
+    code-fold: true
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+  message: false
+params:
+  output_dir: "/proj/mnhallqlab/projects/blup_unshrinking/lai_replication/lai_sim_13may2026"
+---
+
+## Purpose
+
+This report summarizes the Study 1 replication run in:
+
+`r params$output_dir`
+
+The main comparison is deliberately focused on the methods most relevant to the current question:
+
+- `fuller`, the new Fuller-style estimator;
+- dual EIV (`eiv_dual_corrected`) and its HC3 standard-error variant;
+- naive dual empirical-Bayes / BLUP regression (`naive_dual_eb`) and its HC3 standard-error variant;
+- Lai's `2S-PA` model, with `2S-PAA` retained as a secondary Lai comparator.
+
+The performance criteria are bias, RMSE, 95% interval coverage, standard-error calibration, and usable-estimate rate. The report treats singular and near-singular Stage 1 random-effect fits as part of method performance because those cases are exactly where dual predictors can become ill-conditioned.
+
+## Setup
+
+```{r setup}
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(knitr)
+library(kableExtra)
+library(scales)
+library(data.table)
+
+safe_mean <- function(x) {
+  if (length(x) == 0L || all(is.na(x))) {
+    return(NA_real_)
+  }
+  mean(x, na.rm = TRUE)
+}
+
+safe_sd <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) < 2L) {
+    return(NA_real_)
+  }
+  stats::sd(x)
+}
+
+safe_median <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0L) {
+    return(NA_real_)
+  }
+  stats::median(x)
+}
+
+fmt_num <- function(x, digits = 3) {
+  ifelse(is.na(x), NA_character_, formatC(x, digits = digits, format = "f"))
+}
+
+fmt_sci <- function(x, digits = 2) {
+  ifelse(is.na(x), NA_character_, formatC(x, digits = digits, format = "e"))
+}
+
+fmt_mixed <- function(x, digits = 3, sci_cut = 1000) {
+  ifelse(
+    is.na(x),
+    NA_character_,
+    ifelse(abs(x) >= sci_cut, fmt_sci(x, 2), fmt_num(x, digits))
+  )
+}
+
+fmt_pct <- function(x, accuracy = 0.1) {
+  ifelse(is.na(x), NA_character_, scales::percent(x, accuracy = accuracy))
+}
+
+resolve_run_dir <- function(path) {
+  if (grepl("^/", path)) {
+    normalizePath(path, mustWork = FALSE)
+  } else {
+    normalizePath(file.path(getwd(), path), mustWork = FALSE)
+  }
+}
+
+read_selected <- function(path, select) {
+  available <- names(data.table::fread(path, nrows = 0L, showProgress = FALSE))
+  data.table::fread(path, select = intersect(select, available), showProgress = FALSE)
+}
+
+coerce_common_types <- function(df) {
+  numeric_cols <- intersect(
+    c(
+      "estimate", "se", "ci_low", "ci_high", "truth",
+      "convergence", "bias", "coverage", "rmse", "mean_estimate",
+      "mx_condition_number", "eiv_measurement_weight_requested",
+      "eiv_measurement_weight_used", "eiv_latent_cov_min_eigen",
+      "eiv_latent_cov_condition_number", "fuller_lambda1",
+      "fuller_lambda2", "fuller_sigma2", "fuller_weight_min",
+      "fuller_weight_max", "fuller_correction_c",
+      "stage1_re_corr", "stage1_eb_corr", "stage1_design_kappa",
+      "mean_stage1_re_corr", "mean_stage1_eb_corr",
+      "mean_stage1_design_kappa", "icc", "vr_u1_u0", "cor_u0_u1",
+      "beta_zu1", "sigma2", "var_u1", "sigma_z"
+    ),
+    names(df)
+  )
+  integer_cols <- intersect(
+    c("condition_id", "rep", "num_clus", "clus_size", "status_code", "n_rep", "n_success"),
+    names(df)
+  )
+  logical_cols <- intersect(
+    c("stage1_singular_problem", "stage1_lmer_singular", "mx_info_definite", "eiv_regularized"),
+    names(df)
+  )
+
+  if (length(numeric_cols) > 0L) {
+    df <- df %>% mutate(across(all_of(numeric_cols), ~ suppressWarnings(as.numeric(.x))))
+  }
+  if (length(integer_cols) > 0L) {
+    df <- df %>% mutate(across(all_of(integer_cols), ~ suppressWarnings(as.integer(.x))))
+  }
+  if (length(logical_cols) > 0L) {
+    df <- df %>% mutate(across(all_of(logical_cols), as.logical))
+  }
+  tibble::as_tibble(df)
+}
+
+metric_summary <- function(df, group_vars = character()) {
+  df %>%
+    mutate(
+      success = !is.na(estimate),
+      covered = ifelse(!is.na(ci_low) & !is.na(ci_high) & !is.na(truth), ci_low <= truth & ci_high >= truth, NA),
+      bias = estimate - truth,
+      sq_error = bias^2
+    ) %>%
+    group_by(across(all_of(group_vars))) %>%
+    summarise(
+      Replications = n(),
+      Conditions = n_distinct(condition_id),
+      Success_Rate = safe_mean(success),
+      Mean_Bias = safe_mean(bias),
+      Median_Bias = safe_median(bias),
+      RMSE = if (all(is.na(sq_error))) NA_real_ else sqrt(mean(sq_error, na.rm = TRUE)),
+      Coverage = safe_mean(covered),
+      Mean_SE = safe_mean(se),
+      Empirical_SD = safe_sd(estimate),
+      SE_to_SD = Mean_SE / Empirical_SD,
+      .groups = "drop"
+    )
+}
+
+format_metric_table <- function(df) {
+  df %>%
+    mutate(
+      Success_Rate = fmt_pct(Success_Rate),
+      Mean_Bias = fmt_mixed(Mean_Bias),
+      Median_Bias = fmt_mixed(Median_Bias),
+      RMSE = fmt_mixed(RMSE),
+      Coverage = fmt_pct(Coverage),
+      Mean_SE = fmt_mixed(Mean_SE),
+      Empirical_SD = fmt_mixed(Empirical_SD),
+      SE_to_SD = fmt_num(SE_to_SD, 2)
+    )
+}
+
+metric_value <- function(tbl, method_name, metric) {
+  out <- tbl %>%
+    filter(method == method_name) %>%
+    pull({{ metric }})
+  if (length(out) == 0L) NA_real_ else out[[1]]
+}
+
+stage1_metric_value <- function(tbl, method_name, stratum_name, metric) {
+  out <- tbl %>%
+    filter(method == method_name, stage1_stratum == stratum_name) %>%
+    pull({{ metric }})
+  if (length(out) == 0L) NA_real_ else out[[1]]
+}
+
+run_dir <- resolve_run_dir(params$output_dir)
+summary_path <- file.path(run_dir, "lai_apples_to_apples_summary.csv")
+stage1_path <- file.path(run_dir, "lai_apples_to_apples_stage1_problem_summary.csv")
+replication_path <- file.path(run_dir, "lai_apples_to_apples_replication_results.csv.gz")
+
+if (!file.exists(summary_path)) {
+  stop("Missing summary file: ", summary_path, call. = FALSE)
+}
+if (!file.exists(stage1_path)) {
+  stop("Missing Stage 1 summary file: ", stage1_path, call. = FALSE)
+}
+if (!file.exists(replication_path)) {
+  stop("Missing replication file: ", replication_path, call. = FALSE)
+}
+
+summary_df <- coerce_common_types(data.table::fread(summary_path, showProgress = FALSE)) %>%
+  filter(study == "study1")
+
+stage1_df <- coerce_common_types(data.table::fread(stage1_path, showProgress = FALSE)) %>%
+  filter(study == "study1")
+
+replication_select <- c(
+  "method", "estimate", "se", "ci_low", "ci_high", "status_code", "se_type",
+  "mx_issue_class", "eiv_measurement_weight_used", "eiv_regularized",
+  "eiv_latent_cov_min_eigen", "eiv_latent_cov_condition_number",
+  "fuller_lambda1", "fuller_lambda2", "fuller_sigma2", "fuller_weight_min",
+  "fuller_weight_max", "fuller_correction_c", "stage1_singular_problem",
+  "stage1_lmer_singular", "stage1_re_corr", "stage1_eb_corr",
+  "stage1_design_kappa", "study", "truth", "num_clus", "clus_size", "icc",
+  "vr_u1_u0", "cor_u0_u1", "beta_zu1", "condition_id", "rep"
+)
+
+replication_df <- read_selected(replication_path, replication_select) %>%
+  coerce_common_types() %>%
+  filter(study == "study1")
+
+method_labels <- c(
+  oracle_dual = "Oracle dual",
+  naive_slope_only = "Naive BLUP slope only",
+  naive_slope_only_hc3 = "Naive BLUP slope only + HC3 SE",
+  centered_slope_only = "Centered BLUP slope only",
+  centered_slope_only_hc3 = "Centered BLUP slope only + HC3 SE",
+  naive_dual_eb = "Naive dual BLUP OLS",
+  naive_dual_eb_hc3 = "Naive dual BLUP OLS + HC3 SE",
+  ridge_dual_eb = "Ridge dual BLUP",
+  corrected_slope_only = "Corrected slope only",
+  corrected_slope_only_hc3 = "Corrected slope only + HC3 SE",
+  corrected_dual = "Corrected dual",
+  corrected_dual_hc3 = "Corrected dual + HC3 SE",
+  eiv_dual_corrected = "Dual EIV",
+  eiv_dual_corrected_hc0 = "Dual EIV + HC0 SE",
+  eiv_dual_corrected_hc3 = "Dual EIV + HC3 SE",
+  eiv_dual_corrected_nearpd = "Dual EIV + near-PD",
+  eiv_dual_corrected_nearpd_hc0 = "Dual EIV + near-PD + HC0 SE",
+  eiv_dual_corrected_nearpd_hc3 = "Dual EIV + near-PD + HC3 SE",
+  eiv_dual_corrected_ridge = "Dual EIV + ridge",
+  eiv_dual_corrected_ridge_hc0 = "Dual EIV + ridge + HC0 SE",
+  eiv_dual_corrected_ridge_hc3 = "Dual EIV + ridge + HC3 SE",
+  fuller = "Fuller",
+  lai_2spa = "Lai 2S-PA",
+  lai_2spaa = "Lai 2S-PAA"
+)
+
+method_order <- unname(method_labels)
+label_method <- function(x) {
+  out <- unname(method_labels[x])
+  ifelse(is.na(out), x, out)
+}
+
+focus_methods <- c(
+  "fuller",
+  "eiv_dual_corrected",
+  "eiv_dual_corrected_hc3",
+  "naive_dual_eb",
+  "naive_dual_eb_hc3",
+  "lai_2spa",
+  "lai_2spaa"
+)
+
+primary_methods <- c(
+  "fuller",
+  "eiv_dual_corrected_hc3",
+  "naive_dual_eb_hc3",
+  "lai_2spa"
+)
+
+summary_df <- summary_df %>%
+  mutate(method_label = factor(label_method(method), levels = method_order))
+
+stage1_df <- stage1_df %>%
+  mutate(
+    method_label = factor(label_method(method), levels = method_order),
+    stage1_stratum = ifelse(stage1_singular_problem, "Stage 1 singular", "Stage 1 regular")
+  )
+
+replication_df <- replication_df %>%
+  mutate(
+    method_label = factor(label_method(method), levels = method_order),
+    stage1_stratum = ifelse(stage1_singular_problem, "Stage 1 singular", "Stage 1 regular")
+  )
+
+study1_completed_conditions <- n_distinct(summary_df$condition_id)
+study1_total_replications <- n_distinct(paste(replication_df$condition_id, replication_df$rep, sep = ":"))
+stage1_singular_rate <- replication_df %>%
+  filter(method == "fuller") %>%
+  summarise(rate = safe_mean(stage1_singular_problem)) %>%
+  pull(rate)
+
+focus_overall_raw <- replication_df %>%
+  filter(method %in% focus_methods) %>%
+  metric_summary("method_label") %>%
+  left_join(tibble(method = names(method_labels), method_label = factor(method_order, levels = method_order)), by = "method_label")
+
+focus_by_stage1_raw <- replication_df %>%
+  filter(method %in% focus_methods) %>%
+  metric_summary(c("method_label", "stage1_stratum")) %>%
+  left_join(tibble(method = names(method_labels), method_label = factor(method_order, levels = method_order)), by = "method_label")
+
+primary_converged_keys <- replication_df %>%
+  filter(method %in% primary_methods) %>%
+  group_by(condition_id, rep) %>%
+  summarise(
+    n_primary_methods = n_distinct(method),
+    all_primary_converged = all(!is.na(estimate)),
+    stage1_singular_problem = any(stage1_singular_problem),
+    .groups = "drop"
+  ) %>%
+  filter(n_primary_methods == length(primary_methods), all_primary_converged) %>%
+  select(condition_id, rep, stage1_singular_problem)
+
+primary_converged_rate <- nrow(primary_converged_keys) / study1_total_replications
+
+primary_converged_raw <- replication_df %>%
+  semi_join(primary_converged_keys, by = c("condition_id", "rep")) %>%
+  filter(method %in% primary_methods) %>%
+  metric_summary("method_label") %>%
+  left_join(tibble(method = names(method_labels), method_label = factor(method_order, levels = method_order)), by = "method_label")
+
+fuller_success <- metric_value(focus_overall_raw, "fuller", Success_Rate)
+lai_success <- metric_value(focus_overall_raw, "lai_2spa", Success_Rate)
+lai_singular_success <- stage1_metric_value(focus_by_stage1_raw, "lai_2spa", "Stage 1 singular", Success_Rate)
+fuller_singular_success <- stage1_metric_value(focus_by_stage1_raw, "fuller", "Stage 1 singular", Success_Rate)
+fuller_singular_rmse <- stage1_metric_value(focus_by_stage1_raw, "fuller", "Stage 1 singular", RMSE)
+fuller_regular_rmse <- stage1_metric_value(focus_by_stage1_raw, "fuller", "Stage 1 regular", RMSE)
+naive_singular_rmse <- stage1_metric_value(focus_by_stage1_raw, "naive_dual_eb_hc3", "Stage 1 singular", RMSE)
+eiv_singular_rmse <- stage1_metric_value(focus_by_stage1_raw, "eiv_dual_corrected_hc3", "Stage 1 singular", RMSE)
+shared_fuller_rmse <- metric_value(primary_converged_raw, "fuller", RMSE)
+shared_fuller_coverage <- metric_value(primary_converged_raw, "fuller", Coverage)
+shared_fuller_mean_se <- metric_value(primary_converged_raw, "fuller", Mean_SE)
+shared_lai_rmse <- metric_value(primary_converged_raw, "lai_2spa", RMSE)
+shared_lai_coverage <- metric_value(primary_converged_raw, "lai_2spa", Coverage)
+shared_lai_mean_se <- metric_value(primary_converged_raw, "lai_2spa", Mean_SE)
+shared_eiv_hc3_rmse <- metric_value(primary_converged_raw, "eiv_dual_corrected_hc3", RMSE)
+shared_eiv_hc3_coverage <- metric_value(primary_converged_raw, "eiv_dual_corrected_hc3", Coverage)
+shared_eiv_hc3_mean_se <- metric_value(primary_converged_raw, "eiv_dual_corrected_hc3", Mean_SE)
+shared_naive_hc3_rmse <- metric_value(primary_converged_raw, "naive_dual_eb_hc3", RMSE)
+shared_naive_hc3_coverage <- metric_value(primary_converged_raw, "naive_dual_eb_hc3", Coverage)
+shared_naive_hc3_mean_se <- metric_value(primary_converged_raw, "naive_dual_eb_hc3", Mean_SE)
+```
+
+The May 13 run contains `r study1_completed_conditions` Study 1 conditions and `r format(study1_total_replications, big.mark = ",")` condition-replication pairs. Across the run, `r fmt_pct(stage1_singular_rate)` of Stage 1 fits were flagged as singular or near-singular.
+
+## Key Findings
+
+Convergence and accuracy answer different questions in this run. Fuller returns usable estimates in `r fmt_pct(fuller_success)` of replications, compared with `r fmt_pct(lai_success)` for Lai 2S-PA, so Fuller is more robust as an estimator over the full grid. Bias, RMSE, standard errors, and coverage should be compared on a shared converged subset: the primary comparators all converged in `r fmt_pct(primary_converged_rate)` of condition-replications.
+
+Within that shared converged subset, Fuller is the strongest focal method on point estimation: its RMSE is `r fmt_mixed(shared_fuller_rmse)`, compared with `r fmt_mixed(shared_lai_rmse)` for Lai 2S-PA. Its coverage is `r fmt_pct(shared_fuller_coverage)`, slightly above Lai's `r fmt_pct(shared_lai_coverage)`, with mean SE `r fmt_mixed(shared_fuller_mean_se)` versus `r fmt_mixed(shared_lai_mean_se)` for Lai. Dual EIV + HC3 and naive dual BLUP OLS + HC3 have larger shared-subset RMSEs (`r fmt_mixed(shared_eiv_hc3_rmse)` and `r fmt_mixed(shared_naive_hc3_rmse)`), so their convergence does not by itself imply competitive accuracy.
+
+The singular and near-singular Stage 1 cases are interpreted separately as robustness failures, not as ordinary accuracy comparisons. Fuller keeps `r fmt_pct(fuller_singular_success)` success in the singular stratum, whereas Lai 2S-PA keeps only `r fmt_pct(lai_singular_success)`. When singular cases are retained, naive dual BLUP OLS + HC3 and dual EIV + HC3 show very large singular-stratum RMSEs (`r fmt_mixed(naive_singular_rmse)` and `r fmt_mixed(eiv_singular_rmse)`), which is why their singular behavior is treated as a stability problem rather than as a fair converged-model comparison.
+
+## Focal Overall Results
+
+```{r focal-overall-table}
+focus_overall_tbl <- focus_overall_raw %>%
+  select(method_label, Replications, Conditions, Success_Rate, Mean_Bias, Median_Bias, RMSE, Coverage, Mean_SE, Empirical_SD, SE_to_SD) %>%
+  format_metric_table()
+
+kable(
+  focus_overall_tbl,
+  col.names = c(
+    "Method", "Rows", "Conditions", "Success Rate", "Mean Bias",
+    "Median Bias", "RMSE", "Coverage", "Mean SE", "Empirical SD", "SE / SD"
+  ),
+  align = "lrrrrrrrrrr"
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+The full-grid table is primarily a convergence and robustness summary. The success-rate column should be read as a first-class performance metric: a method with good coverage only after many difficult replications are dropped is not operationally equivalent to a method that returns usable estimates across the full grid.
+
+The bias, RMSE, standard-error, and coverage columns in this full-grid table are descriptive, but they are not the main basis for accuracy comparisons because methods contribute different sets of successful replications. Those comparisons are made below in the shared primary-converged subset, where Fuller, dual EIV + HC3, naive dual BLUP OLS + HC3, and Lai 2S-PA all returned usable estimates for the same condition-replications.
+
+## Stage 1 Regular Versus Singular Fits
+
+```{r focal-stage1-table}
+focus_by_stage1_tbl <- focus_by_stage1_raw %>%
+  arrange(method_label, stage1_stratum) %>%
+  select(method_label, stage1_stratum, Replications, Conditions, Success_Rate, Mean_Bias, Median_Bias, RMSE, Coverage, Mean_SE, Empirical_SD, SE_to_SD) %>%
+  format_metric_table()
+
+kable(
+  focus_by_stage1_tbl,
+  col.names = c(
+    "Method", "Stage 1 Stratum", "Rows", "Conditions", "Success Rate",
+    "Mean Bias", "Median Bias", "RMSE", "Coverage", "Mean SE",
+    "Empirical SD", "SE / SD"
+  ),
+  align = "llrrrrrrrrrr"
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+This split is the main robustness diagnostic, not the main accuracy comparison. Lai can be judged by conditional performance where the SEM returns a usable solution, but the singular stratum shows how much of the design the method effectively refuses. Naive dual BLUP OLS is vulnerable because singular Stage 1 fits can make the EB intercept and slope nearly collinear. HC3 changes the interval calculation for the same point estimates; it does not fix a rank-deficient predictor pair.
+
+```{r stage1-performance-plot, fig.height=7, fig.width=10}
+stage1_plot <- focus_by_stage1_raw %>%
+  filter(method %in% primary_methods) %>%
+  select(method_label, stage1_stratum, Success_Rate, RMSE, Coverage, Mean_SE) %>%
+  pivot_longer(cols = c(Success_Rate, RMSE, Coverage, Mean_SE), names_to = "metric", values_to = "value") %>%
+  mutate(
+    metric = factor(
+      metric,
+      levels = c("Success_Rate", "RMSE", "Coverage", "Mean_SE"),
+      labels = c("Success rate", "RMSE", "Coverage", "Mean SE")
+    )
+  )
+
+ggplot(stage1_plot, aes(x = method_label, y = value, fill = stage1_stratum)) +
+  geom_col(position = position_dodge(width = 0.78), width = 0.68) +
+  geom_hline(
+    data = tibble(metric = factor("Coverage", levels = levels(stage1_plot$metric)), yint = 0.95),
+    aes(yintercept = yint),
+    inherit.aes = FALSE,
+    color = "#555555",
+    linetype = "dashed",
+    linewidth = 0.35
+  ) +
+  facet_wrap(~ metric, scales = "free_y", ncol = 1) +
+  scale_y_continuous(trans = scales::pseudo_log_trans(sigma = 0.01)) +
+  scale_fill_manual(values = c("Stage 1 regular" = "#4e79a7", "Stage 1 singular" = "#c44e52")) +
+  labs(
+    title = "Focal Method Performance by Stage 1 Singularity",
+    x = NULL,
+    y = NULL,
+    fill = NULL
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(axis.text.x = element_text(angle = 25, hjust = 1))
+```
+
+## Convergence and Failure Patterns
+
+```{r failure-condition-table}
+failure_focus <- replication_df %>%
+  filter(method %in% focus_methods) %>%
+  mutate(
+    failure = is.na(estimate),
+    failure_class = case_when(
+      !failure ~ "ok",
+      method %in% c("lai_2spa", "lai_2spaa") & !is.na(mx_issue_class) ~ as.character(mx_issue_class),
+      method %in% c("lai_2spa", "lai_2spaa") ~ "other_lai_failure",
+      method %in% c("naive_dual_eb", "naive_dual_eb_hc3") & stage1_singular_problem ~ "stage1_singular_dual_blup",
+      method %in% c("eiv_dual_corrected", "eiv_dual_corrected_hc3") & eiv_regularized %in% TRUE ~ "eiv_regularized",
+      TRUE ~ "other_failure"
+    )
+  )
+
+failure_condition_tbl <- failure_focus %>%
+  group_by(method_label, condition_id) %>%
+  summarise(
+    failure_rate = safe_mean(failure),
+    any_failure = any(failure),
+    .groups = "drop"
+  ) %>%
+  group_by(method_label) %>%
+  summarise(
+    Conditions = n(),
+    Mean_Failure_Rate = safe_mean(failure_rate),
+    Median_Failure_Rate = safe_median(failure_rate),
+    P90_Failure_Rate = unname(stats::quantile(failure_rate, probs = 0.9, na.rm = TRUE)),
+    Max_Failure_Rate = max(failure_rate, na.rm = TRUE),
+    Conditions_With_Any_Failure = safe_mean(any_failure),
+    Conditions_Over_10pct_Failure = safe_mean(failure_rate > 0.10),
+    Conditions_Over_50pct_Failure = safe_mean(failure_rate > 0.50),
+    .groups = "drop"
+  ) %>%
+  mutate(across(ends_with("Rate") | starts_with("Conditions_With") | starts_with("Conditions_Over"), ~ fmt_pct(.x))) %>%
+  arrange(method_label)
+
+kable(
+  failure_condition_tbl,
+  col.names = c(
+    "Method", "Conditions", "Mean Failure Rate", "Median Failure Rate",
+    "90th pct Failure Rate", "Max Failure Rate", "Conditions with Any Failure",
+    "Conditions > 10% Failure", "Conditions > 50% Failure"
+  ),
+  align = "lrrrrrrrr"
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+```{r failure-class-table}
+failure_issue_tbl <- failure_focus %>%
+  filter(failure) %>%
+  group_by(method_label, failure_class) %>%
+  summarise(Failed_Reps = n(), .groups = "drop") %>%
+  group_by(method_label) %>%
+  mutate(Share_Of_Method_Failures = Failed_Reps / sum(Failed_Reps)) %>%
+  ungroup() %>%
+  arrange(method_label, desc(Failed_Reps)) %>%
+  mutate(Share_Of_Method_Failures = fmt_pct(Share_Of_Method_Failures))
+
+kable(
+  failure_issue_tbl,
+  col.names = c("Method", "Failure Type", "Failed Replications", "Share of Method Failures"),
+  align = "llrr"
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+```{r failure-heatmap, fig.height=9, fig.width=11}
+failure_design <- failure_focus %>%
+  group_by(method_label, num_clus, clus_size, icc) %>%
+  summarise(Failure_Rate = safe_mean(failure), .groups = "drop") %>%
+  mutate(clus_size = factor(clus_size), icc = factor(icc))
+
+ggplot(failure_design, aes(x = clus_size, y = icc, fill = Failure_Rate)) +
+  geom_tile(color = "white") +
+  facet_grid(method_label ~ num_clus, labeller = label_both) +
+  scale_fill_gradient(low = "#eef3f7", high = "#b33a3a", labels = percent_format(accuracy = 1), limits = c(0, 1)) +
+  labs(
+    title = "Usable-Estimate Failure Rate by Design Cell",
+    subtitle = "Averaged over all Study 1 conditions sharing the displayed cluster count, cluster size, and ICC.",
+    x = "Cluster size",
+    y = "ICC",
+    fill = "Failure rate"
+  ) +
+  theme_minimal(base_size = 10)
+```
+
+The failure heatmap separates robustness from conditional inference. Fuller and EIV-style algebraic estimators can return estimates in cases where Lai fails, but accuracy comparisons should not mix those retained difficult cases with the subset where all focal models converged.
+
+## Bias, RMSE, SE, and Coverage by Design
+
+This design-cell view is restricted to non-singular Stage 1 replications where all primary comparators converged. It therefore compares bias, RMSE, standard errors, and coverage on the same replications for Fuller, dual EIV + HC3, naive dual BLUP OLS + HC3, and Lai 2S-PA.
+
+```{r design-metric-plot, fig.height=10, fig.width=12}
+design_keys <- primary_converged_keys %>%
+  filter(stage1_singular_problem %in% FALSE) %>%
+  select(condition_id, rep)
+
+design_metric_plot <- replication_df %>%
+  filter(method %in% primary_methods) %>%
+  semi_join(design_keys, by = c("condition_id", "rep")) %>%
+  metric_summary(c("method_label", "num_clus", "clus_size", "icc")) %>%
+  select(method_label, num_clus, clus_size, icc, Success_Rate, Mean_Bias, RMSE, Coverage, Mean_SE) %>%
+  pivot_longer(cols = c(Success_Rate, Mean_Bias, RMSE, Coverage, Mean_SE), names_to = "metric", values_to = "value") %>%
+  mutate(
+    metric = factor(
+      metric,
+      levels = c("Success_Rate", "Mean_Bias", "RMSE", "Coverage", "Mean_SE"),
+      labels = c("Success rate", "Mean bias", "RMSE", "Coverage", "Mean SE")
+    ),
+    clus_size = factor(clus_size),
+    icc = factor(icc)
+  )
+
+ggplot(design_metric_plot, aes(x = clus_size, y = value, color = icc, group = icc)) +
+  geom_hline(
+    data = tibble(metric = factor("Coverage", levels = levels(design_metric_plot$metric)), yint = 0.95),
+    aes(yintercept = yint),
+    inherit.aes = FALSE,
+    color = "#555555",
+    linetype = "dashed",
+    linewidth = 0.35
+  ) +
+  geom_line(linewidth = 0.55, alpha = 0.85) +
+  geom_point(size = 1.6) +
+  facet_grid(metric ~ method_label + num_clus, scales = "free_y", labeller = label_both) +
+  scale_y_continuous(trans = scales::pseudo_log_trans(sigma = 0.01)) +
+  scale_color_brewer(palette = "Dark2") +
+  labs(
+    title = "Design-Cell Performance in Shared Converged, Non-Singular Replications",
+    subtitle = "Restricted to non-singular replications where all primary comparators converged. Dashed line marks 95% coverage.",
+    x = "Cluster size",
+    y = NULL,
+    color = "ICC"
+  ) +
+  theme_minimal(base_size = 8) +
+  theme(
+    strip.text = element_text(size = 7),
+    panel.spacing = unit(0.45, "lines")
+  )
+```
+
+## HC3 Standard-Error Effects
+
+HC3 variants use the same point estimates as their base estimators but change the standard-error and confidence-interval calculation. This section isolates whether HC3 helps inference for naive dual EB and EIV within the shared primary-converged subset, so coverage and SE comparisons are not driven by different convergence sets.
+
+```{r hc3-comparison-table}
+hc3_pairs <- tibble::tribble(
+  ~base_method, ~hc3_method, ~family_label,
+  "naive_dual_eb", "naive_dual_eb_hc3", "Naive dual BLUP OLS",
+  "eiv_dual_corrected", "eiv_dual_corrected_hc3", "Dual EIV"
+)
+
+hc3_replication_focus <- replication_df %>%
+  filter(method %in% c(hc3_pairs$base_method, hc3_pairs$hc3_method)) %>%
+  semi_join(primary_converged_keys, by = c("condition_id", "rep")) %>%
+  mutate(
+    covered = ifelse(!is.na(ci_low) & !is.na(ci_high), ci_low <= truth & ci_high >= truth, NA),
+    se_variant = ifelse(grepl("_hc3$", method), "hc3", "base")
+  ) %>%
+  left_join(
+    hc3_pairs %>%
+      tidyr::pivot_longer(cols = c(base_method, hc3_method), values_to = "method") %>%
+      select(-name),
+    by = "method"
+  )
+
+hc3_compare_tbl <- hc3_replication_focus %>%
+  group_by(family_label, stage1_stratum, se_variant) %>%
+  summarise(
+    Coverage = safe_mean(covered),
+    Mean_SE = safe_mean(se),
+    Empirical_SD = safe_sd(estimate),
+    SE_to_SD = Mean_SE / Empirical_SD,
+    .groups = "drop"
+  ) %>%
+  tidyr::pivot_wider(names_from = se_variant, values_from = c(Coverage, Mean_SE, SE_to_SD)) %>%
+  mutate(
+    `Base Coverage` = fmt_pct(Coverage_base),
+    `HC3 Coverage` = fmt_pct(Coverage_hc3),
+    `Coverage Gap` = fmt_pct(Coverage_hc3 - Coverage_base),
+    `Base Mean SE` = fmt_mixed(Mean_SE_base),
+    `HC3 Mean SE` = fmt_mixed(Mean_SE_hc3),
+    `Base SE / SD` = fmt_num(SE_to_SD_base, 2),
+    `HC3 SE / SD` = fmt_num(SE_to_SD_hc3, 2)
+  ) %>%
+  select(family_label, stage1_stratum, `Base Coverage`, `HC3 Coverage`, `Coverage Gap`, `Base Mean SE`, `HC3 Mean SE`, `Base SE / SD`, `HC3 SE / SD`)
+
+kable(
+  hc3_compare_tbl,
+  col.names = c(
+    "Method Family", "Stage 1 Stratum", "Base Coverage", "HC3 Coverage",
+    "Coverage Gap", "Base Mean SE", "HC3 Mean SE", "Base SE / SD", "HC3 SE / SD"
+  ),
+  align = "llrrrrrrr"
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+```{r hc3-coverage-gap-plot, fig.height=4.8, fig.width=8}
+hc3_gap_plot <- hc3_compare_tbl %>%
+  transmute(
+    family_label,
+    stage1_stratum,
+    coverage_gap = suppressWarnings(as.numeric(sub("%$", "", `Coverage Gap`)) / 100)
+  )
+
+ggplot(hc3_gap_plot, aes(x = family_label, y = coverage_gap, fill = stage1_stratum)) +
+  geom_col(position = position_dodge(width = 0.75), width = 0.65) +
+  geom_hline(yintercept = 0, color = "#555555", linewidth = 0.35) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
+  scale_fill_manual(values = c("Stage 1 regular" = "#4e79a7", "Stage 1 singular" = "#c44e52")) +
+  labs(
+    title = "Coverage Change from HC3 Standard Errors",
+    x = NULL,
+    y = "Coverage gap (HC3 - base)",
+    fill = NULL
+  ) +
+  theme_minimal(base_size = 11)
+```
+
+## Fuller Diagnostics
+
+The Fuller estimator adds method-specific diagnostics that are useful for understanding when it is behaving like a stable correction versus when it is being driven by the same low-information geometry that challenges Lai and EIV.
+
+```{r fuller-diagnostics-table}
+fuller_diag_tbl <- replication_df %>%
+  filter(method == "fuller") %>%
+  group_by(stage1_stratum) %>%
+  summarise(
+    Replications = n(),
+    Success_Rate = safe_mean(!is.na(estimate)),
+    Mean_Lambda1 = safe_mean(fuller_lambda1),
+    Mean_Lambda2 = safe_mean(fuller_lambda2),
+    Mean_Sigma2 = safe_mean(fuller_sigma2),
+    Mean_Weight_Min = safe_mean(fuller_weight_min),
+    Mean_Weight_Max = safe_mean(fuller_weight_max),
+    Mean_Correction_C = safe_mean(fuller_correction_c),
+    Median_Design_Kappa = safe_median(stage1_design_kappa),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Success_Rate = fmt_pct(Success_Rate),
+    across(
+      c(Mean_Lambda1, Mean_Lambda2, Mean_Sigma2, Mean_Weight_Min, Mean_Weight_Max, Mean_Correction_C, Median_Design_Kappa),
+      ~ fmt_mixed(.x)
+    )
+  )
+
+kable(
+  fuller_diag_tbl,
+  col.names = c(
+    "Stage 1 Stratum", "Replications", "Success Rate", "Mean lambda1",
+    "Mean lambda2", "Mean sigma2", "Mean min weight", "Mean max weight",
+    "Mean correction c", "Median design kappa"
+  ),
+  align = "lrrrrrrrrr"
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+```{r fuller-kappa-plot, fig.height=5, fig.width=8}
+fuller_kappa_plot <- replication_df %>%
+  filter(method == "fuller", !is.na(estimate), is.finite(stage1_design_kappa)) %>%
+  mutate(
+    abs_error = abs(estimate - truth),
+    log10_kappa = log10(pmax(stage1_design_kappa, 1)),
+    kappa_bin = cut(
+      log10_kappa,
+      breaks = seq(floor(min(log10_kappa, na.rm = TRUE)), ceiling(max(log10_kappa, na.rm = TRUE)), length.out = 36),
+      include.lowest = TRUE
+    )
+  ) %>%
+  group_by(stage1_stratum, kappa_bin) %>%
+  summarise(
+    log10_kappa = safe_mean(log10_kappa),
+    Median_Abs_Error = safe_median(abs_error),
+    P25_Abs_Error = unname(stats::quantile(abs_error, probs = 0.25, na.rm = TRUE)),
+    P75_Abs_Error = unname(stats::quantile(abs_error, probs = 0.75, na.rm = TRUE)),
+    Replications = n(),
+    .groups = "drop"
+  )
+
+ggplot(fuller_kappa_plot, aes(x = log10_kappa, y = Median_Abs_Error, color = stage1_stratum, fill = stage1_stratum)) +
+  geom_ribbon(aes(ymin = P25_Abs_Error, ymax = P75_Abs_Error), alpha = 0.16, color = NA) +
+  geom_line(linewidth = 0.8) +
+  geom_point(aes(size = Replications), alpha = 0.75) +
+  scale_y_continuous(trans = scales::pseudo_log_trans(sigma = 0.01)) +
+  scale_color_manual(values = c("Stage 1 regular" = "#4e79a7", "Stage 1 singular" = "#c44e52")) +
+  scale_fill_manual(values = c("Stage 1 regular" = "#4e79a7", "Stage 1 singular" = "#c44e52")) +
+  scale_size_continuous(range = c(0.8, 2.4), guide = "none") +
+  labs(
+    title = "Fuller Absolute Error as Stage 1 Design Conditioning Worsens",
+    subtitle = "Points show median absolute error within log-condition-number bins; bands show the interquartile range.",
+    x = "log10(Stage 1 dual-BLUP design condition number)",
+    y = "Absolute error",
+    color = NULL
+  ) +
+  guides(fill = "none") +
+  theme_minimal(base_size = 11)
+```
+
+## Shared Primary-Converged Subset
+
+Convergence differences create survivorship bias. To compare bias, RMSE, standard errors, and coverage on the same replications, the next table restricts the primary comparators to condition-replication pairs where all primary methods returned usable estimates: Fuller, dual EIV + HC3, naive dual BLUP OLS + HC3, and Lai 2S-PA.
+
+```{r primary-converged-subset}
+primary_converged_subset_tbl <- replication_df %>%
+  semi_join(primary_converged_keys, by = c("condition_id", "rep")) %>%
+  filter(method %in% primary_methods) %>%
+  metric_summary("method_label") %>%
+  arrange(method_label) %>%
+  select(method_label, Replications, Conditions, Success_Rate, Mean_Bias, Median_Bias, RMSE, Coverage, Mean_SE, Empirical_SD, SE_to_SD) %>%
+  format_metric_table()
+
+kable(
+  primary_converged_subset_tbl,
+  col.names = c(
+    "Method", "Rows", "Conditions", "Success Rate", "Mean Bias",
+    "Median Bias", "RMSE", "Coverage", "Mean SE", "Empirical SD", "SE / SD"
+  ),
+  align = "lrrrrrrrrrr"
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+This table is the main accuracy comparison. The full-grid and Stage 1 tables answer how often each method survives; this table answers how the methods compare once they have all survived on the same data.
+
+On this shared converged subset, Fuller is not merely benefiting from keeping replications that Lai drops; it also has the best focal RMSE among the primary methods on the common converged data. Lai remains the SEM reference method and has well-calibrated coverage, but the shared-subset table shows that Fuller is competitive on inference and better on RMSE in this run. EIV + HC3 and naive dual BLUP + HC3 are included to show whether their standard-error adjustments or measurement-error correction are competitive once convergence is held fixed.
+
+## Appendix: Broader Method Context
+
+```{r all-methods-table}
+all_methods_tbl <- replication_df %>%
+  metric_summary("method_label") %>%
+  arrange(method_label) %>%
+  select(method_label, Replications, Conditions, Success_Rate, Mean_Bias, Median_Bias, RMSE, Coverage, Mean_SE, Empirical_SD, SE_to_SD) %>%
+  format_metric_table()
+
+kable(
+  all_methods_tbl,
+  col.names = c(
+    "Method", "Rows", "Conditions", "Success Rate", "Mean Bias",
+    "Median Bias", "RMSE", "Coverage", "Mean SE", "Empirical SD", "SE / SD"
+  ),
+  align = "lrrrrrrrrrr"
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+```{r stage1-summary-appendix}
+stage1_appendix_tbl <- stage1_df %>%
+  filter(method %in% c(focus_methods, "eiv_dual_corrected_hc0", "eiv_dual_corrected_nearpd_hc3", "eiv_dual_corrected_ridge_hc3")) %>%
+  group_by(method_label, stage1_stratum) %>%
+  summarise(
+    Conditions = n_distinct(condition_id),
+    Mean_Convergence = safe_mean(convergence),
+    Mean_Bias = safe_mean(bias),
+    Mean_RMSE = safe_mean(rmse),
+    Mean_Coverage = safe_mean(coverage),
+    Mean_Stage1_Design_Kappa = safe_mean(mean_stage1_design_kappa),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    Mean_Convergence = fmt_pct(Mean_Convergence),
+    Mean_Bias = fmt_mixed(Mean_Bias),
+    Mean_RMSE = fmt_mixed(Mean_RMSE),
+    Mean_Coverage = fmt_pct(Mean_Coverage),
+    Mean_Stage1_Design_Kappa = fmt_mixed(Mean_Stage1_Design_Kappa)
+  ) %>%
+  arrange(method_label, stage1_stratum)
+
+kable(
+  stage1_appendix_tbl,
+  col.names = c(
+    "Method", "Stage 1 Stratum", "Conditions", "Mean Convergence",
+    "Mean Bias", "Mean RMSE", "Mean Coverage", "Mean Stage 1 Design Kappa"
+  ),
+  align = "llrrrrrr"
+) %>%
+  kable_styling(bootstrap_options = c("striped", "hover", "condensed"), full_width = FALSE)
+```
+
+## Interpretation
+
+The central accuracy result should be read from the shared primary-converged subset. In that subset, Fuller has the best focal RMSE and coverage at least as good as Lai 2S-PA, with somewhat larger standard errors. That means Fuller's advantage is not only a convergence advantage; it also looks competitive, and in this run better on RMSE, when evaluated only where Lai and the other primary methods converged.
+
+The HC3 results should also be interpreted only within this shared converged frame. HC3 can alter coverage by widening or reshaping intervals, but it does not change point estimates. Thus, when naive dual BLUP OLS + HC3 has worse RMSE than Lai or Fuller in the shared converged subset, that is not an SE problem; it is the same estimator with a different variance calculation.
+
+Dual EIV remains useful as a conceptual bridge to Lai because it applies an analytical measurement-error correction. But once convergence is held fixed, EIV + HC3 still does not match Lai or Fuller on RMSE, and its standard errors remain much larger. That points to instability in the corrected predictor covariance rather than merely a convergence-selection artifact.
+
+Singular and near-singular Stage 1 fits are a separate robustness story. They should not be used to make ordinary bias/RMSE/coverage comparisons because Lai often fails there and the competing algebraic methods retain cases that Lai drops. In that separate robustness analysis, Fuller is clearly preferable to Lai, naive dual BLUP, and EIV because it retains many more usable estimates without the catastrophic singular-case behavior seen for naive dual BLUP and EIV.
+
+The practical conclusion is therefore two-part. Conditional on all primary models converging, Fuller is the best focal method on RMSE and remains well covered, while Lai remains the SEM reference with close-to-nominal coverage. Across the full design, especially when singular Stage 1 fits matter, Fuller is also the stronger deployable method because it combines competitive converged-case accuracy with much better robustness.

@@ -1,7 +1,7 @@
 #!/usr/bin/env Rscript
 
-# Unit checks for formatting stacked-sandwich outputs into simulation estimator
-# rows.
+# Unit checks for stage-2 estimator helpers and small simulation checks for
+# estimator-specific behavior.
 
 source(file.path("R", "stage2_estimators.R"), local = TRUE)
 
@@ -157,7 +157,7 @@ stopifnot(
   is.finite(fuller_out$estimate),
   is.finite(fuller_out$se),
   fuller_out$se > 0,
-  abs(fuller_out$estimate - target_scaled) < 0.20 # not sure where 0.2 came from
+  abs(fuller_out$estimate - target_scaled) < 0.20
 )
 
 stage2_noerr <- data.frame(
@@ -191,4 +191,81 @@ stopifnot(
   isTRUE(all.equal(fuller_noerr$se, ols_naive$se, tolerance = 1e-10))
 )
 
-cat("stage-2 estimator formatter tests ok\n")
+simulate_fuller_known_eiv <- function(n,
+                                      beta_u0 = 0.25,
+                                      beta_u1 = 0.55,
+                                      residual_sd = 0.70) {
+  latent_cov <- matrix(c(1.00, 0.30, 0.30, 0.64), nrow = 2L)
+  meas_cov <- matrix(c(0.18, 0.03, 0.03, 0.12), nrow = 2L)
+
+  latent_scores <- matrix(stats::rnorm(2L * n), ncol = 2L) %*% chol(latent_cov)
+  measurement_error <- matrix(stats::rnorm(2L * n), ncol = 2L) %*% chol(meas_cov)
+
+  u0 <- latent_scores[, 1L]
+  u1 <- latent_scores[, 2L]
+  observed_scores <- latent_scores + measurement_error
+
+  data.frame(
+    z = 0.10 + beta_u0 * u0 + beta_u1 * u1 + stats::rnorm(n, sd = residual_sd),
+    corrected_intercept_full = observed_scores[, 1L],
+    corrected_slope_full = observed_scores[, 2L],
+    ols_var11 = rep(meas_cov[1L, 1L], n),
+    ols_var12 = rep(meas_cov[1L, 2L], n),
+    ols_var22 = rep(meas_cov[2L, 2L], n)
+  )
+}
+
+fuller_truth <- 0.55 * sqrt(0.64)
+
+set.seed(4801)
+fuller_large <- fit_fuller_dual(
+  simulate_fuller_known_eiv(2500L),
+  outcome = "z",
+  predictor_u0 = "corrected_intercept_full",
+  predictor_u1 = "corrected_slope_full",
+  meas11 = "ols_var11",
+  meas12 = "ols_var12",
+  meas22 = "ols_var22"
+)
+
+stopifnot(
+  identical(as.integer(fuller_large$status_code), 0L),
+  identical(fuller_large$mx_issue_class, "ok"),
+  is.finite(fuller_large$estimate),
+  is.finite(fuller_large$se),
+  abs(fuller_large$estimate - fuller_truth) < 0.04,
+  fuller_large$se > 0,
+  fuller_large$se < 0.04
+)
+
+set.seed(4802)
+fuller_mc <- replicate(120L, {
+  out <- fit_fuller_dual(
+    simulate_fuller_known_eiv(450L),
+    outcome = "z",
+    predictor_u0 = "corrected_intercept_full",
+    predictor_u1 = "corrected_slope_full",
+    meas11 = "ols_var11",
+    meas12 = "ols_var12",
+    meas22 = "ols_var22"
+  )
+  c(estimate = out$estimate, se = out$se, status_code = out$status_code)
+})
+fuller_mc <- as.data.frame(t(fuller_mc))
+fuller_mc_ok <- fuller_mc[fuller_mc$status_code == 0L, , drop = FALSE]
+
+fuller_empirical_sd <- stats::sd(fuller_mc_ok$estimate)
+fuller_mean_se <- mean(fuller_mc_ok$se)
+fuller_se_ratio <- fuller_mean_se / fuller_empirical_sd
+fuller_mc_coverage <- mean(abs(fuller_mc_ok$estimate - fuller_truth) <= stats::qnorm(0.975) * fuller_mc_ok$se)
+
+stopifnot(
+  nrow(fuller_mc_ok) == 120L,
+  abs(mean(fuller_mc_ok$estimate) - fuller_truth) < 0.03,
+  fuller_se_ratio > 0.80,
+  fuller_se_ratio < 1.20,
+  fuller_mc_coverage > 0.88,
+  fuller_mc_coverage < 0.99
+)
+
+cat("stage-2 estimator tests ok\n")
