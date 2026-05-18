@@ -191,6 +191,25 @@ stopifnot(
   isTRUE(all.equal(fuller_noerr$se, ols_naive$se, tolerance = 1e-10))
 )
 
+fuller_stepdown_noerr <- fit_fuller_dual_stepdown(
+  stage2_noerr,
+  outcome = "y_obs",
+  predictor_u0 = "x0_obs",
+  predictor_u1 = "x1_obs",
+  meas11 = "meas11",
+  meas12 = "meas12",
+  meas22 = "meas22",
+  outcome_meas_var = "measyy"
+)
+
+stopifnot(
+  isTRUE(all.equal(as.integer(fuller_stepdown_noerr$status_code), 0L)),
+  isTRUE(all.equal(fuller_stepdown_noerr$estimate, ols_naive$estimate, tolerance = 1e-10)),
+  isTRUE(all.equal(fuller_stepdown_noerr$se, ols_naive$se, tolerance = 1e-10)),
+  identical(fuller_stepdown_noerr$fuller_auto_guard_reason, "ok"),
+  isTRUE(all.equal(fuller_stepdown_noerr$fuller_measurement_weight_used, 1))
+)
+
 simulate_fuller_known_eiv <- function(n,
                                       beta_u0 = 0.25,
                                       beta_u1 = 0.55,
