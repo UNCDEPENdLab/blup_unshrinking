@@ -4,6 +4,15 @@ blup_outcome_balance_modes <- function() {
   c("balanced", "unbalanced", "informative_unbalanced")
 }
 
+blup_outcome_residual_structures <- function() {
+  tibble::tribble(
+    ~r_structure, ~r_rho,
+    "iid", NA_real_,
+    "ar1", 0.3,
+    "ar1", 0.6
+  )
+}
+
 balance_mode_to_sim_arg <- function(balance_mode) {
   switch(
     as.character(balance_mode[[1]]),
@@ -11,6 +20,21 @@ balance_mode_to_sim_arg <- function(balance_mode) {
     unbalanced = FALSE,
     informative_unbalanced = "highly_unbalanced",
     stop("Unsupported balance mode: ", balance_mode)
+  )
+}
+
+condition_to_r_spec <- function(condition) {
+  r_structure <- if ("r_structure" %in% names(condition)) {
+    as.character(condition$r_structure[[1]])
+  } else {
+    "iid"
+  }
+
+  switch(
+    r_structure,
+    iid = list(structure = "iid"),
+    ar1 = list(structure = "ar1", rho = as.numeric(condition$r_rho[[1]])),
+    stop("Unsupported residual structure: ", r_structure)
   )
 }
 
@@ -31,6 +55,19 @@ make_blup_outcome_design <- function(grid_mode = "base", max_conditions = NA_int
       tau1 = 0.7,
       sigma = 1.0
     ),
+    residual_ar1 = tidyr::crossing(
+      n_id = c(50L, 200L),
+      mean_n_trial = c(8L, 20L, 50L),
+      gamma_x_on_slope = c(0.1, 0.5),
+      rho = c(0.0, 0.5),
+      balance_mode = c("balanced", "unbalanced"),
+      min_n_trial = 2L,
+      highly_unbalanced_min_n_trial = 2L,
+      highly_unbalanced_power = 3,
+      tau1 = 0.7,
+      sigma = 1.0
+    ) %>%
+      tidyr::crossing(blup_outcome_residual_structures()),
     base = tidyr::crossing(
       n_id = c(50L, 200L),
       mean_n_trial = c(4L, 8L, 20L, 50L),
@@ -79,10 +116,14 @@ make_blup_outcome_design <- function(grid_mode = "base", max_conditions = NA_int
       tau1 = c(0.3, 0.7, 1.2),
       sigma = c(0.5, 1.0, 1.5)
     ),
-    stop("`grid_mode` must be one of: smoke, base, heteroscedastic, heteroscedastic_sparse, expanded.")
+    stop("`grid_mode` must be one of: smoke, residual_ar1, base, heteroscedastic, heteroscedastic_sparse, expanded.")
   )
 
   design <- design %>%
+    dplyr::mutate(
+      r_structure = if ("r_structure" %in% names(.)) .data$r_structure else "iid",
+      r_rho = if ("r_rho" %in% names(.)) .data$r_rho else NA_real_
+    ) %>%
     dplyr::mutate(
       condition_id = dplyr::row_number(),
       balanced = balance_mode,

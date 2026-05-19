@@ -102,4 +102,73 @@ for (vcov_name in paste0("vcov_hc", 0:3)) {
   )
 }
 
+rho_R <- 0.4
+R_i <- 0.25^2 * outer(seq_len(n_obs), seq_len(n_obs), function(a, b) rho_R^abs(a - b))
+R_list <- stats::setNames(rep(list(R_i), n_id), id_df$id)
+cluster_objects_R <- prepare_cluster_objects(split_dat, R_list = R_list)
+first_R_inv_Z <- solve(R_i, first_x)
+first_R_inv_y <- solve(R_i, split_dat[[first_id]]$y)
+expected_gls_coef <- drop(solve(crossprod(first_x, first_R_inv_Z), crossprod(first_x, first_R_inv_y)))
+expected_gls_score <- expected_gls_coef[[2]] - fixef(fit)[["z"]]
+
+stopifnot(
+  isTRUE(all.equal(cluster_objects_R[[first_id]]$ols_coef, expected_gls_coef, tolerance = 1e-10)),
+  isTRUE(all.equal(
+    corrected_slope_from_precomputed(
+      cluster_objects_R[[first_id]],
+      pack_psi_known_R(fit),
+      parameterization = "known_R"
+    ),
+    expected_gls_score,
+    tolerance = 1e-10
+  ))
+)
+
+ll_known_R <- cluster_loglik_precomputed(
+  cluster_objects_R[[first_id]],
+  pack_psi_known_R(fit),
+  parameterization = "known_R"
+)
+stopifnot(is.finite(ll_known_R))
+
+sandwich_known_R <- stacked_sandwich_for_corrected_scores(
+  split_dat = split_dat,
+  id_df = id_df,
+  fit_null = fit,
+  psi_hat = psi_sd,
+  derivative_backend = make_derivative_backend("handcoded"),
+  R_list = R_list
+)
+known_R_pars <- unpack_psi_known_R(sandwich_known_R$psi_stage1)
+expected_sandwich_gls_score <- expected_gls_coef[[2]] -
+  drop(cluster_objects_R[[first_id]]$projection_X[2, ] %*% known_R_pars$beta)
+known_R_score_sum <- colSums(t(vapply(cluster_objects_R, function(cluster_obj) {
+  make_derivative_backend("handcoded")$gradient(
+    fn = function(p) cluster_loglik_precomputed(cluster_obj, p, parameterization = "known_R"),
+    x = sandwich_known_R$psi_stage1
+  )
+}, numeric(length(sandwich_known_R$psi_stage1)))))
+
+stopifnot(
+  length(sandwich_known_R$alpha_hat) == 2L,
+  length(sandwich_known_R$corrected_scores) == n_id,
+  all(names(sandwich_known_R$corrected_scores) == id_df$id),
+  identical(sandwich_known_R$psi_parameterization, "known_R"),
+  max(abs(known_R_score_sum)) < 1e-3,
+  isTRUE(all.equal(
+    sandwich_known_R$corrected_scores[[first_id]],
+    expected_sandwich_gls_score,
+    tolerance = 1e-8
+  ))
+)
+
+for (vcov_name in paste0("vcov_hc", 0:3)) {
+  vcov_mat <- sandwich_known_R[[vcov_name]]
+  stopifnot(
+    is.matrix(vcov_mat),
+    identical(dim(vcov_mat), c(2L, 2L)),
+    all(is.finite(vcov_mat))
+  )
+}
+
 cat("stacked sandwich helper tests ok\n")

@@ -398,7 +398,8 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
     balanced = balance_mode_to_sim_arg(condition$balance_mode[[1]]),
     min_n_trial = condition$min_n_trial[[1]],
     highly_unbalanced_min_n_trial = condition$highly_unbalanced_min_n_trial[[1]],
-    highly_unbalanced_power = condition$highly_unbalanced_power[[1]]
+    highly_unbalanced_power = condition$highly_unbalanced_power[[1]],
+    r_spec = condition_to_r_spec(condition)
   )
 
   # The null model supplies all extracted score outcomes. The direct model is a
@@ -536,12 +537,14 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
     )
 
     sandwich_rows <- tryCatch({
+      stacked_R_list <- if (identical(sim$r_spec$structure, "iid")) NULL else sim$R_list
       sandwich_out <- stacked_sandwich_for_corrected_scores(
         split_dat = split_dat,
         id_df = sim$id_df,
         fit_null = fit_null,
         psi_hat = pack_psi(fit_null),
-        derivative_backend = derivative_backend
+        derivative_backend = derivative_backend,
+        R_list = stacked_R_list
       )
       format_stacked_sandwich_rows(
         sandwich_out = sandwich_out,

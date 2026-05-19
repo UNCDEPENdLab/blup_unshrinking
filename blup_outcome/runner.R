@@ -113,7 +113,8 @@ summarize_blup_outcome_results <- function(results) {
     dplyr::group_by(
       .data$condition_id, .data$method, .data$n_id, .data$mean_n_trial, .data$gamma_x_on_slope,
       .data$rho, .data$balance_mode, .data$tau1, .data$sigma, .data$min_n_trial,
-      .data$highly_unbalanced_min_n_trial, .data$highly_unbalanced_power, .data$design_source
+      .data$highly_unbalanced_min_n_trial, .data$highly_unbalanced_power,
+      .data$r_structure, .data$r_rho, .data$design_source
     ) %>%
     dplyr::summarise(
       truth = dplyr::first(.data$truth),
@@ -167,7 +168,8 @@ summarize_blup_outcome_issues <- function(results) {
     dplyr::filter(!is.na(.data$mx_issue_class), .data$mx_issue_class != "ok") %>%
     dplyr::group_by(
       .data$condition_id, .data$method, .data$mx_issue_class, .data$n_id, .data$mean_n_trial,
-      .data$gamma_x_on_slope, .data$rho, .data$balance_mode, .data$tau1, .data$sigma
+      .data$gamma_x_on_slope, .data$rho, .data$balance_mode, .data$tau1, .data$sigma,
+      .data$r_structure, .data$r_rho
     ) %>%
     dplyr::summarise(
       n_rep = dplyr::n(),
