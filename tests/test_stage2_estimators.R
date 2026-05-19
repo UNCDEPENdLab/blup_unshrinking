@@ -310,4 +310,55 @@ stopifnot(
   fuller_mc_coverage < 0.99
 )
 
+set.seed(4803)
+fuller_alpha_large <- fit_fuller_dual_alpha_stepdown(
+  simulate_fuller_known_eiv(2500L),
+  outcome = "z",
+  predictor_u0 = "corrected_intercept_full",
+  predictor_u1 = "corrected_slope_full",
+  meas11 = "ols_var11",
+  meas12 = "ols_var12",
+  meas22 = "ols_var22"
+)
+
+stopifnot(
+  identical(as.integer(fuller_alpha_large$status_code), 0L),
+  identical(fuller_alpha_large$mx_issue_class, "ok"),
+  is.finite(fuller_alpha_large$estimate),
+  is.finite(fuller_alpha_large$se),
+  abs(fuller_alpha_large$estimate - fuller_truth) < 0.04,
+  fuller_alpha_large$se > 0,
+  fuller_alpha_large$se < 0.04
+)
+
+set.seed(4802)
+fuller_alpha_mc <- replicate(120L, {
+  out <- fit_fuller_dual_alpha_stepdown(
+    simulate_fuller_known_eiv(450L),
+    outcome = "z",
+    predictor_u0 = "corrected_intercept_full",
+    predictor_u1 = "corrected_slope_full",
+    meas11 = "ols_var11",
+    meas12 = "ols_var12",
+    meas22 = "ols_var22"
+  )
+  c(estimate = out$estimate, se = out$se, status_code = out$status_code)
+})
+fuller_alpha_mc <- as.data.frame(t(fuller_alpha_mc))
+fuller_alpha_mc_ok <- fuller_alpha_mc[fuller_alpha_mc$status_code == 0L, , drop = FALSE]
+
+fuller_alpha_empirical_sd <- stats::sd(fuller_alpha_mc_ok$estimate)
+fuller_alpha_mean_se <- mean(fuller_alpha_mc_ok$se)
+fuller_alpha_se_ratio <- fuller_alpha_mean_se / fuller_alpha_empirical_sd
+fuller_alpha_mc_coverage <- mean(abs(fuller_alpha_mc_ok$estimate - fuller_truth) <= stats::qnorm(0.975) * fuller_alpha_mc_ok$se)
+
+stopifnot(
+  nrow(fuller_alpha_mc_ok) == 120L,
+  abs(mean(fuller_alpha_mc_ok$estimate) - fuller_truth) < 0.03,
+  fuller_alpha_se_ratio > 0.80,
+  fuller_alpha_se_ratio < 1.20,
+  fuller_alpha_mc_coverage > 0.88,
+  fuller_alpha_mc_coverage < 0.99
+)
+
 cat("stage-2 estimator tests ok\n")

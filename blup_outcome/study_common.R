@@ -422,9 +422,21 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
   eb_inputs <- eb_inputs %>% dplyr::select(-dplyr::any_of("x"))
 
   # These three score paths represent increasingly direct ways to recover the
-  # likelihood-only cluster slope: matrix prior-unweighting, diagonal-only
-  # prior-unweighting, and closed-form within-cluster OLS.
-  matrix_scores <- tryCatch(get_corrected_scores(fit_null), error = function(e) tibble::tibble(id = ordered_ids))
+  # likelihood-only cluster slope: GLS-aware matrix prior-unweighting,
+  # diagonal-only lme4 prior-unweighting, and direct GLS closed form. The
+  # matrix path computes EB/posterior ingredients from the same R_i used to
+  # generate the data so non-diagonal residual covariance is represented.
+  matrix_scores <- tryCatch(
+    get_gls_corrected_scores(
+      fit_obj = fit_null,
+      data = sim$dat,
+      cluster_var = "id",
+      outcome_var = "y",
+      within_var = "z",
+      R_list = sim$R_list
+    ),
+    error = function(e) tibble::tibble(id = ordered_ids)
+  )
   diag_scores <- tryCatch(get_diagonal_corrected_scores(fit_null), error = function(e) tibble::tibble(id = ordered_ids))
   closed_form_scores <- get_closed_form_corrected_scores(
     fit_obj = fit_null,

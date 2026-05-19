@@ -234,6 +234,208 @@ get_diagonal_corrected_scores <- function(fit_null, group = NULL) {
   })
 }
 
+#' Extract GLS-aware EB/BLUPs, posterior covariance, and MLE scores.
+#'
+#' @details
+#' This helper is the residual-covariance-aware counterpart to
+#' `get_corrected_scores()`. It does not use `lme4::ranef(..., condVar = TRUE)`
+#' for the cluster predictions, because those conditional modes and posterior
+#' covariance matrices assume the residual covariance structure fitted by
+#' `lme4`. Instead, it rebuilds the Gaussian score ingredients directly from
+#' plug-in first-stage parameters and each supplied cluster-level `R_i`.
+#'
+#' For cluster `i`, let `r_i = y_i - X_i beta_hat`, `Z_i` be the random-effect
+#' design, `G` be the fitted random-effect covariance, `R_i` be the residual
+#' covariance, and `Sigma_i = Z_i G Z_i' + R_i` be the marginal covariance.
+#' The EB/BLUP scoring matrix in Vig and Hallquist (V&H) equation 29 is
+#'
+#' `A_Ei = G Z_i' Sigma_i^{-1}`,
+#'
+#' giving the EB/BLUP prediction
+#'
+#' `b_Ei = A_Ei r_i = G Z_i' Sigma_i^{-1} r_i`.
+#'
+#' The conditional posterior covariance of `b_i | y_i` is
+#'
+#' `V_post_i = (G^{-1} + Z_i' R_i^{-1} Z_i)^{-1}`.
+#'
+#' The MLE/Bartlett scoring matrix in V&H equation 30 is
+#'
+#' `A_Mi = (Z_i' R_i^{-1} Z_i)^{-1} Z_i' R_i^{-1}`,
+#'
+#' giving the likelihood-only score
+#'
+#' `b_Mi = A_Mi r_i`.
+#'
+#' The V&H equation 33 gives the same MLE score as a conversion from
+#' the EB/BLUP score:
+#'
+#' `b_Mi = ((G Z_i' R_i^{-1} Z_i)^{-1} + I) b_Ei`.
+#'
+#' This implementation uses the equivalent posterior-minus-prior precision
+#' identity already used by `unweight_random_effects()`:
+#'
+#' `b_Mi = (V_post_i^{-1} - G^{-1})^{-1} V_post_i^{-1} b_Ei`.
+#'
+#' The returned `corrected_*` columns are these matrix-converted MLE/Bartlett
+#' scores. The returned `mle_*` columns are the direct GLS scores from equation
+#' 30, included for diagnostics; the two should agree up to numerical
+#' tolerance when `G` and `R_i` are nonsingular. The `corrected_*_var` columns
+#' are the diagonal elements of `(Z_i' R_i^{-1} Z_i)^{-1}`, matching the
+#' conditional variance expression in V&H equation 38.
+#'
+#' @param fit_obj Fitted `lme4` model supplying plug-in `beta_hat` and `G_hat`.
+#' @param data Original long-format data frame.
+#' @param cluster_var Character scalar naming the cluster/grouping column.
+#' @param outcome_var Character scalar naming the outcome column.
+#' @param within_var Optional character scalar naming the random-slope
+#'   predictor. If `NULL`, an intercept-only random-effect design is used.
+#' @param R_list Optional named list of cluster-level residual covariance
+#'   matrices. Names should match `cluster_var` values. If unnamed, matrices are
+#'   matched to clusters in data order. If `NULL`, iid covariance
+#'   `sigma(fit_obj)^2 I` is used.
+#' @param group Optional grouping-factor name for extracting `G_hat` and
+#'   random-effect names from `fit_obj`. Defaults to the first grouping factor.
+#'
+#' @return
+#' A tibble with one row per cluster. It includes EB/BLUP columns
+#' `blup_<effect>`, posterior covariance columns `postvar*`, direct
+#' MLE/Bartlett columns `mle_<effect>`, matrix-converted score columns
+#' `corrected_<effect>`, and measurement-variance columns
+#' `corrected_<effect>_var`.
+get_gls_corrected_scores <- function(fit_obj, data, cluster_var, outcome_var, within_var = NULL,
+                                     R_list = NULL, group = NULL) {
+  cluster_ids <- unique(as.character(data[[cluster_var]]))
+  split_dat <- split(data, as.character(data[[cluster_var]]), drop = TRUE)[cluster_ids]
+  beta_hat <- lme4::fixef(fit_obj)
+  group <- group %||% names(lme4::ranef(fit_obj))[[1]]
+  g_hat <- as.matrix(lme4::VarCorr(fit_obj)[[group]])
+  sigma2_hat <- stats::sigma(fit_obj)^2
+  n_re <- if (is.null(within_var)) 1L else 2L
+
+  re_names_raw <- tryCatch(colnames(lme4::ranef(fit_obj)[[group]]), error = function(e) NULL)
+  if (is.null(re_names_raw) || length(re_names_raw) != n_re) {
+    re_names_raw <- if (is.null(within_var)) "(Intercept)" else c("(Intercept)", within_var)
+  }
+  re_names <- sanitize_re_name(re_names_raw)
+
+  if (!is.null(R_list) && !is.list(R_list)) {
+    stop("`R_list` must be NULL or a list of cluster-level residual covariance matrices.")
+  }
+  if (!is.null(R_list) && is.null(names(R_list))) {
+    if (length(R_list) != length(cluster_ids)) {
+      stop("Unnamed `R_list` must have one matrix per cluster in `data` order.")
+    }
+    names(R_list) <- cluster_ids
+  }
+
+  if (nrow(g_hat) != n_re || ncol(g_hat) != n_re) {
+    stop("The fitted random-effect covariance dimension does not match `within_var`.")
+  }
+
+  prior_mean <- rep(0, n_re)
+  g_inv <- tryCatch(solve(g_hat), error = function(e) NULL)
+
+  purrr::map_dfr(cluster_ids, function(cluster_id) {
+    df_i <- split_dat[[cluster_id]]
+
+    if (is.null(within_var)) {
+      z_mat <- matrix(1, nrow = nrow(df_i), ncol = 1L)
+      x_mat <- z_mat
+      beta_vec <- beta_hat[[1]]
+    } else {
+      z_vec <- df_i[[within_var]]
+      z_mat <- cbind(1, z_vec)
+      x_mat <- z_mat
+      beta_vec <- c(beta_hat[[1]], beta_hat[[within_var]])
+    }
+
+    resid_i <- df_i[[outcome_var]] - as.numeric(x_mat %*% beta_vec)
+    R_i <- if (is.null(R_list)) {
+      sigma2_hat * diag(nrow(df_i))
+    } else {
+      as.matrix(R_list[[cluster_id]])
+    }
+
+    pieces <- tryCatch({
+      if (is.null(g_inv)) {
+        stop("G is singular.")
+      }
+      if (!is.matrix(R_i) || nrow(R_i) != nrow(df_i) || ncol(R_i) != nrow(df_i)) {
+        stop("R_i has incompatible dimensions.")
+      }
+
+      # EB/BLUP from V&H equations 29 and 31:
+      # b_Ei = G Z_i' Sigma_i^-1 r_i, Sigma_i = Z_i G Z_i' + R_i.
+      sigma_y_i <- z_mat %*% g_hat %*% t(z_mat) + R_i
+      sigma_inv_resid <- solve(sigma_y_i, resid_i)
+      eb <- as.numeric(g_hat %*% crossprod(z_mat, sigma_inv_resid))
+
+      # Posterior covariance and MLE/Bartlett information. Avoid explicitly
+      # forming R_i^-1; solve(R_i, Z_i) and solve(R_i, r_i) provide the needed
+      # products for Z_i' R_i^-1 Z_i and Z_i' R_i^-1 r_i.
+      R_inv_Z <- solve(R_i, z_mat)
+      R_inv_resid <- solve(R_i, resid_i)
+      info_like <- crossprod(z_mat, R_inv_Z)
+      post_vcov <- solve(g_inv + info_like)
+
+      # Direct MLE/Bartlett score from V&H equation 30.
+      mle_vcov <- solve(info_like)
+      mle <- as.numeric(mle_vcov %*% crossprod(z_mat, R_inv_resid))
+
+      # Matrix conversion from EB/BLUP to MLE/Bartlett. This is the precision subtraction form of V&H equation 33.
+      corrected <- unweight_random_effects(
+        post_mean = eb,
+        post_vcov = post_vcov,
+        prior_mean = prior_mean,
+        prior_vcov = g_hat,
+        return_var = TRUE
+      )
+
+      list(
+        eb = eb,
+        post_vcov = post_vcov,
+        mle = mle,
+        mle_vcov = mle_vcov,
+        corrected = corrected$scores,
+        corrected_vars = corrected$vars
+      )
+    }, error = function(e) {
+      list(
+        eb = rep(NA_real_, n_re),
+        post_vcov = matrix(NA_real_, nrow = n_re, ncol = n_re),
+        mle = rep(NA_real_, n_re),
+        mle_vcov = matrix(NA_real_, nrow = n_re, ncol = n_re),
+        corrected = rep(NA_real_, n_re),
+        corrected_vars = rep(NA_real_, n_re)
+      )
+    })
+
+    out <- tibble::tibble(id = cluster_id)
+    for (j in seq_len(n_re)) {
+      out[[paste0("blup_", re_names[[j]])]] <- pieces$eb[[j]]
+      out[[paste0("mle_", re_names[[j]])]] <- pieces$mle[[j]]
+      out[[paste0("corrected_", re_names[[j]])]] <- pieces$corrected[[j]]
+      out[[paste0("corrected_", re_names[[j]], "_var")]] <- pieces$corrected_vars[[j]]
+      out[[paste0("mle_", re_names[[j]], "_var")]] <- pieces$mle_vcov[j, j]
+    }
+
+    if (n_re == 1L) {
+      out$postvar11 <- pieces$post_vcov[1, 1]
+      out$mle_var11 <- pieces$mle_vcov[1, 1]
+    } else {
+      out$postvar11 <- pieces$post_vcov[1, 1]
+      out$postvar12 <- pieces$post_vcov[1, 2]
+      out$postvar22 <- pieces$post_vcov[2, 2]
+      out$mle_var11 <- pieces$mle_vcov[1, 1]
+      out$mle_var12 <- pieces$mle_vcov[1, 2]
+      out$mle_var22 <- pieces$mle_vcov[2, 2]
+    }
+
+    out
+  })
+}
+
 #' Compute likelihood-only cluster scores directly from residualized cluster GLS.
 #'
 #' @details

@@ -73,6 +73,14 @@ gls_out <- get_closed_form_corrected_scores(
   within_var = "z",
   R_list = R_list
 )
+gls_extractor_out <- get_gls_corrected_scores(
+  fit_obj = fit,
+  data = dat,
+  cluster_var = "id",
+  outcome_var = "y",
+  within_var = "z",
+  R_list = R_list
+)
 
 Rinv_Z <- solve(R_i, Z_1)
 Rinv_resid <- solve(R_i, resid_1)
@@ -85,7 +93,19 @@ stopifnot(
   isTRUE(all.equal(gls_out$gls_var11[[1]], expected_gls_vcov[1, 1], tolerance = 1e-10)),
   isTRUE(all.equal(gls_out$gls_var12[[1]], expected_gls_vcov[1, 2], tolerance = 1e-10)),
   isTRUE(all.equal(gls_out$gls_var22[[1]], expected_gls_vcov[2, 2], tolerance = 1e-10)),
-  isTRUE(all.equal(gls_out$ols_var22[[1]], gls_out$gls_var22[[1]], tolerance = 1e-12))
+  isTRUE(all.equal(gls_out$ols_var22[[1]], gls_out$gls_var22[[1]], tolerance = 1e-12)),
+  isTRUE(all.equal(gls_extractor_out$mle_z[[1]], expected_gls[[2]], tolerance = 1e-10)),
+  isTRUE(all.equal(gls_extractor_out$mle_z_var[[1]], expected_gls_vcov[2, 2], tolerance = 1e-10)),
+  isTRUE(all.equal(gls_extractor_out$corrected_z[[1]], expected_gls[[2]], tolerance = 1e-8)),
+  isTRUE(all.equal(gls_extractor_out$corrected_z_var[[1]], expected_gls_vcov[2, 2], tolerance = 1e-8)),
+  isTRUE(all.equal(gls_extractor_out$corrected_intercept, gls_out$corrected_intercept_full, tolerance = 1e-8)),
+  isTRUE(all.equal(gls_extractor_out$corrected_z, gls_out$corrected_slope_full, tolerance = 1e-8)),
+  isTRUE(all.equal(gls_extractor_out$mle_z, gls_out$corrected_slope_full, tolerance = 1e-10)),
+  isTRUE(all(is.finite(gls_extractor_out$blup_intercept))),
+  isTRUE(all(is.finite(gls_extractor_out$blup_z))),
+  isTRUE(all(is.finite(gls_extractor_out$postvar11))),
+  isTRUE(all(is.finite(gls_extractor_out$postvar12))),
+  isTRUE(all(is.finite(gls_extractor_out$postvar22)))
 )
 
 cat("Closed-form GLS corrected-score tests ok\n")

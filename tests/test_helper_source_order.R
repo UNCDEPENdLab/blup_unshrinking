@@ -26,6 +26,7 @@ expected_functions <- c(
   "format_stacked_sandwich_rows",
   "select_eiv_result_columns",
   "get_corrected_scores",
+  "get_gls_corrected_scores",
   "get_stage1_diagnostics",
   "fit_lai_2spa"
 )
