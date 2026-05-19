@@ -416,7 +416,7 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
   # Lai/OpenMx inputs contain EB scores plus cluster-specific loading/theta
   # definitions. Failures leave an id-only tibble so later joins still work.
   eb_inputs <- tryCatch(
-    compute_lai_2spa_inputs(fit_null = fit_null, split_dat = split_dat, id_df = sim$id_df),
+    compute_lai_2spa_inputs(fit_null = fit_null, split_dat = split_dat, id_df = sim$id_df, R_list = sim$R_list),
     error = function(e) tibble::tibble(id = ordered_ids)
   )
   eb_inputs <- eb_inputs %>% dplyr::select(-dplyr::any_of("x"))

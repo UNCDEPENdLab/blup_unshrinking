@@ -69,6 +69,11 @@ sim_dat <- do.call(rbind, lapply(seq_along(base_ids), function(i) {
 fit <- lmer(y ~ 1 + z + (1 + z | id), data = sim_dat, REML = FALSE)
 split_dat <- split(sim_dat, sim_dat$id)
 out <- compute_lai_2spa_inputs(fit, split_dat, id_df)
+diag_R_list <- stats::setNames(
+  lapply(split_dat, function(df_i) stats::sigma(fit)^2 * diag(nrow(df_i))),
+  names(split_dat)
+)
+out_diag_R <- compute_lai_2spa_inputs(fit, split_dat, id_df, R_list = diag_R_list)
 
 required_cols <- c(
   "id", "x", "u0_eb", "u1_eb", "postvar11", "postvar12", "postvar22",
@@ -84,7 +89,53 @@ stopifnot(
   isTRUE(all.equal(out$x, id_df$x)),
   all(is.finite(out$u0_eb)),
   all(is.finite(out$u1_eb)),
-  all(is.finite(as.matrix(out[, setdiff(required_cols, c("id", "x")), drop = FALSE])))
+  all(is.finite(as.matrix(out[, setdiff(required_cols, c("id", "x")), drop = FALSE]))),
+  isTRUE(all.equal(out$u0_eb, out_diag_R$u0_eb, tolerance = 1e-8)),
+  isTRUE(all.equal(out$u1_eb, out_diag_R$u1_eb, tolerance = 1e-8)),
+  isTRUE(all.equal(out$postvar11, out_diag_R$postvar11, tolerance = 1e-8)),
+  isTRUE(all.equal(out$postvar12, out_diag_R$postvar12, tolerance = 1e-8)),
+  isTRUE(all.equal(out$postvar22, out_diag_R$postvar22, tolerance = 1e-8)),
+  isTRUE(all.equal(out$lambda11, out_diag_R$lambda11, tolerance = 1e-8)),
+  isTRUE(all.equal(out$lambda12, out_diag_R$lambda12, tolerance = 1e-8)),
+  isTRUE(all.equal(out$lambda21, out_diag_R$lambda21, tolerance = 1e-8)),
+  isTRUE(all.equal(out$lambda22, out_diag_R$lambda22, tolerance = 1e-8)),
+  isTRUE(all.equal(out$theta11, out_diag_R$theta11, tolerance = 1e-8)),
+  isTRUE(all.equal(out$theta12, out_diag_R$theta12, tolerance = 1e-8)),
+  isTRUE(all.equal(out$theta22, out_diag_R$theta22, tolerance = 1e-8))
+)
+
+rho_R <- 0.45
+R_i <- stats::sigma(fit)^2 * outer(seq_len(n_obs), seq_len(n_obs), function(a, b) rho_R^abs(a - b))
+ar_R_list <- stats::setNames(rep(list(R_i), n_id), base_ids)
+out_ar_R <- compute_lai_2spa_inputs(fit, split_dat, id_df, R_list = ar_R_list)
+
+first_id <- id_df$id[[1]]
+df_1 <- split_dat[[first_id]]
+Z_1 <- cbind(1, df_1$z)
+G_hat <- as.matrix(lme4::VarCorr(fit)[["id"]])
+beta_hat <- lme4::fixef(fit)
+resid_1 <- df_1$y - drop(Z_1 %*% beta_hat[c("(Intercept)", "z")])
+Sigma_1 <- Z_1 %*% G_hat %*% t(Z_1) + R_i
+A_1 <- G_hat %*% t(Z_1) %*% solve(Sigma_1)
+expected_eb_1 <- as.numeric(A_1 %*% resid_1)
+expected_lambda_1 <- A_1 %*% Z_1
+expected_theta_1 <- A_1 %*% R_i %*% t(A_1)
+expected_post_1 <- solve(solve(G_hat) + crossprod(Z_1, solve(R_i, Z_1)))
+row_1 <- out_ar_R[out_ar_R$id == first_id, , drop = FALSE]
+
+stopifnot(
+  isTRUE(all.equal(row_1$u0_eb, expected_eb_1[[1]], tolerance = 1e-8)),
+  isTRUE(all.equal(row_1$u1_eb, expected_eb_1[[2]], tolerance = 1e-8)),
+  isTRUE(all.equal(row_1$postvar11, expected_post_1[1, 1], tolerance = 1e-8)),
+  isTRUE(all.equal(row_1$postvar12, expected_post_1[1, 2], tolerance = 1e-8)),
+  isTRUE(all.equal(row_1$postvar22, expected_post_1[2, 2], tolerance = 1e-8)),
+  isTRUE(all.equal(row_1$lambda11, expected_lambda_1[1, 1], tolerance = 1e-8)),
+  isTRUE(all.equal(row_1$lambda12, expected_lambda_1[1, 2], tolerance = 1e-8)),
+  isTRUE(all.equal(row_1$lambda21, expected_lambda_1[2, 1], tolerance = 1e-8)),
+  isTRUE(all.equal(row_1$lambda22, expected_lambda_1[2, 2], tolerance = 1e-8)),
+  isTRUE(all.equal(row_1$theta11, expected_theta_1[1, 1], tolerance = 1e-8)),
+  isTRUE(all.equal(row_1$theta12, expected_theta_1[1, 2], tolerance = 1e-8)),
+  isTRUE(all.equal(row_1$theta22, expected_theta_1[2, 2], tolerance = 1e-8))
 )
 
 cat("Lai/OpenMx input helper tests ok\n")
