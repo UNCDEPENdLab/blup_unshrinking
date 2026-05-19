@@ -192,6 +192,8 @@ method_labels <- c(
   corrected_slope_only_hc3 = "Corrected slope only + HC3 SE",
   corrected_dual = "Corrected dual",
   corrected_dual_hc3 = "Corrected dual + HC3 SE",
+  fuller = "Fuller",
+  fuller_stepdown = "Fuller stepdown",
   lai_2spa = "Lai 2S-PA",
   lai_2spaa = "Lai 2S-PAA"
 )
