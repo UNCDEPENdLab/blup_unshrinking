@@ -431,7 +431,8 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
     data = sim$dat,
     cluster_var = "id",
     outcome_var = "y",
-    within_var = "z"
+    within_var = "z",
+    R_list = sim$R_list
   )
 
   # Single-subject OLS slopes are an intentionally simple benchmark computed

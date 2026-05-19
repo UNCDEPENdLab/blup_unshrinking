@@ -234,20 +234,41 @@ get_diagonal_corrected_scores <- function(fit_null, group = NULL) {
   })
 }
 
-#' Compute likelihood-only cluster scores directly from residualized cluster OLS.
+#' Compute likelihood-only cluster scores directly from residualized cluster GLS.
 #'
 #' @details
-#' This helper computes corrected cluster scores without using posterior BLUP
-#' covariance matrices. It first subtracts the fixed-effect prediction from each
-#' observation within a cluster, then solves the cluster-level least-squares
-#' problem for the random-effect design. For a random-intercept-only model, this
-#' is the cluster mean residual. For a random-intercept/random-slope model, this
-#' is the intercept and within-cluster slope from regressing residuals on
-#' `(1, within_var)` inside each cluster.
+#' This helper computes likelihood-only random-effect scores without using
+#' posterior BLUP covariance matrices. For cluster `i`, let `r_i = y_i - X_i
+#' beta` be the fixed-effect residual, `Z_i` be the random-effect design, and
+#' `R_i` be the level-1 residual covariance matrix. The MLE/Bartlett score is
+#' the GLS coefficient from regressing `r_i` on `Z_i`:
+#'
+#' `b_Mi = (Z_i' R_i^{-1} Z_i)^{-1} Z_i' R_i^{-1} (y_i - X_i beta)`.
+#'
+#' Its conditional sampling covariance is `(Z_i' R_i^{-1} Z_i)^{-1}`. When
+#' `R_list` is `NULL`, `R_i` defaults to `sigma^2 I`, the `sigma^2` factor
+#' cancels from the coefficient equation, and the score reduces to the original
+#' OLS closed form `(Z_i'Z_i)^{-1} Z_i'r_i`; the covariance becomes
+#' `sigma^2 (Z_i'Z_i)^{-1}`.
+#'
+#' The iid path is performance-specialized because it is the common simulation
+#' case. It batches clusters by identical `Z_i`, solves `(Z_i'Z_i)^{-1}` once
+#' per unique design, and multiplies that projection into all residual vectors
+#' for the design group at once. The explicit-`R_list` path keeps the direct GLS
+#' formula cluster by cluster because arbitrary non-diagonal `R_i` generally
+#' differs across clusters.
+#'
+#' For a random-intercept-only model, the returned score is the GLS intercept of
+#' the fixed-effect residuals. For a random-intercept/random-slope model, the
+#' returned scores are the GLS intercept and within-cluster slope from residuals
+#' on `(1, within_var)` inside each cluster.
 #'
 #' The function is useful for balanced comparisons where the likelihood-only
-#' cluster score has a simple closed form and should not depend on the
-#' prior-unweighting matrix algebra used by `get_corrected_scores()`.
+#' cluster score has a direct closed form and should not depend on the
+#' prior-unweighting matrix algebra used by `get_corrected_scores()`. The
+#' returned `ols_var*` columns are retained as compatibility aliases for the
+#' measurement-error estimators; under non-diagonal `R_i` they contain GLS/MLE
+#' score variances.
 #'
 #' @param fit_obj Fitted `lme4` model whose fixed effects are used to residualize
 #' the outcome.
@@ -256,19 +277,149 @@ get_diagonal_corrected_scores <- function(fit_null, group = NULL) {
 #' @param outcome_var Character scalar naming the outcome column.
 #' @param within_var Optional character scalar naming the within-cluster
 #' predictor. If `NULL`, an intercept-only cluster score is computed.
+#' @param R_list Optional named list of cluster-level residual covariance
+#' matrices. Names should match `cluster_var` values. If unnamed, matrices are
+#' matched to clusters in the order they appear in `data`. If `NULL`, iid
+#' residual covariance `sigma(fit_obj)^2 I` is used for each cluster.
 #'
 #' @return
 #' A tibble with one row per cluster and an `id` column. Intercept-only calls
 #' return `corrected` and `corrected_intercept_full`; calls with `within_var`
-#' return `corrected_intercept_full` and `corrected_slope_full`. Singular
-#' within-cluster least-squares systems return `NA_real_` values for that
-#' cluster's corrected scores.
-get_closed_form_corrected_scores <- function(fit_obj, data, cluster_var, outcome_var, within_var = NULL) {
+#' return `corrected_intercept_full` and `corrected_slope_full`. Singular or
+#' numerically invalid cluster systems return `NA_real_` values for that
+#' cluster's corrected scores and variances.
+get_closed_form_corrected_scores <- function(fit_obj, data, cluster_var, outcome_var, within_var = NULL,
+                                             R_list = NULL) {
   cluster_ids <- unique(as.character(data[[cluster_var]]))
+  split_dat <- split(data, as.character(data[[cluster_var]]), drop = TRUE)[cluster_ids]
   beta_hat <- lme4::fixef(fit_obj)
+  sigma2_hat <- stats::sigma(fit_obj)^2
 
+  if (!is.null(R_list) && !is.list(R_list)) {
+    stop("`R_list` must be NULL or a list of cluster-level residual covariance matrices.")
+  }
+  if (!is.null(R_list) && is.null(names(R_list))) {
+    if (length(R_list) != length(cluster_ids)) {
+      stop("Unnamed `R_list` must have one matrix per cluster in `data` order.")
+    }
+    names(R_list) <- cluster_ids
+  }
+
+  if (is.null(R_list)) {
+    # Fast iid branch: R_i = sigma^2 I. The scalar sigma^2 does not affect the
+    # coefficient estimate, so the score is OLS on fixed-effect residuals. We
+    # still use sigma^2 below for the score covariance.
+    id_vec <- as.character(data[[cluster_var]])
+
+    if (is.null(within_var)) {
+      # Random intercept only:
+      #   Z_i = 1_i
+      #   r_i = y_i - beta_0
+      resid_all <- data[[outcome_var]] - beta_hat[[1]]
+      resid_by_id <- split(resid_all, id_vec, drop = TRUE)[cluster_ids]
+      z_by_id <- lapply(resid_by_id, function(resid_i) matrix(1, nrow = length(resid_i), ncol = 1L))
+      n_re <- 1L
+    } else {
+      # Random intercept and slope:
+      #   Z_i = X_i = [1, z_i]
+      #   r_i = y_i - beta_0 - beta_z z_i
+      # This assumes the fixed-effect and random-effect designs match, as in
+      # the current random-slope simulations.
+      z_all <- data[[within_var]]
+      resid_all <- data[[outcome_var]] - beta_hat[[1]] - beta_hat[[within_var]] * z_all
+      resid_by_id <- split(resid_all, id_vec, drop = TRUE)[cluster_ids]
+      z_vec_by_id <- split(z_all, id_vec, drop = TRUE)[cluster_ids]
+      z_by_id <- lapply(z_vec_by_id, function(z_vec) cbind(1, z_vec))
+      n_re <- 2L
+    }
+
+    # Bucket clusters by exact Z design. Balanced simulations usually have one
+    # bucket; unbalanced simulations often have one bucket per realized trial
+    # count because z is generated deterministically from the count.
+    design_buckets <- new.env(parent = emptyenv())
+    for (i in seq_along(cluster_ids)) {
+      z_mat <- z_by_id[[i]]
+      z_values <- as.numeric(z_mat)
+      # First partition by dimensions to avoid comparing vectors of different
+      # lengths, then compare the full numeric design for exact reuse.
+      bucket_key <- paste(nrow(z_mat), ncol(z_mat), sep = "|")
+      bucket <- if (exists(bucket_key, envir = design_buckets, inherits = FALSE)) {
+        get(bucket_key, envir = design_buckets, inherits = FALSE)
+      } else {
+        list()
+      }
+
+      matched <- FALSE
+      if (length(bucket) > 0L) {
+        for (j in seq_along(bucket)) {
+          if (identical(z_values, bucket[[j]]$z_values)) {
+            bucket[[j]]$indices <- c(bucket[[j]]$indices, i)
+            matched <- TRUE
+            break
+          }
+        }
+      }
+      if (!matched) {
+        bucket[[length(bucket) + 1L]] <- list(
+          z_values = z_values,
+          z_mat = z_mat,
+          indices = i
+        )
+      }
+      assign(bucket_key, bucket, envir = design_buckets)
+    }
+
+    corrected <- matrix(NA_real_, nrow = n_re, ncol = length(cluster_ids))
+    vcov_arr <- array(NA_real_, dim = c(n_re, n_re, length(cluster_ids)))
+
+    # For each unique design:
+    #   P_Z = (Z'Z)^-1 Z'
+    #   B_group = P_Z R_group
+    # where R_group is the matrix of residual vectors for all clusters sharing Z.
+    for (bucket_key in ls(design_buckets, all.names = TRUE)) {
+      bucket <- get(bucket_key, envir = design_buckets, inherits = FALSE)
+      for (entry in bucket) {
+        idx <- entry$indices
+        z_mat <- entry$z_mat
+        ztz_inv <- tryCatch(solve(crossprod(z_mat)), error = function(e) NULL)
+        if (is.null(ztz_inv)) {
+          next
+        }
+
+        resid_mat <- do.call(cbind, resid_by_id[idx])
+        corrected[, idx] <- ztz_inv %*% crossprod(z_mat, resid_mat)
+        vcov_i <- ztz_inv * sigma2_hat
+        # Every cluster in this design group has the same iid score covariance.
+        for (cluster_pos in idx) {
+          vcov_arr[, , cluster_pos] <- vcov_i
+        }
+      }
+    }
+
+    out <- tibble::tibble(id = cluster_ids)
+    if (n_re == 1L) {
+      out$corrected <- corrected[1, ]
+      out$corrected_intercept_full <- corrected[1, ]
+      out$gls_var11 <- vcov_arr[1, 1, ]
+      out$ols_var11 <- vcov_arr[1, 1, ]
+    } else {
+      out$corrected_intercept_full <- corrected[1, ]
+      out$corrected_slope_full <- corrected[2, ]
+      out$gls_var11 <- vcov_arr[1, 1, ]
+      out$gls_var12 <- vcov_arr[1, 2, ]
+      out$gls_var22 <- vcov_arr[2, 2, ]
+      out$ols_var11 <- vcov_arr[1, 1, ]
+      out$ols_var12 <- vcov_arr[1, 2, ]
+      out$ols_var22 <- vcov_arr[2, 2, ]
+    }
+    return(out)
+  }
+
+  # General GLS branch for explicit R_i. This is the path used for AR(1),
+  # Toeplitz, or any other non-diagonal residual covariance supplied by the
+  # simulator. It intentionally mirrors the formula in the roxygen block.
   purrr::map_dfr(cluster_ids, function(cluster_id) {
-    df_i <- data[data[[cluster_var]] == cluster_id, , drop = FALSE]
+    df_i <- split_dat[[cluster_id]]
 
     if (is.null(within_var)) {
       # Random-intercept-only case: the cluster score is the intercept from a
@@ -286,32 +437,49 @@ get_closed_form_corrected_scores <- function(fit_obj, data, cluster_var, outcome
     }
 
     # Residualize using fixed effects only, then estimate the cluster-specific
-    # likelihood-only coefficients from the random-effect design.
+    # likelihood-only coefficients from the random-effect design. With the
+    # default iid R_i this is exactly the original OLS closed form; with
+    # non-diagonal R_i it is the MLE/Bartlett GLS score.
     resid_i <- df_i[[outcome_var]] - as.numeric(x_mat %*% beta_vec)
-    z_crossprod <- crossprod(z_mat)
-    corrected <- tryCatch(
-      as.numeric(solve(z_crossprod, crossprod(z_mat, resid_i))),
-      error = function(e) rep(NA_real_, ncol(z_mat))
-    )
-    
-    # Also calculate the OLS sampling variance: (Z'Z)^-1 * sigma^2
-    sigma2_hat <- stats::sigma(fit_obj)^2
-    ols_vcov <- tryCatch(
-      solve(z_crossprod) * sigma2_hat,
-      error = function(e) matrix(NA_real_, nrow = ncol(z_mat), ncol = ncol(z_mat))
-    )
+
+    R_i <- as.matrix(R_list[[cluster_id]])
+
+    gls <- tryCatch({
+      if (!is.matrix(R_i) || nrow(R_i) != nrow(df_i) || ncol(R_i) != nrow(df_i)) {
+        stop("R_i has incompatible dimensions.")
+      }
+      # Avoid forming R_i^-1 explicitly. solve(R_i, Z_i) and solve(R_i, r_i)
+      # supply R_i^-1 Z_i and R_i^-1 r_i for the GLS normal equations.
+      R_inv_Z <- solve(R_i, z_mat)
+      R_inv_resid <- solve(R_i, resid_i)
+      z_Rinv_z <- crossprod(z_mat, R_inv_Z)
+      gls_vcov <- solve(z_Rinv_z)
+      list(
+        corrected = as.numeric(gls_vcov %*% crossprod(z_mat, R_inv_resid)),
+        vcov = gls_vcov
+      )
+    }, error = function(e) {
+      list(
+        corrected = rep(NA_real_, ncol(z_mat)),
+        vcov = matrix(NA_real_, nrow = ncol(z_mat), ncol = ncol(z_mat))
+      )
+    })
 
     out <- tibble::tibble(id = cluster_id)
     if (ncol(z_mat) == 1L) {
-      out$corrected <- corrected[[1]]
-      out$corrected_intercept_full <- corrected[[1]]
-      out$ols_var11 <- ols_vcov[1, 1]
+      out$corrected <- gls$corrected[[1]]
+      out$corrected_intercept_full <- gls$corrected[[1]]
+      out$gls_var11 <- gls$vcov[1, 1]
+      out$ols_var11 <- gls$vcov[1, 1]
     } else {
-      out$corrected_intercept_full <- corrected[[1]]
-      out$corrected_slope_full <- corrected[[2]]
-      out$ols_var11 <- ols_vcov[1, 1]
-      out$ols_var12 <- ols_vcov[1, 2]
-      out$ols_var22 <- ols_vcov[2, 2]
+      out$corrected_intercept_full <- gls$corrected[[1]]
+      out$corrected_slope_full <- gls$corrected[[2]]
+      out$gls_var11 <- gls$vcov[1, 1]
+      out$gls_var12 <- gls$vcov[1, 2]
+      out$gls_var22 <- gls$vcov[2, 2]
+      out$ols_var11 <- gls$vcov[1, 1]
+      out$ols_var12 <- gls$vcov[1, 2]
+      out$ols_var22 <- gls$vcov[2, 2]
     }
     out
   })
