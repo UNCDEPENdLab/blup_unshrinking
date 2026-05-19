@@ -89,6 +89,10 @@ The wrapper accepts these variables:
 - `LAI_INCLUDE_TEMPERED_EIV`: append tempered EIV sensitivity rows; defaults
   to `0`.
 
+Each array task writes `lai_condition_array_<job>_<chunk>.out`,
+`lai_condition_array_<job>_<chunk>.err`, and a combined
+`lai_condition_array_<job>_<chunk>.log` under `${LAI_OUT_DIR}/logs`.
+
 After all array jobs finish, rebuild the full aggregate files by running the
 standard entry point once with no chunk arguments and resume enabled:
 

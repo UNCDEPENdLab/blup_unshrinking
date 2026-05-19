@@ -706,7 +706,59 @@ fit_eiv_dual <- function(stage2_df,
   })
 }
 
-#' Fit a Fuller errors-in-variables (EIV) estimator.
+fuller_dual_result_columns <- function() {
+  c(
+    "estimate", "se", "ci_low", "ci_high", "status_code",
+    "mx_issue_class", "mx_issue_detail",
+    "fuller_lambda1", "fuller_lambda2", "fuller_sigma2",
+    "fuller_weight_min", "fuller_weight_max", "fuller_correction_c"
+  )
+}
+
+fuller_matrix_diagnostics <- function(mat) {
+  mat <- (mat + t(mat)) / 2
+  vals <- tryCatch(eigen(mat, symmetric = TRUE, only.values = TRUE)$values, error = function(e) NA_real_)
+  vals <- vals[is.finite(vals)]
+  if (length(vals) == 0L) {
+    return(list(min_eigen = NA_real_, max_eigen = NA_real_, condition_number = Inf))
+  }
+  min_eig <- min(vals)
+  max_eig <- max(vals)
+  condition_number <- if (is.finite(min_eig) && is.finite(max_eig) && min_eig > 0) {
+    max_eig / min_eig
+  } else {
+    Inf
+  }
+  list(min_eigen = min_eig, max_eigen = max_eig, condition_number = condition_number)
+}
+
+fuller_relative_min_eigen <- function(corrected_diag, observed_diag) {
+  if (is.finite(corrected_diag$min_eigen) &&
+    is.finite(observed_diag$max_eigen) &&
+    observed_diag$max_eigen > sqrt(.Machine$double.eps)) {
+    corrected_diag$min_eigen / observed_diag$max_eigen
+  } else {
+    NA_real_
+  }
+}
+
+fuller_row_max_finite <- function(...) {
+  mat <- cbind(...)
+  apply(mat, 1L, function(x) {
+    x <- x[is.finite(x)]
+    if (length(x) == 0L) Inf else max(x)
+  })
+}
+
+fuller_guard_penalty <- function(value, floor) {
+  ifelse(
+    is.finite(value) & is.finite(floor) & floor > 0 & value > 0,
+    pmax(0, log(floor / value)),
+    Inf
+  )
+}
+
+#' Fit the shared Fuller errors-in-variables (EIV) core.
 #'
 #' @details
 #' Implements the three-step procedure from Section \ref{sec-fuller-method} of
@@ -753,17 +805,19 @@ fit_eiv_dual <- function(stage2_df,
 #' indicates success, `1L` indicates a linear system solve failure, `2L`
 #' indicates non-finite estimates/standard errors, and `3L` indicates that
 #' weights or the latent predictor variance were not admissible.
-fit_fuller_dual <- function(stage2_df,
-                            outcome,
-                            predictor_u0 = NULL,
-                            predictor_u1,
-                            meas11 = NULL,
-                            meas12 = NULL,
-                            meas22,
-                            outcome_meas_var = NULL) {
+fit_fuller_dual_core <- function(stage2_df,
+                                 outcome,
+                                 predictor_u0 = NULL,
+                                 predictor_u1,
+                                 meas11 = NULL,
+                                 meas12 = NULL,
+                                 meas22,
+                                 outcome_meas_var = NULL,
+                                 measurement_weight = 1,
+                                 auto_tempered = FALSE) {
   if (!requireNamespace("geigen", quietly = TRUE)) {
     stop(
-      "The `geigen` package is required for `fit_fuller_dual()` (generalized eigenvalues). ",
+      "The `geigen` package is required for Fuller EIV estimation (generalized eigenvalues). ",
       "Install it with `install.packages(\"geigen\")`."
     )
   }
@@ -781,7 +835,30 @@ fit_fuller_dual <- function(stage2_df,
     fuller_sigma2 = NA_real_,
     fuller_weight_min = NA_real_,
     fuller_weight_max = NA_real_,
-    fuller_correction_c = NA_real_
+    fuller_correction_c = NA_real_,
+    fuller_measurement_weight_requested = measurement_weight,
+    fuller_measurement_weight_used = NA_real_,
+    fuller_auto_tempered = auto_tempered,
+    fuller_sx_star_condition = NA_real_,
+    fuller_sx_star_min_eigen = NA_real_,
+    fuller_sx_uncorr_condition = NA_real_,
+    fuller_sx_uncorr_min_eigen = NA_real_,
+    fuller_sx_observed_max_eigen = NA_real_,
+    fuller_sx_uncorr_relative_min_eigen = NA_real_,
+    fuller_scaling_condition = NA_real_,
+    fuller_scaling_min_eigen = NA_real_,
+    fuller_scaling_observed_max_eigen = NA_real_,
+    fuller_scaling_relative_min_eigen = NA_real_,
+    fuller_reference_se = NA_real_,
+    fuller_se_ratio = NA_real_,
+    fuller_auto_guard_pass = NA,
+    fuller_auto_guard_reason = NA_character_,
+    fuller_auto_guard_score = NA_real_,
+    fuller_auto_full_weight_guard_pass = NA,
+    fuller_auto_full_weight_guard_reason = NA_character_,
+    fuller_auto_full_weight_se_ratio = NA_real_,
+    fuller_auto_search_evaluations = NA_integer_,
+    fuller_auto_search_nonmonotone = NA
   )
 
   has_u0 <- !is.null(predictor_u0)
@@ -796,6 +873,15 @@ fit_fuller_dual <- function(stage2_df,
   if (has_u0) {
     cols_needed <- c(outcome, predictor_u0, predictor_u1, meas11, meas12, meas22)
   }
+  if (!is.finite(measurement_weight) || measurement_weight < 0 || measurement_weight > 1) {
+    return(dplyr::mutate(
+      out_fail,
+      status_code = 3L,
+      mx_issue_class = "fuller_invalid_measurement_weight",
+      fuller_measurement_weight_used = measurement_weight
+    ))
+  }
+
   if (!is.null(outcome_meas_var)) {
     cols_needed <- c(cols_needed, outcome_meas_var)
   }
@@ -810,7 +896,7 @@ fit_fuller_dual <- function(stage2_df,
   # variance with some stability. The target predictor must also vary.
   if (m < 8L || m <= p || !is.finite(stats::sd(dat[[predictor_u1]])) ||
     stats::sd(dat[[predictor_u1]]) <= sqrt(.Machine$double.eps)) {
-    return(out_fail)
+    return(dplyr::mutate(out_fail, fuller_measurement_weight_used = measurement_weight))
   }
 
   # Extract observed scores.
@@ -821,11 +907,11 @@ fit_fuller_dual <- function(stage2_df,
 
   # Predictor measurement-error covariances; clamp variances at zero.
   if (has_u0) {
-    s11 <- pmax(dat[[meas11]], 0)
-    s12 <- dat[[meas12]]
-    s22 <- pmax(dat[[meas22]], 0)
+    s11 <- measurement_weight * pmax(dat[[meas11]], 0)
+    s12 <- measurement_weight * dat[[meas12]]
+    s22 <- measurement_weight * pmax(dat[[meas22]], 0)
   } else {
-    s11 <- pmax(dat[[meas22]], 0)
+    s11 <- measurement_weight * pmax(dat[[meas22]], 0)
     s12 <- rep(0, m)
     s22 <- rep(0, m)
   }
@@ -856,7 +942,8 @@ fit_fuller_dual <- function(stage2_df,
     return(dplyr::mutate(
       out_fail,
       status_code = 1L,
-      mx_issue_class = "fuller_gamma0_solve_failed"
+      mx_issue_class = "fuller_gamma0_solve_failed",
+      fuller_measurement_weight_used = measurement_weight
     ))
   }
   gamma0_u0 <- gamma0_hat[2]
@@ -932,7 +1019,8 @@ fit_fuller_dual <- function(stage2_df,
       out_fail,
       status_code = 2L,
       mx_issue_class = "fuller_sigma2_nonfinite",
-      fuller_lambda1 = lambda1_hat
+      fuller_lambda1 = lambda1_hat,
+      fuller_measurement_weight_used = measurement_weight
     ))
   }
   sigma2_hat <- max(0, sigma2_hat)
@@ -955,7 +1043,8 @@ fit_fuller_dual <- function(stage2_df,
         sigma2_hat
       ),
       fuller_lambda1 = lambda1_hat,
-      fuller_sigma2 = sigma2_hat
+      fuller_sigma2 = sigma2_hat,
+      fuller_measurement_weight_used = measurement_weight
     ))
   }
 
@@ -989,6 +1078,7 @@ fit_fuller_dual <- function(stage2_df,
   s_star <- bw_sum - c_correction * omega_sum_w
   s_x_star <- s_star[2:(p + 1L), 2:(p + 1L), drop = FALSE]
   s_xy_star <- s_star[2:(p + 1L), 1, drop = FALSE]
+  sx_star_diag <- fuller_matrix_diagnostics(s_x_star[2:3, 2:3, drop = FALSE])
 
   gamma_hat <- tryCatch(as.vector(solve(s_x_star, s_xy_star)), error = function(e) NULL)
   if (is.null(gamma_hat) || any(!is.finite(gamma_hat))) {
@@ -1001,13 +1091,20 @@ fit_fuller_dual <- function(stage2_df,
       fuller_sigma2 = sigma2_hat,
       fuller_weight_min = min(w_j),
       fuller_weight_max = max(w_j),
-      fuller_correction_c = c_correction
+      fuller_correction_c = c_correction,
+      fuller_measurement_weight_used = measurement_weight,
+      fuller_sx_star_condition = sx_star_diag$condition_number,
+      fuller_sx_star_min_eigen = sx_star_diag$min_eigen
     ))
   }
 
   # Standard errors (Fuller, 1987).
   xw_sum <- crossprod(x_mat * sqrt(w_inv))
+  s_x_observed <- xw_sum / m
+  sx_observed_diag <- fuller_matrix_diagnostics(s_x_observed[2:3, 2:3, drop = FALSE])
   s_x_uncorr <- (xw_sum - omega_x_sum_w) / m
+  sx_uncorr_diag <- fuller_matrix_diagnostics(s_x_uncorr[2:3, 2:3, drop = FALSE])
+  sx_uncorr_relative_min_eigen <- fuller_relative_min_eigen(sx_uncorr_diag, sx_observed_diag)
   s_x_inv <- tryCatch(solve(s_x_uncorr), error = function(e) NULL)
   if (is.null(s_x_inv) || any(!is.finite(s_x_inv))) {
     return(dplyr::mutate(
@@ -1019,7 +1116,14 @@ fit_fuller_dual <- function(stage2_df,
       fuller_sigma2 = sigma2_hat,
       fuller_weight_min = min(w_j),
       fuller_weight_max = max(w_j),
-      fuller_correction_c = c_correction
+      fuller_correction_c = c_correction,
+      fuller_measurement_weight_used = measurement_weight,
+      fuller_sx_star_condition = sx_star_diag$condition_number,
+      fuller_sx_star_min_eigen = sx_star_diag$min_eigen,
+      fuller_sx_uncorr_condition = sx_uncorr_diag$condition_number,
+      fuller_sx_uncorr_min_eigen = sx_uncorr_diag$min_eigen,
+      fuller_sx_observed_max_eigen = sx_observed_diag$max_eigen,
+      fuller_sx_uncorr_relative_min_eigen = sx_uncorr_relative_min_eigen
     ))
   }
 
@@ -1049,7 +1153,14 @@ fit_fuller_dual <- function(stage2_df,
       fuller_sigma2 = sigma2_hat,
       fuller_weight_min = min(w_j),
       fuller_weight_max = max(w_j),
-      fuller_correction_c = c_correction
+      fuller_correction_c = c_correction,
+      fuller_measurement_weight_used = measurement_weight,
+      fuller_sx_star_condition = sx_star_diag$condition_number,
+      fuller_sx_star_min_eigen = sx_star_diag$min_eigen,
+      fuller_sx_uncorr_condition = sx_uncorr_diag$condition_number,
+      fuller_sx_uncorr_min_eigen = sx_uncorr_diag$min_eigen,
+      fuller_sx_observed_max_eigen = sx_observed_diag$max_eigen,
+      fuller_sx_uncorr_relative_min_eigen = sx_uncorr_relative_min_eigen
     ))
   }
 
@@ -1074,7 +1185,8 @@ fit_fuller_dual <- function(stage2_df,
       fuller_sigma2 = sigma2_hat,
       fuller_weight_min = min(w_j),
       fuller_weight_max = max(w_j),
-      fuller_correction_c = c_correction
+      fuller_correction_c = c_correction,
+      fuller_measurement_weight_used = measurement_weight
     ))
   }
   pred_mean <- colSums(pred_mat * w_inv) / w_sum
@@ -1092,8 +1204,14 @@ fit_fuller_dual <- function(stage2_df,
   }
   # Use the standard effective-denominator for a weighted sample covariance so
   # that constant weights reduce exactly to the unweighted (m - 1) denominator.
+  sigma_x_observed <- crossprod(pred_centered_w) / denom_eff
+  sigma_x_observed <- (sigma_x_observed + t(sigma_x_observed)) / 2
+  scaling_observed_diag <- fuller_matrix_diagnostics(sigma_x_observed)
   sigma_x_hat <- (crossprod(pred_centered_w) - omega_x_sum_pred_w) / denom_eff
   sigma_x_hat <- (sigma_x_hat + t(sigma_x_hat)) / 2
+  scaling_diag <- fuller_matrix_diagnostics(sigma_x_hat)
+  scaling_relative_min_eigen <- fuller_relative_min_eigen(scaling_diag, scaling_observed_diag)
+  
   target_pred_idx <- ncol(pred_mat)
   if (!is.finite(sigma_x_hat[target_pred_idx, target_pred_idx]) ||
     sigma_x_hat[target_pred_idx, target_pred_idx] <= sqrt(.Machine$double.eps)) {
@@ -1106,7 +1224,18 @@ fit_fuller_dual <- function(stage2_df,
       fuller_sigma2 = sigma2_hat,
       fuller_weight_min = min(w_j),
       fuller_weight_max = max(w_j),
-      fuller_correction_c = c_correction
+      fuller_correction_c = c_correction,
+      fuller_measurement_weight_used = measurement_weight,
+      fuller_sx_star_condition = sx_star_diag$condition_number,
+      fuller_sx_star_min_eigen = sx_star_diag$min_eigen,
+      fuller_sx_uncorr_condition = sx_uncorr_diag$condition_number,
+      fuller_sx_uncorr_min_eigen = sx_uncorr_diag$min_eigen,
+      fuller_sx_observed_max_eigen = sx_observed_diag$max_eigen,
+      fuller_sx_uncorr_relative_min_eigen = sx_uncorr_relative_min_eigen,
+      fuller_scaling_condition = scaling_diag$condition_number,
+      fuller_scaling_min_eigen = scaling_diag$min_eigen,
+      fuller_scaling_observed_max_eigen = scaling_observed_diag$max_eigen,
+      fuller_scaling_relative_min_eigen = scaling_relative_min_eigen
     ))
   }
   scale_u1 <- sqrt(sigma_x_hat[target_pred_idx, target_pred_idx])
@@ -1123,7 +1252,18 @@ fit_fuller_dual <- function(stage2_df,
       fuller_sigma2 = sigma2_hat,
       fuller_weight_min = min(w_j),
       fuller_weight_max = max(w_j),
-      fuller_correction_c = c_correction
+      fuller_correction_c = c_correction,
+      fuller_measurement_weight_used = measurement_weight,
+      fuller_sx_star_condition = sx_star_diag$condition_number,
+      fuller_sx_star_min_eigen = sx_star_diag$min_eigen,
+      fuller_sx_uncorr_condition = sx_uncorr_diag$condition_number,
+      fuller_sx_uncorr_min_eigen = sx_uncorr_diag$min_eigen,
+      fuller_sx_observed_max_eigen = sx_observed_diag$max_eigen,
+      fuller_sx_uncorr_relative_min_eigen = sx_uncorr_relative_min_eigen,
+      fuller_scaling_condition = scaling_diag$condition_number,
+      fuller_scaling_min_eigen = scaling_diag$min_eigen,
+      fuller_scaling_observed_max_eigen = scaling_observed_diag$max_eigen,
+      fuller_scaling_relative_min_eigen = scaling_relative_min_eigen
     ))
   }
 
@@ -1140,7 +1280,384 @@ fit_fuller_dual <- function(stage2_df,
     fuller_sigma2 = sigma2_hat,
     fuller_weight_min = min(w_j),
     fuller_weight_max = max(w_j),
-    fuller_correction_c = c_correction
+    fuller_correction_c = c_correction,
+    fuller_measurement_weight_requested = measurement_weight,
+    fuller_measurement_weight_used = measurement_weight,
+    fuller_auto_tempered = auto_tempered,
+    fuller_sx_star_condition = sx_star_diag$condition_number,
+    fuller_sx_star_min_eigen = sx_star_diag$min_eigen,
+    fuller_sx_uncorr_condition = sx_uncorr_diag$condition_number,
+    fuller_sx_uncorr_min_eigen = sx_uncorr_diag$min_eigen,
+    fuller_sx_observed_max_eigen = sx_observed_diag$max_eigen,
+    fuller_sx_uncorr_relative_min_eigen = sx_uncorr_relative_min_eigen,
+    fuller_scaling_condition = scaling_diag$condition_number,
+    fuller_scaling_min_eigen = scaling_diag$min_eigen,
+    fuller_scaling_observed_max_eigen = scaling_observed_diag$max_eigen,
+    fuller_scaling_relative_min_eigen = scaling_relative_min_eigen,
+    fuller_reference_se = NA_real_,
+    fuller_se_ratio = NA_real_,
+    fuller_auto_guard_pass = NA,
+    fuller_auto_guard_reason = NA_character_,
+    fuller_auto_guard_score = NA_real_,
+    fuller_auto_full_weight_guard_pass = NA,
+    fuller_auto_full_weight_guard_reason = NA_character_,
+    fuller_auto_full_weight_se_ratio = NA_real_,
+    fuller_auto_search_evaluations = NA_integer_,
+    fuller_auto_search_nonmonotone = NA
+  )
+}
+
+score_fuller_auto_candidates <- function(candidate_tbl,
+                                         reference_se = NA_real_,
+                                         target_condition_number = 1e5,
+                                         min_sx_uncorr_eigen = sqrt(.Machine$double.eps),
+                                         min_scaling_eigen = sqrt(.Machine$double.eps),
+                                         min_sx_uncorr_relative_eigen = 5e-2,
+                                         min_scaling_relative_eigen = 5e-2) {
+  candidate_tbl <- dplyr::mutate(
+    candidate_tbl,
+    fuller_max_condition = fuller_row_max_finite(
+      fuller_sx_star_condition,
+      fuller_sx_uncorr_condition,
+      fuller_scaling_condition
+    ),
+    fuller_reference_se = reference_se,
+    fuller_se_ratio = if (is.finite(reference_se) && reference_se > sqrt(.Machine$double.eps)) {
+      se / reference_se
+    } else {
+      NA_real_
+    }
+  )
+
+  sx_ok <- is.finite(candidate_tbl$fuller_sx_uncorr_min_eigen) &
+    candidate_tbl$fuller_sx_uncorr_min_eigen >= min_sx_uncorr_eigen
+  scaling_ok <- is.finite(candidate_tbl$fuller_scaling_min_eigen) &
+    candidate_tbl$fuller_scaling_min_eigen >= min_scaling_eigen
+  sx_relative_ok <- is.finite(candidate_tbl$fuller_sx_uncorr_relative_min_eigen) &
+    candidate_tbl$fuller_sx_uncorr_relative_min_eigen >= min_sx_uncorr_relative_eigen
+  scaling_relative_ok <- is.finite(candidate_tbl$fuller_scaling_relative_min_eigen) &
+    candidate_tbl$fuller_scaling_relative_min_eigen >= min_scaling_relative_eigen
+  condition_ok <- is.finite(candidate_tbl$fuller_max_condition) &
+    candidate_tbl$fuller_max_condition <= target_condition_number
+  se_ok <- is.finite(candidate_tbl$se) & candidate_tbl$se > 0
+
+  status_ok <- as.integer(candidate_tbl$status_code) == 0L
+  reason <- dplyr::case_when(
+    !status_ok ~ paste0("status_", candidate_tbl$status_code),
+    !se_ok ~ "bad_se",
+    !sx_ok ~ "sx_uncorr_eigen_floor",
+    !scaling_ok ~ "scaling_eigen_floor",
+    !sx_relative_ok ~ "sx_uncorr_relative_eigen_floor",
+    !scaling_relative_ok ~ "scaling_relative_eigen_floor",
+    !condition_ok ~ "condition_cap",
+    TRUE ~ "ok"
+  )
+
+  eig_penalty <- fuller_guard_penalty(candidate_tbl$fuller_sx_uncorr_min_eigen, min_sx_uncorr_eigen) +
+    fuller_guard_penalty(candidate_tbl$fuller_scaling_min_eigen, min_scaling_eigen) +
+    fuller_guard_penalty(candidate_tbl$fuller_sx_uncorr_relative_min_eigen, min_sx_uncorr_relative_eigen) +
+    fuller_guard_penalty(candidate_tbl$fuller_scaling_relative_min_eigen, min_scaling_relative_eigen)
+  condition_penalty <- ifelse(
+    is.finite(candidate_tbl$fuller_max_condition) &
+      is.finite(target_condition_number) &
+      target_condition_number > 0,
+    pmax(0, log(candidate_tbl$fuller_max_condition / target_condition_number)),
+    Inf
+  )
+  status_penalty <- ifelse(status_ok & se_ok, 0, Inf)
+  temper_penalty <- pmax(0, 1 - candidate_tbl$fuller_measurement_weight_used) * 0.01
+
+  dplyr::mutate(
+    candidate_tbl,
+    fuller_auto_guard_pass = status_ok & se_ok & sx_ok & scaling_ok & sx_relative_ok &
+      scaling_relative_ok & condition_ok,
+    fuller_auto_guard_reason = reason,
+    fuller_auto_guard_score = status_penalty + eig_penalty + condition_penalty + temper_penalty
+  )
+}
+
+fuller_reference_dual_se <- function(stage2_df,
+                                     outcome,
+                                     predictor_u0,
+                                     predictor_u1) {
+  ref <- tryCatch(
+    fit_observed_dual(
+      stage2_df,
+      outcome = outcome,
+      predictor_u0 = predictor_u0,
+      predictor_u1 = predictor_u1
+    ),
+    error = function(e) NULL
+  )
+  if (is.null(ref) || nrow(ref) == 0L || !"se" %in% names(ref)) {
+    return(NA_real_)
+  }
+
+  hc3 <- ref$se[ref$se_type == "hc3" & as.integer(ref$status_code) == 0L]
+  if (length(hc3) > 0L && is.finite(hc3[[1]]) && hc3[[1]] > sqrt(.Machine$double.eps)) {
+    return(hc3[[1]])
+  }
+
+  naive <- ref$se[ref$se_type == "naive" & as.integer(ref$status_code) == 0L]
+  if (length(naive) > 0L && is.finite(naive[[1]]) && naive[[1]] > sqrt(.Machine$double.eps)) {
+    return(naive[[1]])
+  }
+
+  NA_real_
+}
+
+#' Fit the traditional full-correction Fuller EIV estimator.
+#'
+#' @inheritParams fit_fuller_dual_core
+#'
+#' @return A one-row tibble using the original Fuller result schema.
+fit_fuller_dual <- function(stage2_df,
+                            outcome,
+                            predictor_u0,
+                            predictor_u1,
+                            meas11,
+                            meas12,
+                            meas22,
+                            outcome_meas_var = NULL) {
+  out <- fit_fuller_dual_core(
+    stage2_df,
+    outcome = outcome,
+    predictor_u0 = predictor_u0,
+    predictor_u1 = predictor_u1,
+    meas11 = meas11,
+    meas12 = meas12,
+    meas22 = meas22,
+    outcome_meas_var = outcome_meas_var,
+    measurement_weight = 1,
+    auto_tempered = FALSE
+  )
+  dplyr::select(out, dplyr::any_of(fuller_dual_result_columns()))
+}
+
+#' Fit a Fuller EIV estimator with internal stepdown tempering.
+#'
+#' @details
+#' The stepdown procedure tempers the measurement-error correction when the 
+#' corrected predictor covariance matrices approach singularity. It performs a 
+#' grid search over a set of `candidate_weights` (ranging from 1 down to 0). 
+#' If the full correction (weight = 1) leads to an ill-conditioned matrix 
+#' (assessed via minimum eigenvalues relative to the uncorrected observed data),
+#' the algorithm bisects the interval between the largest admissible weight and 
+#' the lowest inadmissible weight to find the near-optimal measurement-error
+#' correction scaling factor. This acts as a regularizer.
+#'
+#' @inheritParams fit_fuller_dual_core
+#' @param candidate_weights Optional numeric vector of measurement-error
+#' correction weights in `[0, 1]` for the initial coarse search. If `NULL`, a
+#' uniform grid from 1 to 0 is generated.
+#' @param coarse_grid_size Number of grid points used when `candidate_weights`
+#' is `NULL`.
+#' @param search_tolerance Absolute alpha tolerance for bisection refinement.
+#' @param max_refinements Maximum bisection iterations after the coarse search.
+#' @param target_condition_number Maximum accepted condition number across
+#' Fuller internal corrected/scaling blocks.
+#' @param min_sx_uncorr_eigen Absolute minimum eigenvalue floor for the
+#' corrected predictor block used in the Fuller variance calculation.
+#' @param min_scaling_eigen Absolute minimum eigenvalue floor for the corrected
+#' scaling covariance.
+#' @param min_sx_uncorr_relative_eigen Minimum ratio of the corrected predictor
+#' block's weakest eigenvalue to the observed block's largest eigenvalue.
+#' @param min_scaling_relative_eigen Minimum ratio of the corrected scaling
+#' block's weakest eigenvalue to the observed scaling block's largest
+#' eigenvalue.
+#'
+#' @return A one-row tibble with the Fuller core result plus stepdown
+#' diagnostics, including the selected measurement-error correction weight.
+fit_fuller_dual_stepdown <- function(stage2_df,
+                                     outcome,
+                                     predictor_u0,
+                                     predictor_u1,
+                                     meas11,
+                                     meas12,
+                                     meas22,
+                                     outcome_meas_var = NULL,
+                                     candidate_weights = NULL,
+                                     coarse_grid_size = 9L,
+                                     search_tolerance = 0.005,
+                                     max_refinements = 12L,
+                                     target_condition_number = 1e5,
+                                     min_sx_uncorr_eigen = sqrt(.Machine$double.eps),
+                                     min_scaling_eigen = sqrt(.Machine$double.eps),
+                                     min_sx_uncorr_relative_eigen = 5e-2,
+                                     min_scaling_relative_eigen = 5e-2) {
+  if (is.null(candidate_weights)) {
+    coarse_grid_size <- max(3L, as.integer(coarse_grid_size))
+    candidate_weights <- seq(1, 0, length.out = coarse_grid_size)
+  }
+  candidate_weights <- sort(unique(pmin(1, pmax(0, candidate_weights))), decreasing = TRUE)
+  search_tolerance <- max(sqrt(.Machine$double.eps), search_tolerance)
+  max_refinements <- max(0L, as.integer(max_refinements))
+
+  reference_se <- fuller_reference_dual_se(
+    stage2_df,
+    outcome = outcome,
+    predictor_u0 = predictor_u0,
+    predictor_u1 = predictor_u1
+  )
+
+  evaluate_weights <- function(weights) {
+    weights <- sort(unique(pmin(1, pmax(0, weights))), decreasing = TRUE)
+    candidate_results <- lapply(weights, function(weight) {
+      fit_fuller_dual_core(
+        stage2_df,
+        outcome = outcome,
+        predictor_u0 = predictor_u0,
+        predictor_u1 = predictor_u1,
+        meas11 = meas11,
+        meas12 = meas12,
+        meas22 = meas22,
+        outcome_meas_var = outcome_meas_var,
+        measurement_weight = weight,
+        auto_tempered = TRUE
+      )
+    })
+    score_fuller_auto_candidates(
+      dplyr::bind_rows(candidate_results),
+      reference_se = reference_se,
+      target_condition_number = target_condition_number,
+      min_sx_uncorr_eigen = min_sx_uncorr_eigen,
+      min_scaling_eigen = min_scaling_eigen,
+      min_sx_uncorr_relative_eigen = min_sx_uncorr_relative_eigen,
+      min_scaling_relative_eigen = min_scaling_relative_eigen
+    )
+  }
+
+  deduplicate_candidates <- function(tbl) {
+    tbl <- dplyr::mutate(tbl, .weight_key = round(fuller_measurement_weight_used, 10L))
+    tbl <- dplyr::arrange(tbl, dplyr::desc(fuller_measurement_weight_used), fuller_auto_guard_score)
+    tbl <- dplyr::group_by(tbl, .weight_key)
+    tbl <- dplyr::slice(tbl, 1L)
+    tbl <- dplyr::ungroup(tbl)
+    dplyr::select(tbl, -.weight_key)
+  }
+
+  auto_nonmonotone <- function(tbl) {
+    check <- dplyr::arrange(tbl, dplyr::desc(fuller_measurement_weight_used))
+    check <- dplyr::mutate(check, pass = as.logical(fuller_auto_guard_pass))
+    pass <- ifelse(is.na(check$pass), FALSE, check$pass)
+    any(cummax(pass) > 0 & !pass)
+  }
+
+  candidate_tbl <- evaluate_weights(candidate_weights)
+  full_weight <- max(candidate_weights, na.rm = TRUE)
+  full_candidate <- dplyr::filter(candidate_tbl, fuller_measurement_weight_used == full_weight)
+  full_candidate <- dplyr::slice(full_candidate, 1L)
+  full_guard_pass <- if (nrow(full_candidate) > 0L) full_candidate$fuller_auto_guard_pass[[1]] else NA
+  full_guard_reason <- if (nrow(full_candidate) > 0L) full_candidate$fuller_auto_guard_reason[[1]] else NA_character_
+  full_se_ratio <- if (nrow(full_candidate) > 0L) full_candidate$fuller_se_ratio[[1]] else NA_real_
+
+  # Only attempt bisection if the full weight failed but at least one admissible weight exists
+  needs_refinement <- !isTRUE(full_guard_pass) && any(candidate_tbl$fuller_auto_guard_pass)
+  
+  if (needs_refinement) {
+    admissible <- dplyr::filter(candidate_tbl, fuller_auto_guard_pass)
+    lower <- max(admissible$fuller_measurement_weight_used, na.rm = TRUE)
+    
+    upper_candidates <- dplyr::filter(
+      candidate_tbl,
+      !fuller_auto_guard_pass,
+      fuller_measurement_weight_used > lower
+    )
+    
+    if (nrow(upper_candidates) > 0L) {
+      upper <- min(upper_candidates$fuller_measurement_weight_used, na.rm = TRUE)
+      
+      for (i in seq_len(max_refinements)) {
+        if (!is.finite(upper - lower) || (upper - lower) <= search_tolerance) {
+          break
+        }
+        midpoint <- (lower + upper) / 2
+        midpoint_tbl <- evaluate_weights(midpoint)
+        candidate_tbl <- deduplicate_candidates(dplyr::bind_rows(candidate_tbl, midpoint_tbl))
+        midpoint_pass <- isTRUE(midpoint_tbl$fuller_auto_guard_pass[[1]])
+        if (midpoint_pass) {
+          lower <- midpoint
+        } else {
+          upper <- midpoint
+        }
+      }
+    }
+  }
+
+  candidate_tbl <- deduplicate_candidates(candidate_tbl)
+  admissible <- dplyr::filter(candidate_tbl, fuller_auto_guard_pass)
+  admissible <- dplyr::arrange(admissible, dplyr::desc(fuller_measurement_weight_used))
+  if (nrow(admissible) == 0L) {
+    successful <- dplyr::filter(candidate_tbl, as.integer(status_code) == 0L, is.finite(fuller_auto_guard_score))
+    successful <- dplyr::arrange(successful, fuller_auto_guard_score, dplyr::desc(fuller_measurement_weight_used))
+    chosen_candidate <- if (nrow(successful) > 0L) {
+      dplyr::slice(successful, 1L)
+    } else {
+      evaluate_weights(candidate_weights[[length(candidate_weights)]])
+    }
+    chosen_candidate$fuller_auto_guard_reason <- paste0("fallback_", chosen_candidate$fuller_auto_guard_reason)
+    chosen_guard_pass <- FALSE
+  } else {
+    chosen_candidate <- dplyr::slice(admissible, 1L)
+    chosen_guard_pass <- TRUE
+  }
+
+  chosen_weight <- chosen_candidate$fuller_measurement_weight_used[[1]]
+  chosen_reason <- chosen_candidate$fuller_auto_guard_reason[[1]]
+  chosen_score <- chosen_candidate$fuller_auto_guard_score[[1]]
+  chosen_se_ratio <- chosen_candidate$fuller_se_ratio[[1]]
+  search_evaluations <- nrow(candidate_tbl)
+  search_nonmonotone <- auto_nonmonotone(candidate_tbl)
+
+  out <- fit_fuller_dual_core(
+    stage2_df,
+    outcome = outcome,
+    predictor_u0 = predictor_u0,
+    predictor_u1 = predictor_u1,
+    meas11 = meas11,
+    meas12 = meas12,
+    meas22 = meas22,
+    outcome_meas_var = outcome_meas_var,
+    measurement_weight = chosen_weight,
+    auto_tempered = TRUE
+  )
+  actual_se_ratio <- if (is.finite(reference_se) && reference_se > sqrt(.Machine$double.eps) &&
+    nrow(out) > 0L && is.finite(out$se[[1]])) {
+    out$se[[1]] / reference_se
+  } else {
+    chosen_se_ratio
+  }
+
+  dplyr::mutate(
+    out,
+    fuller_reference_se = reference_se,
+    fuller_se_ratio = actual_se_ratio,
+    fuller_auto_guard_pass = chosen_guard_pass,
+    fuller_auto_guard_reason = chosen_reason,
+    fuller_auto_guard_score = chosen_score,
+    fuller_auto_full_weight_guard_pass = full_guard_pass,
+    fuller_auto_full_weight_guard_reason = full_guard_reason,
+    fuller_auto_full_weight_se_ratio = full_se_ratio,
+    fuller_auto_search_evaluations = search_evaluations,
+    fuller_auto_search_nonmonotone = search_nonmonotone,
+    mx_issue_detail = ifelse(
+      is.na(mx_issue_detail) | mx_issue_detail == "ok",
+      sprintf(
+        paste0(
+          "auto_weight=%0.4f; guard=%s; target_condition=%0.3e; ",
+          "sx_rel_floor=%0.3e; scaling_rel_floor=%0.3e; ",
+          "evals=%d; nonmonotone=%s"
+        ),
+        chosen_weight,
+        chosen_reason,
+        target_condition_number,
+        min_sx_uncorr_relative_eigen,
+        min_scaling_relative_eigen,
+        search_evaluations,
+        search_nonmonotone
+      ),
+      mx_issue_detail
+    )
   )
 }
 
