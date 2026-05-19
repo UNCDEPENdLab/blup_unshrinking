@@ -191,6 +191,29 @@ stopifnot(
   isTRUE(all.equal(fuller_noerr$se, ols_naive$se, tolerance = 1e-10))
 )
 
+stage2_single_noerr <- data.frame(
+  y_obs = y_true,
+  x1_obs = x1_true,
+  meas22 = rep(0, m_fuller),
+  measyy = rep(0, m_fuller)
+)
+
+fuller_single_noerr <- fit_fuller(
+  stage2_single_noerr,
+  outcome = "y_obs",
+  predictor_u1 = "x1_obs",
+  meas22 = "meas22",
+  outcome_meas_var = "measyy"
+)
+
+ols_single <- fit_observed_single(stage2_single_noerr, outcome = "y_obs", predictor = "x1_obs")
+ols_single_naive <- ols_single[ols_single$se_type == "naive", , drop = FALSE]
+
+stopifnot(
+  isTRUE(all.equal(as.integer(fuller_single_noerr$status_code), 0L)),
+  isTRUE(all.equal(fuller_single_noerr$estimate, ols_single_naive$estimate, tolerance = 1e-10)),
+  isTRUE(all.equal(fuller_single_noerr$se, ols_single_naive$se, tolerance = 1e-10))
+)
 fuller_stepdown_noerr <- fit_fuller_dual_stepdown(
   stage2_noerr,
   outcome = "y_obs",

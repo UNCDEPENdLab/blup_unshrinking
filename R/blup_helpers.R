@@ -71,11 +71,15 @@ sanitize_re_name <- function(x) {
 #' zeros in `lme4` fits.
 #' @param prior_vcov Numeric prior covariance matrix from
 #' `lme4::VarCorr(fit)[[group]]`.
+#' @param return_var Logical scalar indicating whether to return the variance of
+#' the unweighted score. If `TRUE`, the function returns a list with `scores
+#' = corrected score` and `var = (V_post^{-1} - V_prior^{-1})^{-1}`. If `FALSE`,
+#' only the score is returned.
 #'
 #' @return
 #' Numeric vector of corrected likelihood-only random-effect scores, or an
 #' `NA_real_` vector if the precision subtraction or solve fails.
-unweight_random_effects <- function(post_mean, post_vcov, prior_mean, prior_vcov) {
+unweight_random_effects <- function(post_mean, post_vcov, prior_mean, prior_vcov, return_var = FALSE) {
   out <- tryCatch({
     # Subtract the prior precision contribution from the posterior precision
     # and solve for the score implied by the cluster likelihood alone.
@@ -86,8 +90,18 @@ unweight_random_effects <- function(post_mean, post_vcov, prior_mean, prior_vcov
   }, error = function(e) {
     rep(NA_real_, length(post_mean))
   })
+  scores <- as.numeric(out)
 
-  as.numeric(out)
+  if (return_var) {
+    out_var <- tryCatch({
+      solve(solve(post_vcov) - solve(prior_vcov))
+    }, error = function(e) {
+      matrix(NA_real_, nrow = length(post_mean), ncol = length(post_mean))
+    })
+    return(list(scores = scores, vars = diag(out_var)))
+  } else {
+    return(scores)
+  }
 }
 
 #' Extract EB/BLUPs and Vig-style corrected scores from an lme4 fit.
@@ -134,7 +148,8 @@ get_corrected_scores <- function(fit_null, group = NULL) {
       post_mean = post_mean,
       post_vcov = post_vcov,
       prior_mean = prior_mean,
-      prior_vcov = prior_vcov
+      prior_vcov = prior_vcov,
+      return_var = TRUE
     )
 
     out <- tibble::tibble(id = rownames(re_df)[[i]])
@@ -143,7 +158,8 @@ get_corrected_scores <- function(fit_null, group = NULL) {
     # whose random effects are not simply intercept/slope.
     for (j in seq_len(n_re)) {
       out[[paste0("blup_", re_names[[j]])]] <- post_mean[[j]]
-      out[[paste0("corrected_", re_names[[j]])]] <- corrected[[j]]
+      out[[paste0("corrected_", re_names[[j]])]] <- corrected$scores[[j]]
+      out[[paste0("corrected_", re_names[[j]], "_var")]] <- corrected$vars[[j]]
     }
 
     out
@@ -199,8 +215,19 @@ get_diagonal_corrected_scores <- function(fit_null, group = NULL) {
       }, error = function(e) {
         NA_real_
       })
+      diag_var <- tryCatch({
+        denom <- (1 / post_vcov[j, j]) - (1 / prior_vcov[j, j])
+        if (!is.finite(denom) || denom <= sqrt(.Machine$double.eps)) {
+          NA_real_
+        } else {
+          1 / denom
+        }
+      }, error = function(e) {
+        NA_real_
+      })
 
       out[[paste0("corrected_", re_names[[j]], "_diag")]] <- diag_corrected
+      out[[paste0("corrected_", re_names[[j]], "_diag_var")]] <- diag_var
     }
 
     out
