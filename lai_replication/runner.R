@@ -459,6 +459,7 @@ lai_parallel_exports <- function() {
     "compute_univariate_eb_inputs", "compute_lai_2spa_inputs",
     "fit_observed_single", "fit_observed_dual",
     "finalize_ols_se_variants", "fit_eiv_dual", "fit_ridge_dual", "fit_fuller_dual",
+    "fit_fuller_dual_stepdown", "fit_fuller_dual_alpha_stepdown",
     "fit_lai_2spa", "fit_lai_2spa_observed_outcome", "fit_lai_2spa_disparate",
     "run_mx_safe", "extract_mx_stats", "extract_mx_se_details",
     "classify_mx_issue", "compact_message", "project_to_pd"

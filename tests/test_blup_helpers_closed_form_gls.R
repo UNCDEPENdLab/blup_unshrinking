@@ -15,12 +15,34 @@ dat <- do.call(rbind, lapply(seq_len(n_id), function(i) {
   u1 <- rnorm(1L, sd = 0.35)
   data.frame(
     id = as.character(i),
+    trial_index = seq_len(n_obs),
     z = z,
     y = 0.3 + 0.8 * z + u0 + u1 * z + rnorm(n_obs, sd = 0.4)
   )
 }))
 
 fit <- lmer(y ~ 1 + z + (1 + z | id), data = dat, REML = FALSE)
+manual_eb <- get_stage1_eb_components(
+  fit_obj = fit,
+  data = dat,
+  cluster_var = "id",
+  outcome_var = "y",
+  within_var = "z"
+)
+lme4_re <- lme4::ranef(fit, condVar = TRUE)$id
+lme4_post <- attr(lme4_re, "postVar")
+
+stopifnot(
+  isTRUE(all.equal(manual_eb$u0_eb, as.numeric(lme4_re[["(Intercept)"]]), tolerance = 1e-8)),
+  isTRUE(all.equal(manual_eb$u1_eb, as.numeric(lme4_re[["z"]]), tolerance = 1e-8)),
+  isTRUE(all.equal(manual_eb$postvar11, as.numeric(lme4_post[1, 1, ]), tolerance = 1e-8)),
+  isTRUE(all.equal(manual_eb$postvar12, as.numeric(lme4_post[1, 2, ]), tolerance = 1e-8)),
+  isTRUE(all.equal(manual_eb$postvar22, as.numeric(lme4_post[2, 2, ]), tolerance = 1e-8)),
+  isTRUE(all(is.finite(manual_eb$lambda22))),
+  isTRUE(all(is.finite(manual_eb$theta22))),
+  isTRUE(all(is.finite(manual_eb$corrected_z))),
+  isTRUE(all(is.finite(manual_eb$corrected_z_diag)))
+)
 
 iid_out <- get_closed_form_corrected_scores(
   fit_obj = fit,
@@ -73,14 +95,17 @@ gls_out <- get_closed_form_corrected_scores(
   within_var = "z",
   R_list = R_list
 )
-gls_extractor_out <- get_gls_corrected_scores(
-  fit_obj = fit,
-  data = dat,
-  cluster_var = "id",
-  outcome_var = "y",
-  within_var = "z",
-  R_list = R_list
-)
+mermod_R_error <- tryCatch({
+  get_gls_corrected_scores(
+    fit_obj = fit,
+    data = dat,
+    cluster_var = "id",
+    outcome_var = "y",
+    within_var = "z",
+    R_list = R_list
+  )
+  FALSE
+}, error = function(e) grepl("R_list.*merMod", conditionMessage(e)))
 
 Rinv_Z <- solve(R_i, Z_1)
 Rinv_resid <- solve(R_i, resid_1)
@@ -94,18 +119,51 @@ stopifnot(
   isTRUE(all.equal(gls_out$gls_var12[[1]], expected_gls_vcov[1, 2], tolerance = 1e-10)),
   isTRUE(all.equal(gls_out$gls_var22[[1]], expected_gls_vcov[2, 2], tolerance = 1e-10)),
   isTRUE(all.equal(gls_out$ols_var22[[1]], gls_out$gls_var22[[1]], tolerance = 1e-12)),
-  isTRUE(all.equal(gls_extractor_out$mle_z[[1]], expected_gls[[2]], tolerance = 1e-10)),
-  isTRUE(all.equal(gls_extractor_out$mle_z_var[[1]], expected_gls_vcov[2, 2], tolerance = 1e-10)),
-  isTRUE(all.equal(gls_extractor_out$corrected_z[[1]], expected_gls[[2]], tolerance = 1e-8)),
-  isTRUE(all.equal(gls_extractor_out$corrected_z_var[[1]], expected_gls_vcov[2, 2], tolerance = 1e-8)),
-  isTRUE(all.equal(gls_extractor_out$corrected_intercept, gls_out$corrected_intercept_full, tolerance = 1e-8)),
-  isTRUE(all.equal(gls_extractor_out$corrected_z, gls_out$corrected_slope_full, tolerance = 1e-8)),
-  isTRUE(all.equal(gls_extractor_out$mle_z, gls_out$corrected_slope_full, tolerance = 1e-10)),
-  isTRUE(all(is.finite(gls_extractor_out$blup_intercept))),
-  isTRUE(all(is.finite(gls_extractor_out$blup_z))),
-  isTRUE(all(is.finite(gls_extractor_out$postvar11))),
-  isTRUE(all(is.finite(gls_extractor_out$postvar12))),
-  isTRUE(all(is.finite(gls_extractor_out$postvar22)))
+  isTRUE(mermod_R_error)
 )
+
+if (requireNamespace("nlme", quietly = TRUE)) {
+  fit_nlme <- tryCatch(
+    nlme::lme(
+      fixed = y ~ z,
+      random = ~1 + z | id,
+      correlation = nlme::corAR1(form = ~trial_index | id),
+      data = dat,
+      method = "ML",
+      control = nlme::lmeControl(returnObject = TRUE, msMaxIter = 100L, opt = "optim")
+    ),
+    error = function(e) NULL
+  )
+
+  if (!is.null(fit_nlme)) {
+    nlme_extractor_out <- get_gls_corrected_scores(
+      fit_obj = fit_nlme,
+      data = dat,
+      cluster_var = "id",
+      outcome_var = "y",
+      within_var = "z",
+      R_list = R_list
+    )
+    nlme_resid_1 <- df_1$y - drop(Z_1 %*% nlme::fixef(fit_nlme)[c("(Intercept)", "z")])
+    expected_nlme_gls <- as.numeric(expected_gls_vcov %*% crossprod(Z_1, solve(R_i, nlme_resid_1)))
+
+    nlme_fitted_R_out <- get_gls_corrected_scores(
+      fit_obj = fit_nlme,
+      data = dat,
+      cluster_var = "id",
+      outcome_var = "y",
+      within_var = "z"
+    )
+
+    stopifnot(
+      isTRUE(all.equal(nlme_extractor_out$mle_z[[1]], expected_nlme_gls[[2]], tolerance = 1e-10)),
+      isTRUE(all.equal(nlme_extractor_out$mle_z_var[[1]], expected_gls_vcov[2, 2], tolerance = 1e-10)),
+      isTRUE(all(is.finite(nlme_extractor_out$blup_intercept))),
+      isTRUE(all(is.finite(nlme_extractor_out$blup_z))),
+      isTRUE(all(is.finite(nlme_fitted_R_out$mle_z))),
+      isTRUE(all(is.finite(nlme_fitted_R_out$corrected_z_var)))
+    )
+  }
+}
 
 cat("Closed-form GLS corrected-score tests ok\n")

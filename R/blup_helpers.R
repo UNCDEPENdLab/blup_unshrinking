@@ -46,6 +46,24 @@ sanitize_re_name <- function(x) {
   ifelse(nzchar(x), x, "re")
 }
 
+#' Warn when a legacy iid-only lme4 score extractor is used.
+#'
+#' @param fun_name Character scalar naming the caller.
+#'
+#' @return Invisibly returns `NULL`.
+warn_legacy_iid_score_extractor <- function(fun_name) {
+  warning(
+    fun_name,
+    "() is a legacy iid-only lme4 workflow. Prefer get_stage1_eb_components(), ",
+    "which computes EB/BLUPs, posterior covariance, diagonal and matrix ",
+    "corrections, and Lai measurement inputs from one consistent Stage-1 fit. ",
+    "That is required for non-diagonal residual covariance because lme4::ranef(..., condVar = TRUE) ",
+    "and lme4::VarCorr() are tied to lme4's iid-residual likelihood.",
+    call. = FALSE
+  )
+  invisible(NULL)
+}
+
 #' Normalize a cluster-level residual covariance list.
 #'
 #' @param R_list Optional list of residual covariance matrices.
@@ -196,6 +214,246 @@ extract_stage1_components.default <- function(fit_obj, data, cluster_var, within
   )
 }
 
+#' Extract fixed effects from a supported Stage-1 model.
+#'
+#' @param fit_obj Fitted Stage-1 model.
+#'
+#' @return Named numeric fixed-effect vector.
+stage1_fixef <- function(fit_obj) {
+  if (inherits(fit_obj, "lme")) {
+    if (!requireNamespace("nlme", quietly = TRUE)) {
+      stop("The `nlme` package is required to extract fixed effects from `lme` objects.")
+    }
+    return(nlme::fixef(fit_obj))
+  }
+  lme4::fixef(fit_obj)
+}
+
+#' Format manual EB/posterior components as a Stage-2 row.
+#'
+#' @param cluster_id Cluster identifier.
+#' @param eb EB/BLUP vector.
+#' @param post_vcov Posterior covariance matrix.
+#' @param lambda Lai reliability/loading matrix.
+#' @param theta Lai EB measurement residual covariance matrix.
+#' @param mle Direct MLE/Bartlett score vector.
+#' @param mle_vcov MLE/Bartlett score covariance matrix.
+#' @param corrected Matrix-corrected MLE/Bartlett score vector.
+#' @param corrected_vars Diagonal of the matrix-corrected score covariance.
+#' @param diag_corrected Diagonal-only corrected score vector.
+#' @param diag_vars Diagonal-only corrected score variances.
+#' @param re_names Sanitized random-effect names.
+#'
+#' @return One-row tibble with BLUP, posterior, Lai, and corrected-score columns.
+format_stage1_eb_row <- function(cluster_id, eb, post_vcov, lambda, theta,
+                                 mle, mle_vcov, corrected, corrected_vars,
+                                 diag_corrected, diag_vars, re_names) {
+  n_re <- length(eb)
+  out <- tibble::tibble(id = cluster_id)
+
+  for (j in seq_len(n_re)) {
+    out[[paste0("blup_", re_names[[j]])]] <- eb[[j]]
+    out[[paste0("mle_", re_names[[j]])]] <- mle[[j]]
+    out[[paste0("mle_", re_names[[j]], "_var")]] <- mle_vcov[j, j]
+    out[[paste0("corrected_", re_names[[j]])]] <- corrected[[j]]
+    out[[paste0("corrected_", re_names[[j]], "_var")]] <- corrected_vars[[j]]
+    out[[paste0("corrected_", re_names[[j]], "_diag")]] <- diag_corrected[[j]]
+    out[[paste0("corrected_", re_names[[j]], "_diag_var")]] <- diag_vars[[j]]
+  }
+
+  if (n_re == 1L) {
+    out$u0_eb <- eb[[1]]
+    out$postvar11 <- post_vcov[1, 1]
+    out$lambda11 <- lambda[1, 1]
+    out$theta11 <- theta[1, 1]
+    out$mle_var11 <- mle_vcov[1, 1]
+  } else if (n_re == 2L) {
+    out$u0_eb <- eb[[1]]
+    out$u1_eb <- eb[[2]]
+    out$postvar11 <- post_vcov[1, 1]
+    out$postvar12 <- post_vcov[1, 2]
+    out$postvar22 <- post_vcov[2, 2]
+    out$lambda11 <- lambda[1, 1]
+    out$lambda12 <- lambda[1, 2]
+    out$lambda21 <- lambda[2, 1]
+    out$lambda22 <- lambda[2, 2]
+    out$theta11 <- theta[1, 1]
+    out$theta12 <- theta[1, 2]
+    out$theta22 <- theta[2, 2]
+    out$mle_var11 <- mle_vcov[1, 1]
+    out$mle_var12 <- mle_vcov[1, 2]
+    out$mle_var22 <- mle_vcov[2, 2]
+  } else {
+    stop("Only univariate and bivariate random-effect components are currently supported.")
+  }
+
+  out
+}
+
+#' Compute R-aware EB means, posterior covariance, and score corrections.
+#'
+#' @details
+#' This is the canonical Stage-1 ingredient extractor for downstream BLUP,
+#' corrected-score, Fuller, and Lai/OpenMx estimators. It intentionally computes
+#' EB means and posterior covariance from the Gaussian conditioning equations
+#' rather than relying on package-specific random-effect extractors:
+#'
+#' `Sigma_i = Z_i G Z_i' + R_i`
+#'
+#' `A_i = G Z_i' Sigma_i^{-1}`
+#'
+#' `b_Ei = A_i (y_i - X_i beta)`
+#'
+#' `V_post_i = (G^{-1} + Z_i' R_i^{-1} Z_i)^{-1}`
+#'
+#' The same pieces also give Lai's reliability and unreliability matrices:
+#'
+#' `lambda_i = A_i Z_i`
+#'
+#' `theta_i = A_i R_i A_i'`
+#'
+#' For `merMod` fits, `R_list` must be `NULL`; the adapter supplies the fitted
+#' iid residual covariance `sigma^2 I`. For `nlme::lme` fits, `R_list = NULL`
+#' uses the fitted conditional residual covariance matrices from the object.
+#'
+#' @param fit_obj Fitted Stage-1 model supported by `extract_stage1_components()`.
+#' @param data Original long-format data frame.
+#' @param cluster_var Character scalar naming the cluster/grouping column.
+#' @param outcome_var Character scalar naming the outcome column.
+#' @param within_var Optional character scalar naming the random-slope
+#' predictor. If `NULL`, an intercept-only random-effect design is used.
+#' @param R_list Optional named list of cluster-level residual covariance
+#' matrices.
+#' @param group Optional grouping-factor name for `merMod` objects.
+#'
+#' @return A tibble with one row per cluster containing EB/BLUP columns
+#' (`u0_eb`, `u1_eb`, `blup_*`), posterior variances (`postvar*`), Lai
+#' measurement matrices (`lambda*`, `theta*`), direct MLE/Bartlett scores
+#' (`mle_*`), matrix-corrected scores (`corrected_*`), and diagonal-only
+#' corrected scores (`corrected_*_diag`).
+get_stage1_eb_components <- function(fit_obj, data, cluster_var, outcome_var, within_var = NULL,
+                                     R_list = NULL, group = NULL) {
+  cluster_ids <- unique(as.character(data[[cluster_var]]))
+  split_dat <- split(data, as.character(data[[cluster_var]]), drop = TRUE)[cluster_ids]
+  n_re <- if (is.null(within_var)) 1L else 2L
+
+  stage1 <- extract_stage1_components(
+    fit_obj = fit_obj,
+    data = data,
+    cluster_var = cluster_var,
+    within_var = within_var,
+    R_list = R_list,
+    group = group
+  )
+  beta_hat <- stage1$beta_hat
+  g_hat <- stage1$G_hat
+  R_list <- normalize_R_list(stage1$R_list, cluster_ids)
+
+  re_names_raw <- stage1$re_names_raw
+  if (is.null(re_names_raw) || length(re_names_raw) != n_re) {
+    re_names_raw <- if (is.null(within_var)) "(Intercept)" else c("(Intercept)", within_var)
+  }
+  re_names <- sanitize_re_name(re_names_raw)
+
+  if (nrow(g_hat) != n_re || ncol(g_hat) != n_re) {
+    stop("The fitted random-effect covariance dimension does not match `within_var`.")
+  }
+  g_inv <- tryCatch(solve(g_hat), error = function(e) NULL)
+  if (is.null(g_inv)) {
+    stop("The fitted random-effect covariance matrix is singular.")
+  }
+
+  purrr::map_dfr(cluster_ids, function(cluster_id) {
+    df_i <- split_dat[[cluster_id]]
+    if (is.null(within_var)) {
+      z_mat <- matrix(1, nrow = nrow(df_i), ncol = 1L)
+      x_mat <- z_mat
+      beta_vec <- beta_hat[[1]]
+    } else {
+      z_vec <- df_i[[within_var]]
+      z_mat <- cbind(1, z_vec)
+      x_mat <- z_mat
+      beta_vec <- c(beta_hat[[1]], beta_hat[[within_var]])
+    }
+
+    R_i <- as.matrix(R_list[[cluster_id]])
+    pieces <- tryCatch({
+      if (!is.matrix(R_i) || nrow(R_i) != nrow(df_i) || ncol(R_i) != nrow(df_i)) {
+        stop("R_i has incompatible dimensions.")
+      }
+
+      resid_i <- df_i[[outcome_var]] - as.numeric(x_mat %*% beta_vec)
+      sigma_y_i <- z_mat %*% g_hat %*% t(z_mat) + R_i
+      sigma_y_inv <- solve(sigma_y_i)
+      a_i <- g_hat %*% t(z_mat) %*% sigma_y_inv
+      R_inv_Z <- solve(R_i, z_mat)
+      R_inv_resid <- solve(R_i, resid_i)
+      info_like <- crossprod(z_mat, R_inv_Z)
+      post_vcov <- solve(g_inv + info_like)
+      mle_vcov <- solve(info_like)
+      eb <- as.numeric(a_i %*% resid_i)
+      mle <- as.numeric(mle_vcov %*% crossprod(z_mat, R_inv_resid))
+      corrected <- unweight_random_effects(
+        post_mean = eb,
+        post_vcov = post_vcov,
+        prior_mean = rep(0, n_re),
+        prior_vcov = g_hat,
+        return_var = TRUE
+      )
+
+      diag_corrected <- diag_vars <- rep(NA_real_, n_re)
+      for (j in seq_len(n_re)) {
+        denom <- (1 / post_vcov[j, j]) - (1 / g_hat[j, j])
+        if (is.finite(denom) && denom > sqrt(.Machine$double.eps)) {
+          diag_vars[[j]] <- 1 / denom
+          diag_corrected[[j]] <- diag_vars[[j]] * eb[[j]] / post_vcov[j, j]
+        }
+      }
+
+      list(
+        eb = eb,
+        post_vcov = post_vcov,
+        lambda = a_i %*% z_mat,
+        theta = a_i %*% R_i %*% t(a_i),
+        mle = mle,
+        mle_vcov = mle_vcov,
+        corrected = corrected$scores,
+        corrected_vars = corrected$vars,
+        diag_corrected = diag_corrected,
+        diag_vars = diag_vars
+      )
+    }, error = function(e) {
+      list(
+        eb = rep(NA_real_, n_re),
+        post_vcov = matrix(NA_real_, nrow = n_re, ncol = n_re),
+        lambda = matrix(NA_real_, nrow = n_re, ncol = n_re),
+        theta = matrix(NA_real_, nrow = n_re, ncol = n_re),
+        mle = rep(NA_real_, n_re),
+        mle_vcov = matrix(NA_real_, nrow = n_re, ncol = n_re),
+        corrected = rep(NA_real_, n_re),
+        corrected_vars = rep(NA_real_, n_re),
+        diag_corrected = rep(NA_real_, n_re),
+        diag_vars = rep(NA_real_, n_re)
+      )
+    })
+
+    format_stage1_eb_row(
+      cluster_id = cluster_id,
+      eb = pieces$eb,
+      post_vcov = pieces$post_vcov,
+      lambda = pieces$lambda,
+      theta = pieces$theta,
+      mle = pieces$mle,
+      mle_vcov = pieces$mle_vcov,
+      corrected = pieces$corrected,
+      corrected_vars = pieces$corrected_vars,
+      diag_corrected = pieces$diag_corrected,
+      diag_vars = pieces$diag_vars,
+      re_names = re_names
+    )
+  })
+}
+
 #' Unweight random effects from the prior using matrix inversion.
 #'
 #' @details
@@ -254,9 +512,15 @@ unweight_random_effects <- function(post_mean, post_vcov, prior_mean, prior_vcov
   }
 }
 
-#' Extract EB/BLUPs and Vig-style corrected scores from an lme4 fit.
+#' Extract legacy iid-only EB/BLUPs and Vig-style corrected scores.
 #'
 #' @details
+#' This helper is retained for legacy iid `lme4` workflows. New simulation code
+#' should prefer `get_stage1_eb_components()`, which supports both iid `merMod`
+#' fits and R-aware `nlme::lme` fits through the Stage-1 adapter layer. The
+#' newer helper also returns EB/BLUPs, posterior covariance, diagonal and matrix
+#' corrections, and Lai measurement inputs from one consistent Stage-1 fit.
+#'
 #' Calls `lme4::ranef(fit_null, condVar = TRUE)` to obtain cluster-level BLUPs
 #' and their conditional posterior covariance matrices, then applies
 #' `unweight_random_effects()` cluster by cluster. The returned tibble uses
@@ -264,6 +528,10 @@ unweight_random_effects <- function(post_mean, post_vcov, prior_mean, prior_vcov
 #' where `<effect>` is sanitized by `sanitize_re_name()`. For example,
 #' `(Intercept)` becomes `blup_intercept` / `corrected_intercept`, while a
 #' random slope for `z` becomes `blup_z` / `corrected_z`.
+#'
+#' Because `lme4` assumes iid level-1 residual covariance, this function should
+#' not be used when data are generated or modeled with non-diagonal residual
+#' covariance such as AR(1) or Toeplitz structures.
 #'
 #' @param fit_null Fitted `lme4` mixed model with random effects available via
 #' `ranef(..., condVar = TRUE)`.
@@ -273,6 +541,8 @@ unweight_random_effects <- function(post_mean, post_vcov, prior_mean, prior_vcov
 #' A tibble with one row per group level. The `id` column contains group-level
 #' row names from `ranef()`, followed by BLUP and corrected-score columns.
 get_corrected_scores <- function(fit_null, group = NULL) {
+  warn_legacy_iid_score_extractor("get_corrected_scores")
+
   re_list <- lme4::ranef(fit_null, condVar = TRUE)
   group <- group %||% names(re_list)[[1]]
   re_df <- re_list[[group]]
@@ -316,9 +586,16 @@ get_corrected_scores <- function(fit_null, group = NULL) {
   })
 }
 
-#' Extract diagonal-only corrected random-effect scores from an lme4 fit.
+#' Extract legacy iid-only diagonal corrected random-effect scores.
 #'
 #' @details
+#' This helper is retained for legacy iid `lme4` workflows. New simulation code
+#' should prefer `get_stage1_eb_components()` and use its
+#' `corrected_<effect>_diag` and `corrected_<effect>_diag_var` columns. The
+#' newer helper computes diagonal-only corrections from the same Stage-1
+#' ingredients used for EB/BLUPs, posterior covariance, full matrix correction,
+#' and Lai measurement inputs.
+#'
 #' This helper is intentionally separate from `get_corrected_scores()` because
 #' the diagonal-only correction is a diagnostic comparison, not the full
 #' corrected-score estimator. It applies the scalar prior-unweighting formula to
@@ -329,6 +606,10 @@ get_corrected_scores <- function(fit_null, group = NULL) {
 #' `(V_post[j,j]^{-1} - V_prior[j,j]^{-1})^{-1}
 #'  V_post[j,j]^{-1} m_post[j]`.
 #'
+#' Because `lme4` assumes iid level-1 residual covariance, this function should
+#' not be used when data are generated or modeled with non-diagonal residual
+#' covariance such as AR(1) or Toeplitz structures.
+#'
 #' @param fit_null Fitted `lme4` mixed model with random effects available via
 #' `ranef(..., condVar = TRUE)`.
 #' @param group Optional character scalar naming the grouping factor to extract.
@@ -338,6 +619,8 @@ get_corrected_scores <- function(fit_null, group = NULL) {
 #' A tibble with one row per group level, an `id` column, and columns named
 #' `corrected_<effect>_diag` for each random-effect component.
 get_diagonal_corrected_scores <- function(fit_null, group = NULL) {
+  warn_legacy_iid_score_extractor("get_diagonal_corrected_scores")
+
   re_list <- lme4::ranef(fit_null, condVar = TRUE)
   group <- group %||% names(re_list)[[1]]
   re_df <- re_list[[group]]
@@ -644,8 +927,17 @@ get_closed_form_corrected_scores <- function(fit_obj, data, cluster_var, outcome
                                              R_list = NULL) {
   cluster_ids <- unique(as.character(data[[cluster_var]]))
   split_dat <- split(data, as.character(data[[cluster_var]]), drop = TRUE)[cluster_ids]
-  beta_hat <- lme4::fixef(fit_obj)
+  beta_hat <- stage1_fixef(fit_obj)
   sigma2_hat <- stats::sigma(fit_obj)^2
+
+  if (is.null(R_list) && inherits(fit_obj, "lme")) {
+    R_list <- extract_stage1_components(
+      fit_obj = fit_obj,
+      data = data,
+      cluster_var = cluster_var,
+      within_var = within_var
+    )$R_list
+  }
 
   if (!is.null(R_list) && !is.list(R_list)) {
     stop("`R_list` must be NULL or a list of cluster-level residual covariance matrices.")
