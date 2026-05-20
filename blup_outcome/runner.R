@@ -53,6 +53,10 @@ blup_outcome_method_labels <- function() {
     fuller_diag_corrected = "Fuller diagonal-only corrected outcome",
     fuller_matrix_corrected = "Fuller full-matrix corrected outcome",
     fuller_closed_form = "Fuller closed-form score outcome",
+    fuller_alpha_blup = "Fuller alpha-stepdown BLUP outcome",
+    fuller_alpha_diag_corrected = "Fuller alpha-stepdown diagonal-only corrected outcome",
+    fuller_alpha_matrix_corrected = "Fuller alpha-stepdown full-matrix corrected outcome",
+    fuller_alpha_closed_form = "Fuller alpha-stepdown closed-form score outcome",
     closed_form_stacked_hc0 = "Closed-form score + stacked sandwich",
     closed_form_stacked_hc1 = "Closed-form score + stacked sandwich (HC1)",
     closed_form_stacked_hc2 = "Closed-form score + stacked sandwich (HC2)",
@@ -210,7 +214,9 @@ write_blup_outcome_aggregate_outputs <- function(results, out_dir, prefix = "blu
   }
 
   methods <- c("oracle", "naive_blup", "matrix_corrected", "closed_form", "closed_form_stacked_hc3", "lai_2spa", "fuller_blup", 
-               "fuller_diag_corrected", "fuller_matrix_corrected", "fuller_closed_form", "direct_mlm")
+               "fuller_diag_corrected", "fuller_matrix_corrected", "fuller_closed_form",
+               "fuller_alpha_blup", "fuller_alpha_diag_corrected", "fuller_alpha_matrix_corrected", "fuller_alpha_closed_form",
+               "direct_mlm")
 
   plot_df <- summary_df %>%
     dplyr::filter(.data$method %in% methods)
@@ -281,9 +287,13 @@ blup_outcome_parallel_exports <- function() {
     "run_blup_outcome_rep", "blup_outcome_methods", "empty_blup_outcome_result",
     "standardize_estimator_rows", "fit_score_outcome_ols", "empty_stacked_rows",
     "fit_direct_mlm_row", "make_blup_outcome_diagnostics", "balance_mode_to_sim_arg",
-    "draw_random_effects", "simulate_dataset", "safe_lmer", "safe_mean",
+    "condition_to_r_spec", "condition_to_nlme_correlation", "condition_uses_non_iid_R",
+    "draw_random_effects", "simulate_dataset", "safe_lmer", "safe_lme", "safe_mean",
     "compact_message", "get_stage1_diagnostics", "empty_stage1_diagnostics",
     "get_corrected_scores", "get_diagonal_corrected_scores", "get_closed_form_corrected_scores",
+    "normalize_R_list", "as_plain_vcov_matrix", "stage1_fixef", "format_stage1_eb_row",
+    "get_stage1_eb_components", "extract_stage1_components", "extract_stage1_components.merMod",
+    "extract_stage1_components.lme", "extract_stage1_components.default",
     "fit_observed_single", "finalize_ols_se_variants", "extract_lmer_stats",
     "default_re_design", "make_eb_output_row", "compute_eb_measurement_inputs",
     "compute_bivariate_eb_inputs", "compute_lai_2spa_inputs", "fit_lai_2spa",
@@ -294,7 +304,8 @@ blup_outcome_parallel_exports <- function() {
     "get_stage1_sandwich_inputs", "stacked_sandwich_for_corrected_scores",
     "format_stacked_sandwich_rows", "make_derivative_backend",
     "ensure_tmb_stage1_dll", "make_tmb_stage1_data", "make_tmb_stage1_object",
-    "get_tmb_stage1_hessian", "project_to_pd", "fit_fuller"
+    "get_tmb_stage1_hessian", "project_to_pd", "fit_fuller",
+    "fit_fuller_dual_alpha_stepdown"
   )
 }
 

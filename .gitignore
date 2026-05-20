@@ -50,5 +50,6 @@ rsconnect/
 
 # don't commit output files
 outputs/
+output/
 
 .DS_Store
