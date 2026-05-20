@@ -139,8 +139,16 @@ run_one_rep <- function(n_id, mean_n_trial, tau1, sigma, params) {
   ))
 
   score_df <- sim$id_df %>%
-    left_join(get_corrected_scores(fit_null), by = "id") %>%
-    left_join(get_diagonal_corrected_scores(fit_null), by = "id")
+    left_join(
+      get_stage1_eb_components(
+        fit_obj = fit_null,
+        data = sim$dat,
+        cluster_var = "id",
+        outcome_var = "y",
+        within_var = "z"
+      ),
+      by = "id"
+    )
 
   oracle_fit <- lm(true_slope_dev ~ x, data = score_df)
   naive_fit <- lm(blup_z ~ x, data = score_df)

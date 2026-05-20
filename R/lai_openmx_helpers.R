@@ -81,60 +81,49 @@ make_eb_output_row <- function(id, eb, post_vcov, lambda, theta, prefix = "") {
   stop("Only univariate and bivariate random-effect measurement inputs are currently supported.")
 }
 
-#' Compute Lai-style EB measurement-model inputs from an `lme4` fit.
+select_lai_measurement_columns <- function(stage1_components, n_re, prefix = "") {
+  if (n_re == 1L) {
+    out <- stage1_components[, c("id", "u0_eb", "postvar11", "lambda11", "theta11"), drop = FALSE]
+    if (nzchar(prefix)) {
+      names(out) <- sub("^(u0_eb|postvar11|lambda11|theta11)$", paste0(prefix, "\\1"), names(out))
+    }
+    return(out)
+  }
+
+  stage1_components[, c(
+    "id", "u0_eb", "u1_eb", "postvar11", "postvar12", "postvar22",
+    "lambda11", "lambda12", "lambda21", "lambda22", "theta11", "theta12", "theta22"
+  ), drop = FALSE]
+}
+
+#' Compute Lai-style EB measurement-model inputs from a Stage-1 fit.
 #'
 #' @details
 #' For each cluster this constructs the empirical Bayes random-effect
 #' prediction, posterior covariance, and the Lai/OpenMx measurement-model
 #' reliability (`lambda`) and unreliability (`theta`) matrices.
 #'
-#' When `R_list = NULL`, the helper preserves the original fast lme4 behavior:
-#' EB predictions and posterior covariance are extracted from
-#' `lme4::ranef(..., condVar = TRUE)`, and the measurement matrices are
-#' reconstructed under the fitted iid residual covariance:
+#' This wrapper now delegates to `get_stage1_eb_components()`, which computes
+#' EB means, posterior covariance, `lambda`, and `theta` from a single
+#' consistent Stage-1 source. For iid `lme4` fits, that source is the fitted
+#' iid residual covariance. For `nlme::lme` fits, fitted R-side covariance
+#' matrices are used. Supplying `R_list` with an `lme4` fit is intentionally
+#' rejected by the shared adapter because `lme4` estimates `beta` and `G` under
+#' an iid residual likelihood.
 #'
-#' `A_i = G Z_i' V_i^{-1}`
-#'
-#' `lambda_i = A_i Z_i`
-#'
-#' `theta_i = sigma^2 A_i A_i'`
-#'
-#' where `G` is the estimated random-effect covariance matrix and
-#' `V_i = Z_i G Z_i' + sigma^2 I`.
-#'
-#' When `R_list` is supplied, all EB measurement ingredients are computed from
-#' the supplied cluster-specific residual covariance matrix:
-#'
-#' `Sigma_i = Z_i G Z_i' + R_i`
-#'
-#' `A_i = G Z_i' Sigma_i^{-1}`
-#'
-#' `b_Ei = A_i (y_i - X_i beta)`
-#'
-#' `V_post_i = (G^{-1} + Z_i' R_i^{-1} Z_i)^{-1}`
-#'
-#' `lambda_i = A_i Z_i`
-#'
-#' `theta_i = A_i R_i A_i'`
-#'
-#' This keeps the EB indicators, their reliability, and their residual
-#' covariance internally consistent when simulations use non-diagonal residual
-#' structures such as AR(1) or Toeplitz. The output is ordered by `ordered_ids`
-#' so it can be joined safely to level-2 simulation data.
-#'
-#' @param fit_obj Fitted `lme4` mixed model.
+#' @param fit_obj Fitted Stage-1 model supported by
+#' `get_stage1_eb_components()`.
 #' @param split_dat Named list of cluster-level data frames. Names must include
 #' every value in `ordered_ids`.
 #' @param ordered_ids Character vector giving the cluster order required in the
 #' output.
 #' @param within_var Optional within-cluster predictor used for a random-slope
 #' design. If `NULL`, an intercept-only design is used.
-#' @param group Optional grouping-factor name. Defaults to the first grouping
-#' factor returned by `lme4::ranef()`.
+#' @param group Optional grouping-factor name for supported fit classes.
 #' @param prefix Optional prefix for univariate output columns.
 #' @param R_list Optional named list of cluster-level residual covariance
 #' matrices. Names should match `ordered_ids`. If unnamed, matrices are matched
-#' to `ordered_ids` by position. If `NULL`, retain the legacy lme4/iid path.
+#' to `ordered_ids` by position.
 #'
 #' @return A tibble with one row per cluster containing EB predictions,
 #' posterior variance entries, and Lai measurement-model `lambda`/`theta`
@@ -146,105 +135,36 @@ compute_eb_measurement_inputs <- function(fit_obj,
                                           group = NULL,
                                           prefix = "",
                                           R_list = NULL) {
-  re_list <- lme4::ranef(fit_obj, condVar = TRUE)
-  group <- if (is.null(group)) names(re_list)[[1]] else group
-  re_eb <- re_list[[group]]
-  post_var_arr <- attr(re_eb, "postVar")
-  row_idx <- match(ordered_ids, rownames(re_eb))
-  g_hat <- as.matrix(lme4::VarCorr(fit_obj)[[group]])
-  sigma2_hat <- stats::sigma(fit_obj)^2
-  beta_hat <- lme4::fixef(fit_obj)
+  if (any(!ordered_ids %in% names(split_dat))) {
+    stop("`split_dat` must contain one named data frame per `ordered_ids` entry.")
+  }
+
+  split_dat <- split_dat[ordered_ids]
+  data <- dplyr::bind_rows(lapply(seq_along(split_dat), function(i) {
+    df_i <- split_dat[[i]]
+    df_i[[".lai_cluster_id"]] <- ordered_ids[[i]]
+    df_i
+  }))
   response_var <- all.vars(stats::formula(fit_obj))[[1]]
 
-  if (!is.null(R_list) && !is.list(R_list)) {
-    stop("`R_list` must be NULL or a list of cluster-level residual covariance matrices.")
-  }
-  if (!is.null(R_list) && is.null(names(R_list))) {
-    if (length(R_list) != length(ordered_ids)) {
-      stop("Unnamed `R_list` must have one matrix per ordered cluster.")
-    }
-    names(R_list) <- ordered_ids
-  }
+  stage1_components <- get_stage1_eb_components(
+    fit_obj = fit_obj,
+    data = data,
+    cluster_var = ".lai_cluster_id",
+    outcome_var = response_var,
+    within_var = within_var,
+    R_list = R_list,
+    group = group
+  )
 
-  use_gls_R <- !is.null(R_list)
-  if (!use_gls_R) {
-    re_eb <- re_eb[row_idx, , drop = FALSE]
-  }
-  g_inv <- if (use_gls_R) tryCatch(solve(g_hat), error = function(e) NULL) else NULL
-
-  purrr::map_dfr(seq_along(ordered_ids), function(i) {
-    cluster_id <- ordered_ids[[i]]
-    cluster_df <- split_dat[[cluster_id]]
-    z_mat <- default_re_design(cluster_df, within_var = within_var)
-
-    if (use_gls_R) {
-      pieces <- tryCatch({
-        if (is.null(g_inv)) {
-          stop("G is singular.")
-        }
-        R_i <- as.matrix(R_list[[cluster_id]])
-        if (!is.matrix(R_i) || nrow(R_i) != nrow(cluster_df) || ncol(R_i) != nrow(cluster_df)) {
-          stop("R_i has incompatible dimensions.")
-        }
-
-        beta_vec <- if (is.null(within_var)) beta_hat[[1]] else c(beta_hat[[1]], beta_hat[[within_var]])
-        resid_i <- cluster_df[[response_var]] - as.numeric(z_mat %*% beta_vec)
-
-        # EB measurement model with general R_i:
-        #   A_i = G Z_i' Sigma_i^-1
-        #   lambda_i = A_i Z_i
-        #   theta_i = A_i R_i A_i'
-        sigma_y_i <- z_mat %*% g_hat %*% t(z_mat) + R_i
-        sigma_y_inv <- solve(sigma_y_i)
-        a_i <- g_hat %*% t(z_mat) %*% sigma_y_inv
-        R_inv_Z <- solve(R_i, z_mat)
-        list(
-          eb = as.numeric(a_i %*% resid_i),
-          post_vcov = solve(g_inv + crossprod(z_mat, R_inv_Z)),
-          lambda = a_i %*% z_mat,
-          theta = a_i %*% R_i %*% t(a_i)
-        )
-      }, error = function(e) {
-        n_re <- ncol(z_mat)
-        list(
-          eb = rep(NA_real_, n_re),
-          post_vcov = matrix(NA_real_, nrow = n_re, ncol = n_re),
-          lambda = matrix(NA_real_, nrow = n_re, ncol = n_re),
-          theta = matrix(NA_real_, nrow = n_re, ncol = n_re)
-        )
-      })
-    } else {
-      # Legacy lme4/iid path. Reconstruct the marginal covariance for this
-      # cluster so the EB measurement model is tied to the fitted first-stage
-      # MLM, not to sample moments of the EB predictions.
-      vy_i <- z_mat %*% g_hat %*% t(z_mat) + sigma2_hat * diag(nrow(cluster_df))
-      a_i <- g_hat %*% t(z_mat) %*% solve(vy_i)
-      post_vcov <- post_var_arr[, , row_idx[[i]]]
-      if (!is.matrix(post_vcov)) {
-        post_vcov <- matrix(post_vcov, nrow = 1L, ncol = 1L)
-      }
-      pieces <- list(
-        eb = as.numeric(re_eb[i, ]),
-        post_vcov = post_vcov,
-        lambda = a_i %*% z_mat,
-        theta = sigma2_hat * a_i %*% t(a_i)
-      )
-    }
-
-    make_eb_output_row(
-      id = cluster_id,
-      eb = pieces$eb,
-      post_vcov = pieces$post_vcov,
-      lambda = pieces$lambda,
-      theta = pieces$theta,
-      prefix = prefix
-    )
-  })
+  n_re <- if (is.null(within_var)) 1L else 2L
+  select_lai_measurement_columns(stage1_components, n_re = n_re, prefix = prefix)
 }
 
 #' Compute bivariate EB measurement inputs for random intercept/slope models.
 #'
-#' @param fit_obj Fitted `lme4` model with two random-effect components.
+#' @param fit_obj Fitted Stage-1 model supported by
+#' `get_stage1_eb_components()` with two random-effect components.
 #' @param split_dat Named list of cluster-level data frames.
 #' @param ordered_ids Character vector specifying output cluster order.
 #' @param within_var Character scalar naming the random-slope predictor.
@@ -266,7 +186,8 @@ compute_bivariate_eb_inputs <- function(fit_obj, split_dat, ordered_ids, within_
 
 #' Compute univariate EB measurement inputs for random-intercept models.
 #'
-#' @param fit_obj Fitted `lme4` model with a single random-effect component.
+#' @param fit_obj Fitted Stage-1 model supported by
+#' `get_stage1_eb_components()` with a single random-effect component.
 #' @param split_dat Named list of cluster-level data frames.
 #' @param ordered_ids Character vector specifying output cluster order.
 #' @param prefix Prefix for output column names. Defaults to `"z_"` for the
@@ -295,7 +216,8 @@ compute_univariate_eb_inputs <- function(fit_obj, split_dat, ordered_ids, prefix
 #' model with random effects `(1 + z | id)` and joins them to an `id_df`
 #' containing `id` and the level-2 predictor `x`.
 #'
-#' @param fit_null Fitted first-stage `lme4` model.
+#' @param fit_null Fitted Stage-1 model supported by
+#' `get_stage1_eb_components()`.
 #' @param split_dat Named list of cluster-level data frames.
 #' @param id_df Level-2 data frame containing `id` and `x`.
 #' @param R_list Optional residual covariance list passed to

@@ -36,6 +36,7 @@ blup_outcome_methods <- function(analysis_mode = "full") {
       base_methods,
       "lai_2spa", "lai_2spaa",
       "fuller_blup", "fuller_diag_corrected", "fuller_matrix_corrected", "fuller_closed_form",
+      "fuller_alpha_blup", "fuller_alpha_diag_corrected", "fuller_alpha_matrix_corrected", "fuller_alpha_closed_form",
       paste0("closed_form_stacked_hc", 0:3)
     )
   } else {
@@ -387,6 +388,7 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
   sim_params <- params
   sim_params$gamma_x_on_slope <- truth
   sim_params$rho <- as.numeric(condition$rho[[1]])
+  r_spec <- condition_to_r_spec(condition)
 
   sim <- simulate_dataset(
     n_id = condition$n_id[[1]],
@@ -399,13 +401,24 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
     min_n_trial = condition$min_n_trial[[1]],
     highly_unbalanced_min_n_trial = condition$highly_unbalanced_min_n_trial[[1]],
     highly_unbalanced_power = condition$highly_unbalanced_power[[1]],
-    r_spec = condition_to_r_spec(condition)
+    r_spec = r_spec
   )
 
   # The null model supplies all extracted score outcomes. The direct model is a
   # one-stage benchmark for the same x-by-z interaction target.
   fit_null <- safe_lmer(y ~ 1 + z + (1 + z | id), data = sim$dat, REML = FALSE)
   fit_direct <- safe_lmer(y ~ x + z + x:z + (1 + z | id), data = sim$dat, REML = FALSE)
+  fit_null_R <- NULL
+  if (condition_uses_non_iid_R(condition) && requireNamespace("nlme", quietly = TRUE)) {
+    fit_null_R <- safe_lme(
+      fixed = y ~ z,
+      random = ~1 + z | id,
+      data = sim$dat,
+      correlation = condition_to_nlme_correlation(condition),
+      method = "ML",
+      control = nlme::lmeControl(returnObject = TRUE, msMaxIter = 100L, opt = "optim")
+    )
+  }
   if (is.null(fit_null)) {
     return(empty_blup_outcome_result(blup_outcome_methods(analysis_mode), truth) %>%
       add_empty_blup_outcome_context(sim = sim))
@@ -413,40 +426,43 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
 
   ordered_ids <- as.character(sim$id_df$id)
   split_dat <- split(sim$dat, sim$dat$id)[ordered_ids]
+  use_non_iid_R <- condition_uses_non_iid_R(condition)
+  stage1_score_fit <- if (use_non_iid_R) fit_null_R else fit_null
 
-  # Lai/OpenMx inputs contain EB scores plus cluster-specific loading/theta
-  # definitions. Failures leave an id-only tibble so later joins still work.
-  eb_inputs <- tryCatch(
-    compute_lai_2spa_inputs(fit_null = fit_null, split_dat = split_dat, id_df = sim$id_df, R_list = sim$R_list),
-    error = function(e) tibble::tibble(id = ordered_ids)
-  )
-  eb_inputs <- eb_inputs %>% dplyr::select(-dplyr::any_of("x"))
+  # This table is the authoritative source for every downstream method that
+  # needs Stage-1 EB means, posterior covariance, G-aware corrections, or Lai
+  # measurement-model inputs. In iid conditions it is computed from the lme4
+  # fit and matches ranef(..., condVar = TRUE); in non-iid conditions it is
+  # computed from the nlme fit so beta, G, and R come from the same likelihood.
+  stage1_components <- if (is.null(stage1_score_fit)) {
+    tibble::tibble(id = ordered_ids)
+  } else {
+    tryCatch(
+      get_stage1_eb_components(
+        fit_obj = stage1_score_fit,
+        data = sim$dat,
+        cluster_var = "id",
+        outcome_var = "y",
+        within_var = "z"
+      ),
+      error = function(e) tibble::tibble(id = ordered_ids)
+    )
+  }
 
-  # These three score paths represent increasingly direct ways to recover the
-  # likelihood-only cluster slope: GLS-aware matrix prior-unweighting,
-  # diagonal-only lme4 prior-unweighting, and direct GLS closed form. The
-  # matrix path computes EB/posterior ingredients from the same R_i used to
-  # generate the data so non-diagonal residual covariance is represented.
-  matrix_scores <- tryCatch(
-    get_gls_corrected_scores(
-      fit_obj = fit_null,
-      data = sim$dat,
-      cluster_var = "id",
-      outcome_var = "y",
-      within_var = "z",
-      R_list = sim$R_list
-    ),
-    error = function(e) tibble::tibble(id = ordered_ids)
-  )
-  diag_scores <- tryCatch(get_diagonal_corrected_scores(fit_null), error = function(e) tibble::tibble(id = ordered_ids))
-  closed_form_scores <- get_closed_form_corrected_scores(
-    fit_obj = fit_null,
-    data = sim$dat,
-    cluster_var = "id",
-    outcome_var = "y",
-    within_var = "z",
-    R_list = sim$R_list
-  )
+  closed_form_scores <- if (is.null(stage1_score_fit)) {
+    tibble::tibble(id = ordered_ids)
+  } else {
+    tryCatch(
+      get_closed_form_corrected_scores(
+        fit_obj = stage1_score_fit,
+        data = sim$dat,
+        cluster_var = "id",
+        outcome_var = "y",
+        within_var = "z"
+      ),
+      error = function(e) tibble::tibble(id = ordered_ids)
+    )
+  }
 
   # Single-subject OLS slopes are an intentionally simple benchmark computed
   # without borrowing strength or mixed-model covariance information.
@@ -462,9 +478,7 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
   # so each estimator can fail through complete-case logic rather than through
   # absent-column errors.
   stage2_df <- sim$id_df %>%
-    dplyr::left_join(eb_inputs, by = "id") %>%
-    dplyr::left_join(matrix_scores %>% dplyr::select("id", dplyr::starts_with("corrected_")), by = "id") %>%
-    dplyr::left_join(diag_scores, by = "id") %>%
+    dplyr::left_join(stage1_components %>% dplyr::select(-dplyr::any_of("x")), by = "id") %>%
     dplyr::left_join(closed_form_scores, by = "id") %>%
     dplyr::mutate(ols_slope = ols_slopes[as.character(.data$id)])
   stage2_df <- ensure_blup_outcome_stage2_columns(stage2_df)
@@ -533,6 +547,54 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
         outcome_meas_var = "ols_var22"
       ) %>%
         dplyr::mutate(method = "fuller_closed_form") %>%
+        dplyr::select("method", dplyr::everything()),
+      fit_fuller_dual_alpha_stepdown(
+        stage2_df_fuller,
+        outcome = "u1_eb",
+        predictor_u0 = NULL,
+        predictor_u1 = "x",
+        meas11 = NULL,
+        meas12 = NULL,
+        meas22 = "zero",
+        outcome_meas_var = "postvar22"
+      ) %>%
+        dplyr::mutate(method = "fuller_alpha_blup") %>%
+        dplyr::select("method", dplyr::everything()),
+      fit_fuller_dual_alpha_stepdown(
+        stage2_df_fuller,
+        outcome = "corrected_z_diag",
+        predictor_u0 = NULL,
+        predictor_u1 = "x",
+        meas11 = NULL,
+        meas12 = NULL,
+        meas22 = "zero",
+        outcome_meas_var = "corrected_z_diag_var"
+      ) %>%
+        dplyr::mutate(method = "fuller_alpha_diag_corrected") %>%
+        dplyr::select("method", dplyr::everything()),
+      fit_fuller_dual_alpha_stepdown(
+        stage2_df_fuller,
+        outcome = "corrected_z",
+        predictor_u0 = NULL,
+        predictor_u1 = "x",
+        meas11 = NULL,
+        meas12 = NULL,
+        meas22 = "zero",
+        outcome_meas_var = "corrected_z_var"
+      ) %>%
+        dplyr::mutate(method = "fuller_alpha_matrix_corrected") %>%
+        dplyr::select("method", dplyr::everything()),
+      fit_fuller_dual_alpha_stepdown(
+        stage2_df_fuller,
+        outcome = "corrected_slope_full",
+        predictor_u0 = NULL,
+        predictor_u1 = "x",
+        meas11 = NULL,
+        meas12 = NULL,
+        meas22 = "zero",
+        outcome_meas_var = "ols_var22"
+      ) %>%
+        dplyr::mutate(method = "fuller_alpha_closed_form") %>%
         dplyr::select("method", dplyr::everything())
     )
 

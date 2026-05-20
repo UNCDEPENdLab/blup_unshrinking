@@ -15,7 +15,7 @@ simulate_study2 <- function(condition) {
 
   u <- MASS::mvrnorm(as.integer(condition$num_clus), mu = c(0, 0), Sigma = covu)
   y <- fixed_params$gamma0 + fixed_params$gamma1 * x + rowSums(cbind(1, x) * u[cid, , drop = FALSE]) +
-    stats::rnorm(length(cid), sd = sqrt(condition$sigma2))
+    draw_lai_level1_residuals(cluster_sizes, sigma = sqrt(condition$sigma2), condition = condition)
   ev_z <- 1 - drop(t(c(fixed_params$beta_zu0, condition$beta_zu1)) %*% covu %*% c(fixed_params$beta_zu0, condition$beta_zu1))
   z <- fixed_params$z_intercept + fixed_params$beta_zu0 * u[, 1] + condition$beta_zu1 * u[, 2] +
     stats::rnorm(as.integer(condition$num_clus), sd = sqrt(ev_z))
@@ -24,6 +24,7 @@ simulate_study2 <- function(condition) {
     lv1 = tibble::tibble(
       cid = factor(cid),
       cid_chr = as.character(cid),
+      trial_index = ave(seq_along(cid), cid, FUN = seq_along),
       x = x,
       y = y
     ),

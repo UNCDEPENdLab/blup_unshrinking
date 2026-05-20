@@ -20,17 +20,18 @@ empty_stage1_diagnostics <- function() {
 }
 
 
-#' Extract diagnostics from a first-stage lme4 fit.
+#' Extract diagnostics from a first-stage mixed-model fit.
 #'
 #' @details
 #' This function extracts random-effect correlations and checks for boundary
 #' or near-singular estimates that could cause numerical issues in stage-2
-#' score estimators. It flags fits as problematic if `lme4::isSingular` is true,
-#' or if the estimated random-effect correlation or empirical Bayes correlation
-#' is perfectly colinear (absolute value > 0.999).
+#' score estimators. For `lme4` fits, it uses `lme4::isSingular`; for
+#' `nlme::lme` fits, it checks whether the fitted random-effect covariance has
+#' a near-zero eigenvalue. It also flags nearly perfect fitted random-effect or
+#' empirical Bayes correlations.
 #'
-#' @param fit_obj The `lmerMod` fitted object from `lme4`. Can be `NULL` if
-#' the fit failed.
+#' @param fit_obj Fitted first-stage model from `lme4` or `nlme`. Can be `NULL`
+#' if the fit failed.
 #' @param stage2_df A data frame containing the cluster-level EB scores or
 #' predictors used in the stage-2 model.
 #' @param predictor_u0 The column name in `stage2_df` for the intercept-like score.
@@ -43,9 +44,22 @@ get_stage1_diagnostics <- function(fit_obj, stage2_df, predictor_u0 = "u0_eb", p
     return(empty_stage1_diagnostics())
   }
 
-  vcov_re <- tryCatch(as.matrix(lme4::VarCorr(fit_obj)[[1]]), error = function(e) matrix(NA_real_, nrow = 2L, ncol = 2L))
+  vcov_re <- tryCatch({
+    if (inherits(fit_obj, "lme")) {
+      as_plain_vcov_matrix(nlme::getVarCov(fit_obj, type = "random.effects"))
+    } else {
+      as.matrix(lme4::VarCorr(fit_obj)[[1]])
+    }
+  }, error = function(e) matrix(NA_real_, nrow = 2L, ncol = 2L))
   re_corr <- tryCatch(stats::cov2cor(vcov_re)[1, 2], error = function(e) NA_real_)
-  lmer_singular <- tryCatch(lme4::isSingular(fit_obj, tol = 1e-5), error = function(e) NA)
+  lmer_singular <- tryCatch({
+    if (inherits(fit_obj, "lme")) {
+      eig <- eigen((vcov_re + t(vcov_re)) / 2, symmetric = TRUE, only.values = TRUE)$values
+      min(eig, na.rm = TRUE) < 1e-5
+    } else {
+      lme4::isSingular(fit_obj, tol = 1e-5)
+    }
+  }, error = function(e) NA)
 
   # Filter to complete cases to ensure the empirical Bayes correlation and
   # design kappa calculations match the exact data available for stage-2 analysis.
@@ -77,7 +91,7 @@ get_stage1_diagnostics <- function(fit_obj, stage2_df, predictor_u0 = "u0_eb", p
   singular_problem <- isTRUE(lmer_singular) || boundary_re_corr || boundary_eb_corr
 
   detail_parts <- c(
-    if (isTRUE(lmer_singular)) "lmer_is_singular" else NA_character_,
+    if (isTRUE(lmer_singular)) "stage1_random_effect_cov_singular" else NA_character_,
     if (boundary_re_corr) sprintf("random_effect_corr=%0.6f", re_corr) else NA_character_,
     if (boundary_eb_corr) sprintf("eb_corr=%0.6f", eb_corr) else NA_character_,
     if (is.finite(design_kappa) && design_kappa > 1e6) sprintf("design_kappa=%0.3e", design_kappa) else NA_character_
@@ -92,4 +106,3 @@ get_stage1_diagnostics <- function(fit_obj, stage2_df, predictor_u0 = "u0_eb", p
     stage1_design_kappa = design_kappa
   )
 }
-

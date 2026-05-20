@@ -69,7 +69,7 @@ simulate_study3 <- function(condition) {
   # First repeated-measures process: Y is generated from a random-intercept and
   # random-slope model and supplies the EB/corrected random-effect predictors.
   y <- fixed_params$gamma0 + fixed_params$gamma1 * x + rowSums(cbind(1, x) * u[cid, , drop = FALSE]) +
-    stats::rnorm(length(cid), sd = sqrt(condition$sigma2))
+    draw_lai_level1_residuals(cluster_sizes, sigma = sqrt(condition$sigma2), condition = condition)
 
   # Second repeated-measures process: eta_z is the latent Stage 2 outcome
   # implied by the true random effects, then z adds sparse measurement noise.
@@ -78,11 +78,22 @@ simulate_study3 <- function(condition) {
     stats::rnorm(as.integer(condition$num_clus), sd = sqrt(ev_z))
   cid_z_sizes <- rep_len(2:3, as.integer(condition$num_clus))
   cid_z <- rep(seq_len(as.integer(condition$num_clus)), cid_z_sizes)
-  z <- eta_z[cid_z] + stats::rnorm(length(cid_z), sd = condition$sigma_z)
+  z <- eta_z[cid_z] + draw_lai_level1_residuals(cid_z_sizes, sigma = condition$sigma_z, condition = condition)
 
   list(
-    lv1_y = tibble::tibble(cid = factor(cid), cid_chr = as.character(cid), x = x, y = y),
-    lv1_z = tibble::tibble(cid_z = factor(cid_z), cid_z_chr = as.character(cid_z), z = z),
+    lv1_y = tibble::tibble(
+      cid = factor(cid),
+      cid_chr = as.character(cid),
+      trial_index = ave(seq_along(cid), cid, FUN = seq_along),
+      x = x,
+      y = y
+    ),
+    lv1_z = tibble::tibble(
+      cid_z = factor(cid_z),
+      cid_z_chr = as.character(cid_z),
+      trial_index = ave(seq_along(cid_z), cid_z, FUN = seq_along),
+      z = z
+    ),
     lv2_true = tibble::tibble(
       id = as.character(seq_len(as.integer(condition$num_clus))),
       true_u0 = u[, 1],
@@ -122,18 +133,31 @@ run_study3_rep <- function(condition) {
 
   # Study 3 has genuinely disparate first-stage models: random intercept/slope
   # for Y, but random intercept only for the repeated Z measurements.
-  fit_y <- safe_lmer(y ~ x + (x | cid), data = sim$lv1_y)
-  fit_z <- safe_lmer(z ~ 1 + (1 | cid_z), data = sim$lv1_z)
+  sim$lv1_y <- add_lai_trial_index(sim$lv1_y, cluster_var = "cid")
+  sim$lv1_z <- add_lai_trial_index(sim$lv1_z, cluster_var = "cid_z")
+  fit_y <- fit_lai_stage1(y ~ x, random = ~x | cid, data = sim$lv1_y, condition = condition, cluster_var = "cid")
+  fit_z <- fit_lai_stage1(z ~ 1, random = ~1 | cid_z, data = sim$lv1_z, condition = condition, cluster_var = "cid_z")
 
   if (is.null(fit_y) || is.null(fit_z)) {
     return(make_failed_result(condition, disparate_study_methods(include_tempered_eiv), truth))
   }
 
   ordered_ids <- sim$lv2_true$id
-  split_y <- split(sim$lv1_y, sim$lv1_y$cid_chr)
-  split_z <- split(sim$lv1_z, sim$lv1_z$cid_z_chr)
-  eb_inputs_y <- compute_bivariate_eb_inputs(fit_y, split_y, ordered_ids, within_var = "x")
-  eb_inputs_z <- compute_univariate_eb_inputs(fit_z, split_z, ordered_ids, prefix = "z_")
+  eb_inputs_y <- get_stage1_eb_components(
+    fit_obj = fit_y,
+    data = sim$lv1_y,
+    cluster_var = "cid",
+    outcome_var = "y",
+    within_var = "x"
+  )
+  eb_inputs_z <- get_stage1_eb_components(
+    fit_obj = fit_z,
+    data = sim$lv1_z,
+    cluster_var = "cid_z",
+    outcome_var = "z",
+    within_var = NULL
+  ) %>%
+    select_lai_measurement_columns(n_re = 1L, prefix = "z_")
 
   # Corrected Y scores are likelihood-only estimates of the random intercept
   # and slope. Their OLS sampling covariance feeds the EIV estimators below.

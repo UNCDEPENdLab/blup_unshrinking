@@ -928,7 +928,6 @@ get_closed_form_corrected_scores <- function(fit_obj, data, cluster_var, outcome
   cluster_ids <- unique(as.character(data[[cluster_var]]))
   split_dat <- split(data, as.character(data[[cluster_var]]), drop = TRUE)[cluster_ids]
   beta_hat <- stage1_fixef(fit_obj)
-  sigma2_hat <- stats::sigma(fit_obj)^2
 
   if (is.null(R_list) && inherits(fit_obj, "lme")) {
     R_list <- extract_stage1_components(
@@ -950,6 +949,8 @@ get_closed_form_corrected_scores <- function(fit_obj, data, cluster_var, outcome
   }
 
   if (is.null(R_list)) {
+    sigma2_hat <- stats::sigma(fit_obj)^2
+
     # Fast iid branch: R_i = sigma^2 I. The scalar sigma^2 does not affect the
     # coefficient estimate, so the score is OLS on fixed-effect residuals. We
     # still use sigma^2 below for the score covariance.
