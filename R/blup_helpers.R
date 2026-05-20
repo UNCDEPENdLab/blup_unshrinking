@@ -46,6 +46,156 @@ sanitize_re_name <- function(x) {
   ifelse(nzchar(x), x, "re")
 }
 
+#' Normalize a cluster-level residual covariance list.
+#'
+#' @param R_list Optional list of residual covariance matrices.
+#' @param cluster_ids Character vector of cluster identifiers in data order.
+#'
+#' @return
+#' `NULL` or a named `R_list` ordered to `cluster_ids`.
+normalize_R_list <- function(R_list, cluster_ids) {
+  if (is.null(R_list)) {
+    return(NULL)
+  }
+  if (!is.list(R_list)) {
+    stop("`R_list` must be NULL or a list of cluster-level residual covariance matrices.")
+  }
+  if (is.null(names(R_list))) {
+    if (length(R_list) != length(cluster_ids)) {
+      stop("Unnamed `R_list` must have one matrix per cluster in `data` order.")
+    }
+    names(R_list) <- cluster_ids
+  }
+  R_list <- R_list[cluster_ids]
+  if (any(vapply(R_list, is.null, logical(1)))) {
+    stop("`R_list` does not contain one matrix per cluster in `data`.")
+  }
+  R_list
+}
+
+#' Coerce an nlme VarCov object to a plain numeric matrix.
+#'
+#' @param x Object returned by `nlme::getVarCov()`.
+#'
+#' @return Numeric matrix.
+as_plain_vcov_matrix <- function(x) {
+  x_unclass <- unclass(x)
+  if (is.list(x_unclass)) {
+    x_unclass <- x_unclass[[1L]]
+  }
+  as.matrix(x_unclass)
+}
+
+#' Extract common Stage-1 ingredients for GLS-aware score correction.
+#'
+#' @details
+#' `get_gls_corrected_scores()` needs only fixed effects, the random-effect
+#' covariance `G`, cluster-level residual covariance matrices `R_i`, and stable
+#' random-effect names. This adapter keeps those ingredients independent of the
+#' package used to fit Stage 1.
+#'
+#' `lme4` objects are accepted only for iid residual covariance. Passing an
+#' explicit non-NULL `R_list` with a `merMod` object is refused because the
+#' `lme4` fixed-effect and random-effect covariance estimates come from the
+#' iid-residual likelihood, not from the supplied `R_i` likelihood.
+#'
+#' `nlme::lme` objects can carry fitted R-side correlation structures. When
+#' `R_list` is `NULL`, their fitted conditional residual covariance matrices
+#' are extracted with `nlme::getVarCov(..., type = "conditional")`. A supplied
+#' `R_list` overrides the fitted residual covariance list, which is useful for
+#' known-`R_i` simulations.
+#'
+#' @param fit_obj Fitted Stage-1 model object.
+#' @param data Original long-format data.
+#' @param cluster_var Character scalar naming the grouping column.
+#' @param within_var Optional within-cluster random-slope predictor.
+#' @param R_list Optional cluster residual covariance list.
+#' @param group Optional grouping-factor name.
+#'
+#' @return
+#' A list with `beta_hat`, `G_hat`, `R_list`, and `re_names_raw`.
+extract_stage1_components <- function(fit_obj, data, cluster_var, within_var = NULL,
+                                      R_list = NULL, group = NULL) {
+  UseMethod("extract_stage1_components")
+}
+
+#' @export
+extract_stage1_components.merMod <- function(fit_obj, data, cluster_var, within_var = NULL,
+                                             R_list = NULL, group = NULL) {
+  cluster_ids <- unique(as.character(data[[cluster_var]]))
+  if (!is.null(R_list)) {
+    stop(
+      "`R_list` cannot be supplied with an `lme4` merMod object. ",
+      "`lme4` estimates beta and G under iid residual covariance; use an ",
+      "`nlme::lme` fit or another R-aware Stage-1 fit instead."
+    )
+  }
+
+  beta_hat <- lme4::fixef(fit_obj)
+  re_list <- lme4::ranef(fit_obj)
+  group <- group %||% names(re_list)[[1]]
+  g_hat <- as.matrix(lme4::VarCorr(fit_obj)[[group]])
+  sigma2_hat <- stats::sigma(fit_obj)^2
+  split_dat <- split(data, as.character(data[[cluster_var]]), drop = TRUE)[cluster_ids]
+  R_iid <- stats::setNames(
+    lapply(split_dat, function(df_i) sigma2_hat * diag(nrow(df_i))),
+    cluster_ids
+  )
+
+  list(
+    beta_hat = beta_hat,
+    G_hat = g_hat,
+    R_list = R_iid,
+    re_names_raw = colnames(re_list[[group]])
+  )
+}
+
+#' @export
+extract_stage1_components.lme <- function(fit_obj, data, cluster_var, within_var = NULL,
+                                          R_list = NULL, group = NULL) {
+  if (!requireNamespace("nlme", quietly = TRUE)) {
+    stop("The `nlme` package is required to extract Stage-1 components from `lme` objects.")
+  }
+
+  cluster_ids <- unique(as.character(data[[cluster_var]]))
+  beta_hat <- nlme::fixef(fit_obj)
+  g_hat <- as_plain_vcov_matrix(nlme::getVarCov(fit_obj, type = "random.effects"))
+
+  if (is.null(R_list)) {
+    R_list <- stats::setNames(lapply(cluster_ids, function(cluster_id) {
+      as_plain_vcov_matrix(nlme::getVarCov(
+        fit_obj,
+        individuals = cluster_id,
+        type = "conditional"
+      ))
+    }), cluster_ids)
+  } else {
+    R_list <- normalize_R_list(R_list, cluster_ids)
+  }
+
+  re_names_raw <- colnames(g_hat)
+  if (is.null(re_names_raw)) {
+    re_names_raw <- if (is.null(within_var)) "(Intercept)" else c("(Intercept)", within_var)
+  }
+
+  list(
+    beta_hat = beta_hat,
+    G_hat = g_hat,
+    R_list = R_list,
+    re_names_raw = re_names_raw
+  )
+}
+
+#' @export
+extract_stage1_components.default <- function(fit_obj, data, cluster_var, within_var = NULL,
+                                             R_list = NULL, group = NULL) {
+  stop(
+    "Unsupported Stage-1 fit object class for GLS-corrected scores: ",
+    paste(class(fit_obj), collapse = ", "),
+    ". Supported classes are `lme4` merMod and `nlme` lme."
+  )
+}
+
 #' Unweight random effects from the prior using matrix inversion.
 #'
 #' @details
@@ -241,8 +391,9 @@ get_diagonal_corrected_scores <- function(fit_null, group = NULL) {
 #' `get_corrected_scores()`. It does not use `lme4::ranef(..., condVar = TRUE)`
 #' for the cluster predictions, because those conditional modes and posterior
 #' covariance matrices assume the residual covariance structure fitted by
-#' `lme4`. Instead, it rebuilds the Gaussian score ingredients directly from
-#' plug-in first-stage parameters and each supplied cluster-level `R_i`.
+#' the original model object. Instead, it rebuilds the Gaussian score
+#' ingredients directly from common Stage-1 components extracted by
+#' `extract_stage1_components()`.
 #'
 #' For cluster `i`, let `r_i = y_i - X_i beta_hat`, `Z_i` be the random-effect
 #' design, `G` be the fitted random-effect covariance, `R_i` be the residual
@@ -284,7 +435,11 @@ get_diagonal_corrected_scores <- function(fit_null, group = NULL) {
 #' are the diagonal elements of `(Z_i' R_i^{-1} Z_i)^{-1}`, matching the
 #' conditional variance expression in V&H equation 38.
 #'
-#' @param fit_obj Fitted `lme4` model supplying plug-in `beta_hat` and `G_hat`.
+#' @param fit_obj Fitted Stage-1 model. Supported classes are `lme4` `merMod`
+#'   objects for iid residual covariance and `nlme` `lme` objects for fitted
+#'   R-side residual covariance structures. Supplying non-NULL `R_list` with a
+#'   `merMod` object is an error because `lme4` estimates `beta_hat` and `G_hat`
+#'   under an iid-residual likelihood.
 #' @param data Original long-format data frame.
 #' @param cluster_var Character scalar naming the cluster/grouping column.
 #' @param outcome_var Character scalar naming the outcome column.
@@ -292,10 +447,11 @@ get_diagonal_corrected_scores <- function(fit_null, group = NULL) {
 #'   predictor. If `NULL`, an intercept-only random-effect design is used.
 #' @param R_list Optional named list of cluster-level residual covariance
 #'   matrices. Names should match `cluster_var` values. If unnamed, matrices are
-#'   matched to clusters in data order. If `NULL`, iid covariance
-#'   `sigma(fit_obj)^2 I` is used.
+#'   matched to clusters in data order. For `nlme` fits, `NULL` means use the
+#'   fitted conditional residual covariance matrices from the object.
 #' @param group Optional grouping-factor name for extracting `G_hat` and
-#'   random-effect names from `fit_obj`. Defaults to the first grouping factor.
+#'   random-effect names from `merMod` objects. Defaults to the first grouping
+#'   factor.
 #'
 #' @return
 #' A tibble with one row per cluster. It includes EB/BLUP columns
@@ -307,27 +463,25 @@ get_gls_corrected_scores <- function(fit_obj, data, cluster_var, outcome_var, wi
                                      R_list = NULL, group = NULL) {
   cluster_ids <- unique(as.character(data[[cluster_var]]))
   split_dat <- split(data, as.character(data[[cluster_var]]), drop = TRUE)[cluster_ids]
-  beta_hat <- lme4::fixef(fit_obj)
-  group <- group %||% names(lme4::ranef(fit_obj))[[1]]
-  g_hat <- as.matrix(lme4::VarCorr(fit_obj)[[group]])
-  sigma2_hat <- stats::sigma(fit_obj)^2
   n_re <- if (is.null(within_var)) 1L else 2L
 
-  re_names_raw <- tryCatch(colnames(lme4::ranef(fit_obj)[[group]]), error = function(e) NULL)
+  stage1 <- extract_stage1_components(
+    fit_obj = fit_obj,
+    data = data,
+    cluster_var = cluster_var,
+    within_var = within_var,
+    R_list = R_list,
+    group = group
+  )
+  beta_hat <- stage1$beta_hat
+  g_hat <- stage1$G_hat
+  R_list <- normalize_R_list(stage1$R_list, cluster_ids)
+
+  re_names_raw <- stage1$re_names_raw
   if (is.null(re_names_raw) || length(re_names_raw) != n_re) {
     re_names_raw <- if (is.null(within_var)) "(Intercept)" else c("(Intercept)", within_var)
   }
   re_names <- sanitize_re_name(re_names_raw)
-
-  if (!is.null(R_list) && !is.list(R_list)) {
-    stop("`R_list` must be NULL or a list of cluster-level residual covariance matrices.")
-  }
-  if (!is.null(R_list) && is.null(names(R_list))) {
-    if (length(R_list) != length(cluster_ids)) {
-      stop("Unnamed `R_list` must have one matrix per cluster in `data` order.")
-    }
-    names(R_list) <- cluster_ids
-  }
 
   if (nrow(g_hat) != n_re || ncol(g_hat) != n_re) {
     stop("The fitted random-effect covariance dimension does not match `within_var`.")
@@ -351,11 +505,7 @@ get_gls_corrected_scores <- function(fit_obj, data, cluster_var, outcome_var, wi
     }
 
     resid_i <- df_i[[outcome_var]] - as.numeric(x_mat %*% beta_vec)
-    R_i <- if (is.null(R_list)) {
-      sigma2_hat * diag(nrow(df_i))
-    } else {
-      as.matrix(R_list[[cluster_id]])
-    }
+    R_i <- as.matrix(R_list[[cluster_id]])
 
     pieces <- tryCatch({
       if (is.null(g_inv)) {

@@ -88,6 +88,37 @@ safe_lmer <- function(formula, data, ...) {
   )
 }
 
+#' Fit an nlme mixed model with quiet failure handling.
+#'
+#' @details
+#' Mirrors `safe_lmer()` for R-side residual covariance models. This wrapper is
+#' used when simulations need a Stage-1 fit whose fixed effects, random-effect
+#' covariance, and residual covariance all come from the same non-iid likelihood
+#' rather than from an `lme4` iid-residual approximation.
+#'
+#' @param fixed Fixed-effect formula passed to `nlme::lme()`.
+#' @param random Random-effect formula passed to `nlme::lme()`.
+#' @param data Data frame used for model fitting.
+#' @param ... Additional arguments passed through to `nlme::lme()`.
+#'
+#' @return
+#' An `lme` object on successful fitting, or `NULL` if `nlme::lme()` throws an
+#' error or if `nlme` is unavailable.
+safe_lme <- function(fixed, random, data, ...) {
+  if (!requireNamespace("nlme", quietly = TRUE)) {
+    return(NULL)
+  }
+  tryCatch(
+    suppressWarnings(suppressMessages(nlme::lme(
+      fixed = fixed,
+      random = random,
+      data = data,
+      ...
+    ))),
+    error = function(e) NULL
+  )
+}
+
 #' Project a symmetric matrix to positive definite by flooring eigenvalues.
 #'
 #' @details

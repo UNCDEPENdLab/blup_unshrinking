@@ -38,6 +38,35 @@ condition_to_r_spec <- function(condition) {
   )
 }
 
+condition_to_nlme_correlation <- function(condition) {
+  r_structure <- if ("r_structure" %in% names(condition)) {
+    as.character(condition$r_structure[[1]])
+  } else {
+    "iid"
+  }
+
+  switch(
+    r_structure,
+    iid = NULL,
+    ar1 = {
+      if (!requireNamespace("nlme", quietly = TRUE)) {
+        stop("The `nlme` package is required for AR(1) Stage-1 residual covariance fits.")
+      }
+      nlme::corAR1(form = ~trial_index | id)
+    },
+    stop("Unsupported residual structure for nlme Stage-1 fit: ", r_structure)
+  )
+}
+
+condition_uses_non_iid_R <- function(condition) {
+  r_structure <- if ("r_structure" %in% names(condition)) {
+    as.character(condition$r_structure[[1]])
+  } else {
+    "iid"
+  }
+  !identical(r_structure, "iid")
+}
+
 make_blup_outcome_design <- function(grid_mode = "base", max_conditions = NA_integer_) {
   grid_mode <- as.character(grid_mode[[1]])
 
