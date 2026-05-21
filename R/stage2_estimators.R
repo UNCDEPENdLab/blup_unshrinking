@@ -2147,12 +2147,16 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
     alpha_scaling = alpha_lower,
     auto_tempered = TRUE
   )
-  scaling_lambda_hat <- if (nrow(base_scaling) > 0L) base_scaling$fuller_scaling_relative_min_eigen[[1]] else NA_real_
-  alpha_scaling_upper <- if (is.finite(scaling_lambda_hat) && is.finite(m) && m > 0) {
-    scaling_lambda_hat * m - 1
-  } else {  
-    alpha_lower
+  # The scaling-alpha upper bound should come from the centered-covariance
+  # determinant root, not from `fuller_scaling_relative_min_eigen`. The latter
+  # is only an admissibility diagnostic, so using it as lambda can arbitrarily
+  # cap the search before a valid scaling alpha is reachable.
+  scaling_lambda_hat <- if (nrow(base_scaling) > 0L && "fuller_lambda_scaling" %in% names(base_scaling)) {
+    base_scaling$fuller_lambda_scaling[[1]]
+  } else {
+    NA_real_
   }
+  alpha_scaling_upper <- alpha_upper_from_lambda(scaling_lambda_hat)
   if (!is.finite(alpha_scaling_upper)) {
     alpha_scaling_upper <- alpha_lower
   }
