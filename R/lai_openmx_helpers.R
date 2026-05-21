@@ -5,6 +5,24 @@
 #' of 2S-PA measurement-model inputs, OpenMx retry handling, OpenMx diagnostic
 #' extraction, and the Lai 2S-PA/2S-PAA model wrappers.
 
+#' Warn when a legacy Lai EB-input convenience wrapper is used.
+#'
+#' @param fun_name Character scalar naming the caller.
+#'
+#' @return Invisibly returns `NULL`.
+warn_legacy_lai_input_helper <- function(fun_name) {
+  warning(
+    fun_name,
+    "() is a legacy Lai EB-input convenience wrapper. Prefer calling ",
+    "get_stage1_eb_components() directly, then select_lai_measurement_columns() ",
+    "when OpenMx/Lai column names are needed. The direct path keeps EB/BLUPs, ",
+    "posterior covariance, Lai lambda/theta, fitted G, and residual R handling ",
+    "tied to one explicit Stage-1 fit, which is important for non-diagonal R.",
+    call. = FALSE
+  )
+  invisible(NULL)
+}
+
 #' Build the random-effect design matrix for one cluster.
 #'
 #' @details
@@ -111,6 +129,11 @@ select_lai_measurement_columns <- function(stage1_components, n_re, prefix = "")
 #' rejected by the shared adapter because `lme4` estimates `beta` and `G` under
 #' an iid residual likelihood.
 #'
+#' Lifecycle: this is a legacy convenience wrapper retained for older
+#' simulation code. New code should call `get_stage1_eb_components()` directly
+#' and then `select_lai_measurement_columns()` if Lai/OpenMx column names are
+#' required.
+#'
 #' @param fit_obj Fitted Stage-1 model supported by
 #' `get_stage1_eb_components()`.
 #' @param split_dat Named list of cluster-level data frames. Names must include
@@ -124,6 +147,8 @@ select_lai_measurement_columns <- function(stage1_components, n_re, prefix = "")
 #' @param R_list Optional named list of cluster-level residual covariance
 #' matrices. Names should match `ordered_ids`. If unnamed, matrices are matched
 #' to `ordered_ids` by position.
+#' @param .warn_legacy Logical scalar. Internal use only; controls whether the
+#' legacy lifecycle warning is emitted.
 #'
 #' @return A tibble with one row per cluster containing EB predictions,
 #' posterior variance entries, and Lai measurement-model `lambda`/`theta`
@@ -134,7 +159,12 @@ compute_eb_measurement_inputs <- function(fit_obj,
                                           within_var = NULL,
                                           group = NULL,
                                           prefix = "",
-                                          R_list = NULL) {
+                                          R_list = NULL,
+                                          .warn_legacy = TRUE) {
+  if (isTRUE(.warn_legacy)) {
+    warn_legacy_lai_input_helper("compute_eb_measurement_inputs")
+  }
+
   if (any(!ordered_ids %in% names(split_dat))) {
     stop("`split_dat` must contain one named data frame per `ordered_ids` entry.")
   }
@@ -170,17 +200,25 @@ compute_eb_measurement_inputs <- function(fit_obj,
 #' @param within_var Character scalar naming the random-slope predictor.
 #' @param R_list Optional residual covariance list passed to
 #' `compute_eb_measurement_inputs()`.
+#' @param .warn_legacy Logical scalar. Internal use only; controls whether the
+#' legacy lifecycle warning is emitted.
 #'
 #' @return A tibble from `compute_eb_measurement_inputs()` with unprefixed
 #' bivariate EB, posterior variance, `lambda`, and `theta` columns.
-compute_bivariate_eb_inputs <- function(fit_obj, split_dat, ordered_ids, within_var, R_list = NULL) {
+compute_bivariate_eb_inputs <- function(fit_obj, split_dat, ordered_ids, within_var,
+                                        R_list = NULL, .warn_legacy = TRUE) {
+  if (isTRUE(.warn_legacy)) {
+    warn_legacy_lai_input_helper("compute_bivariate_eb_inputs")
+  }
+
   compute_eb_measurement_inputs(
     fit_obj = fit_obj,
     split_dat = split_dat,
     ordered_ids = ordered_ids,
     within_var = within_var,
     prefix = "",
-    R_list = R_list
+    R_list = R_list,
+    .warn_legacy = FALSE
   )
 }
 
@@ -194,17 +232,25 @@ compute_bivariate_eb_inputs <- function(fit_obj, split_dat, ordered_ids, within_
 #' Study 3 repeated-`z` model.
 #' @param R_list Optional residual covariance list passed to
 #' `compute_eb_measurement_inputs()`.
+#' @param .warn_legacy Logical scalar. Internal use only; controls whether the
+#' legacy lifecycle warning is emitted.
 #'
 #' @return A tibble from `compute_eb_measurement_inputs()` with prefixed
 #' univariate EB, posterior variance, `lambda`, and `theta` columns.
-compute_univariate_eb_inputs <- function(fit_obj, split_dat, ordered_ids, prefix = "z_", R_list = NULL) {
+compute_univariate_eb_inputs <- function(fit_obj, split_dat, ordered_ids, prefix = "z_",
+                                         R_list = NULL, .warn_legacy = TRUE) {
+  if (isTRUE(.warn_legacy)) {
+    warn_legacy_lai_input_helper("compute_univariate_eb_inputs")
+  }
+
   compute_eb_measurement_inputs(
     fit_obj = fit_obj,
     split_dat = split_dat,
     ordered_ids = ordered_ids,
     within_var = NULL,
     prefix = prefix,
-    R_list = R_list
+    R_list = R_list,
+    .warn_legacy = FALSE
   )
 }
 
@@ -222,15 +268,22 @@ compute_univariate_eb_inputs <- function(fit_obj, split_dat, ordered_ids, prefix
 #' @param id_df Level-2 data frame containing `id` and `x`.
 #' @param R_list Optional residual covariance list passed to
 #' `compute_bivariate_eb_inputs()`.
+#' @param .warn_legacy Logical scalar. Internal use only; controls whether the
+#' legacy lifecycle warning is emitted.
 #'
 #' @return A tibble suitable for `fit_lai_2spa()`.
-compute_lai_2spa_inputs <- function(fit_null, split_dat, id_df, R_list = NULL) {
+compute_lai_2spa_inputs <- function(fit_null, split_dat, id_df, R_list = NULL, .warn_legacy = TRUE) {
+  if (isTRUE(.warn_legacy)) {
+    warn_legacy_lai_input_helper("compute_lai_2spa_inputs")
+  }
+
   out <- compute_bivariate_eb_inputs(
     fit_obj = fit_null,
     split_dat = split_dat,
     ordered_ids = as.character(id_df$id),
     within_var = "z",
-    R_list = R_list
+    R_list = R_list,
+    .warn_legacy = FALSE
   )
   dplyr::left_join(id_df[, c("id", "x"), drop = FALSE], out, by = "id")
 }

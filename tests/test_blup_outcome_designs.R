@@ -6,6 +6,7 @@ suppressPackageStartupMessages({
 })
 
 source(file.path("blup_outcome", "designs.R"), local = TRUE)
+source(file.path("blup_outcome", "study_common.R"), local = TRUE)
 
 smoke_design <- make_blup_outcome_design("smoke")
 base_design <- make_blup_outcome_design("base")
@@ -40,6 +41,22 @@ expected_pairs <- tidyr::crossing(
 stopifnot(
   nrow(tau_sigma_pairs) == nrow(expected_pairs),
   all(dplyr::anti_join(expected_pairs, tau_sigma_pairs, by = c("tau1", "sigma")) %>% nrow() == 0L)
+)
+
+stage2_schema <- ensure_blup_outcome_stage2_columns(data.frame(id = "a", x = 0))
+stopifnot(
+  all(c(
+    "u0_eb", "u1_eb", "postvar11", "postvar12", "postvar22",
+    "lambda11", "lambda12", "lambda21", "lambda22",
+    "theta11", "theta12", "theta22",
+    "corrected_z_var", "corrected_z_diag_var", "ols_var22"
+  ) %in% names(stage2_schema)),
+  all(is.na(stage2_schema[, c(
+    "u0_eb", "u1_eb", "postvar11", "postvar12", "postvar22",
+    "lambda11", "lambda12", "lambda21", "lambda22",
+    "theta11", "theta12", "theta22",
+    "corrected_z_var", "corrected_z_diag_var", "ols_var22"
+  )]))
 )
 
 cat("BLUP-outcome design tests ok\n")
