@@ -358,11 +358,6 @@ get_stage1_eb_components <- function(fit_obj, data, cluster_var, outcome_var, wi
   if (nrow(g_hat) != n_re || ncol(g_hat) != n_re) {
     stop("The fitted random-effect covariance dimension does not match `within_var`.")
   }
-  g_inv <- tryCatch(solve(g_hat), error = function(e) NULL)
-  if (is.null(g_inv)) {
-    stop("The fitted random-effect covariance matrix is singular.")
-  }
-
   purrr::map_dfr(cluster_ids, function(cluster_id) {
     df_i <- split_dat[[cluster_id]]
     if (is.null(within_var)) {
@@ -389,7 +384,11 @@ get_stage1_eb_components <- function(fit_obj, data, cluster_var, outcome_var, wi
       R_inv_Z <- solve(R_i, z_mat)
       R_inv_resid <- solve(R_i, resid_i)
       info_like <- crossprod(z_mat, R_inv_Z)
-      post_vcov <- solve(g_inv + info_like)
+      # Use the covariance identity rather than (G^{-1} + Z'R^{-1}Z)^{-1}
+      # so singular but positive-semidefinite Stage-1 random-effect
+      # covariance estimates still produce EB means and Lai measurement inputs.
+      post_vcov <- g_hat - a_i %*% z_mat %*% g_hat
+      post_vcov <- (post_vcov + t(post_vcov)) / 2
       mle_vcov <- solve(info_like)
       eb <- as.numeric(a_i %*% resid_i)
       mle <- as.numeric(mle_vcov %*% crossprod(z_mat, R_inv_resid))

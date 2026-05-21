@@ -147,8 +147,13 @@ add_empty_blup_outcome_context <- function(results, sim = NULL) {
 #' @return `stage2_df` with the required columns present.
 ensure_blup_outcome_stage2_columns <- function(stage2_df) {
   needed <- c(
-    "x", "true_slope_dev", "u0_eb", "u1_eb", "postvar22", "theta22", "lambda22",
-    "corrected_z", "corrected_z_diag", "corrected_slope_full", "ols_slope"
+    "x", "true_slope_dev", "u0_eb", "u1_eb",
+    "postvar11", "postvar12", "postvar22",
+    "lambda11", "lambda12", "lambda21", "lambda22",
+    "theta11", "theta12", "theta22",
+    "corrected_z", "corrected_z_var",
+    "corrected_z_diag", "corrected_z_diag_var",
+    "corrected_slope_full", "ols_var22", "ols_slope"
   )
   for (col in setdiff(needed, names(stage2_df))) {
     stage2_df[[col]] <- NA_real_

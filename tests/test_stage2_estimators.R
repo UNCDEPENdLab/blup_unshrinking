@@ -329,7 +329,15 @@ stopifnot(
   is.finite(fuller_alpha_large$se),
   abs(fuller_alpha_large$estimate - fuller_truth) < 0.04,
   fuller_alpha_large$se > 0,
-  fuller_alpha_large$se < 0.04
+  fuller_alpha_large$se < 0.04,
+  isTRUE(all.equal(fuller_alpha_large$fuller_alpha_step1_used, 4, tolerance = 1e-12)),
+  isTRUE(all.equal(fuller_alpha_large$fuller_alpha_step3_used, 4, tolerance = 1e-12)),
+  isTRUE(all.equal(fuller_alpha_large$fuller_alpha_scaling_used, 4, tolerance = 1e-12)),
+  fuller_alpha_large$fuller_sx1_star_relative_min_eigen >= 5e-2,
+  fuller_alpha_large$fuller_sx_star_relative_min_eigen >= 5e-2,
+  fuller_alpha_large$fuller_scaling_relative_min_eigen >= 5e-2,
+  fuller_alpha_large$fuller_sx1_star_condition <= 1e5,
+  fuller_alpha_large$fuller_sx_star_condition <= 1e5
 )
 
 fuller_alpha_boundary <- fit_fuller_dual_alpha_stepdown(
@@ -348,15 +356,75 @@ fuller_alpha_boundary <- fit_fuller_dual_alpha_stepdown(
   min_scaling_relative_eigen = 0.37
 )
 
+fuller_alpha_boundary_coarse <- fit_fuller_dual_alpha_stepdown(
+  fuller_alpha_large_df,
+  outcome = "z",
+  predictor_u0 = "corrected_intercept_full",
+  predictor_u1 = "corrected_slope_full",
+  meas11 = "ols_var11",
+  meas12 = "ols_var12",
+  meas22 = "ols_var22",
+  coarse_grid_size = 3L,
+  max_refinements = 0L,
+  search_tolerance = 0.1,
+  min_sx1_star_relative_eigen = 0.37,
+  min_sx_star_relative_eigen = 0.37,
+  min_scaling_relative_eigen = 0.37
+)
+
 stopifnot(
   identical(as.integer(fuller_alpha_boundary$status_code), 0L),
   fuller_alpha_boundary$fuller_alpha_step1_used > 4,
   fuller_alpha_boundary$fuller_alpha_step1_used < 1252,
   fuller_alpha_boundary$fuller_alpha_step3_used > 4,
   fuller_alpha_boundary$fuller_alpha_step3_used < 1252,
+  fuller_alpha_boundary$fuller_alpha_scaling_used > 4,
+  fuller_alpha_boundary$fuller_alpha_scaling_used < 1252,
+  fuller_alpha_boundary$fuller_alpha_step1_used < fuller_alpha_boundary_coarse$fuller_alpha_step1_used,
+  fuller_alpha_boundary$fuller_alpha_step3_used < fuller_alpha_boundary_coarse$fuller_alpha_step3_used,
+  fuller_alpha_boundary$fuller_alpha_scaling_used < fuller_alpha_boundary_coarse$fuller_alpha_scaling_used,
   fuller_alpha_boundary$fuller_sx1_star_relative_min_eigen >= 0.37,
   fuller_alpha_boundary$fuller_sx_star_relative_min_eigen >= 0.37,
   fuller_alpha_boundary$fuller_scaling_relative_min_eigen >= 0.37
+)
+
+fuller_alpha_base_scaling <- fit_fuller_dual_core(
+  fuller_alpha_large_df,
+  outcome = "z",
+  predictor_u0 = "corrected_intercept_full",
+  predictor_u1 = "corrected_slope_full",
+  meas11 = "ols_var11",
+  meas12 = "ols_var12",
+  meas22 = "ols_var22",
+  alpha_step1 = 4,
+  alpha_step3 = 4,
+  alpha_scaling = 4,
+  auto_tempered = TRUE
+)
+wrong_relative_scaling_upper <- fuller_alpha_base_scaling$fuller_scaling_relative_min_eigen *
+  nrow(fuller_alpha_large_df) - 1
+
+fuller_alpha_scaling_boundary <- fit_fuller_dual_alpha_stepdown(
+  fuller_alpha_large_df,
+  outcome = "z",
+  predictor_u0 = "corrected_intercept_full",
+  predictor_u1 = "corrected_slope_full",
+  meas11 = "ols_var11",
+  meas12 = "ols_var12",
+  meas22 = "ols_var22",
+  coarse_grid_size = 5L,
+  max_refinements = 8L,
+  search_tolerance = 0.1,
+  min_scaling_relative_eigen = 0.40
+)
+
+stopifnot(
+  identical(as.integer(fuller_alpha_scaling_boundary$status_code), 0L),
+  fuller_alpha_scaling_boundary$fuller_lambda_scaling > 1,
+  fuller_alpha_scaling_boundary$fuller_alpha_scaling_used > wrong_relative_scaling_upper,
+  fuller_alpha_scaling_boundary$fuller_alpha_scaling_used > 1252,
+  fuller_alpha_scaling_boundary$fuller_alpha_scaling_used < 1876,
+  fuller_alpha_scaling_boundary$fuller_scaling_relative_min_eigen >= 0.40
 )
 
 set.seed(4802)

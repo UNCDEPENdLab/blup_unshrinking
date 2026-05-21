@@ -122,6 +122,48 @@ stopifnot(
   isTRUE(mermod_R_error)
 )
 
+singular_dat <- data.frame(
+  id = rep(c("a", "b"), each = 4L),
+  z = rep(c(-1.5, -0.5, 0.5, 1.5), 2L),
+  y = c(0.1, 0.4, 0.7, 1.0, -0.2, 0.0, 0.2, 0.4)
+)
+singular_fit <- structure(list(), class = "singular_stage1_fit")
+extract_stage1_components.singular_stage1_fit <- function(fit_obj, data, cluster_var, within_var = NULL,
+                                                          R_list = NULL, group = NULL) {
+  cluster_ids <- unique(as.character(data[[cluster_var]]))
+  split_dat <- split(data, as.character(data[[cluster_var]]), drop = TRUE)[cluster_ids]
+  list(
+    beta_hat = c("(Intercept)" = 0.2, z = 0.3),
+    G_hat = matrix(c(0.25, 0.10, 0.10, 0.04), nrow = 2L),
+    R_list = stats::setNames(lapply(split_dat, function(df_i) 0.09 * diag(nrow(df_i))), cluster_ids),
+    re_names_raw = c("(Intercept)", "z")
+  )
+}
+
+singular_components <- get_stage1_eb_components(
+  fit_obj = singular_fit,
+  data = singular_dat,
+  cluster_var = "id",
+  outcome_var = "y",
+  within_var = "z"
+)
+
+stopifnot(
+  identical(singular_components$id, c("a", "b")),
+  all(c("lambda11", "lambda12", "lambda21", "lambda22", "theta11", "theta12", "theta22") %in%
+    names(singular_components)),
+  all(is.finite(singular_components$u0_eb)),
+  all(is.finite(singular_components$u1_eb)),
+  all(is.finite(as.matrix(singular_components[, c(
+    "postvar11", "postvar12", "postvar22",
+    "lambda11", "lambda12", "lambda21", "lambda22",
+    "theta11", "theta12", "theta22",
+    "mle_z", "mle_z_var"
+  ), drop = FALSE]))),
+  all(is.na(singular_components$corrected_z)),
+  all(is.na(singular_components$corrected_z_var))
+)
+
 if (requireNamespace("nlme", quietly = TRUE)) {
   fit_nlme <- tryCatch(
     nlme::lme(
