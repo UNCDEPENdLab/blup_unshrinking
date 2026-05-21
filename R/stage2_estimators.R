@@ -1758,8 +1758,8 @@ fit_fuller_dual_stepdown <- function(stage2_df,
 #' predictor-block minimum eigenvalue to the observed block maximum eigenvalue.
 #' @param min_sx_star_relative_eigen Minimum ratio of the Step-3 corrected
 #' predictor-block minimum eigenvalue to the observed block maximum eigenvalue.
-#' @param target_condition_number Reserved for parity with other stepdown
-#' helpers; currently unused.
+#' @param target_condition_number Maximum accepted condition number for the
+#' Step-1 and Step-3 corrected predictor blocks.
 #'
 #' @return A one-row tibble with the Fuller core result and selected alphas.
 fit_fuller_dual_alpha_stepdown <- function(stage2_df,
@@ -1780,7 +1780,7 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
                                            min_sx1_star_eigen = sqrt(.Machine$double.eps),
                                            min_sx_star_eigen = sqrt(.Machine$double.eps),
                                            min_scaling_eigen = sqrt(.Machine$double.eps),
-                                           target_condition_number = NA_real_) {
+                                           target_condition_number = 1e5) {
   if (is.null(candidate_alphas)) {
     coarse_grid_size <- max(3L, as.integer(coarse_grid_size))
   }
