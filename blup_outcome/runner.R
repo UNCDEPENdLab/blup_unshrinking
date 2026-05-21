@@ -286,7 +286,7 @@ blup_outcome_parallel_exports <- function() {
   c(
     "run_blup_outcome_rep", "blup_outcome_methods", "empty_blup_outcome_result",
     "standardize_estimator_rows", "fit_score_outcome_ols", "empty_stacked_rows",
-    "fit_direct_mlm_row", "make_blup_outcome_diagnostics", "balance_mode_to_sim_arg",
+    "extract_direct_mlm_stats", "fit_direct_mlm_row", "make_blup_outcome_diagnostics", "balance_mode_to_sim_arg",
     "condition_to_r_spec", "condition_to_nlme_correlation", "condition_uses_non_iid_R",
     "draw_random_effects", "simulate_dataset", "safe_lmer", "safe_lme", "safe_mean",
     "compact_message", "get_stage1_diagnostics", "empty_stage1_diagnostics",

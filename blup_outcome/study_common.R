@@ -245,15 +245,73 @@ empty_stacked_rows <- function(method_prefix = "closed_form_stacked") {
   })
 }
 
+#' Extract fixed-effect statistics from a supported direct mixed model.
+#'
+#' @details
+#' `extract_lmer_stats()` handles `lme4` fits, but the non-iid residual
+#' conditions use `nlme::lme()` so that the direct benchmark is fit under the
+#' same R-side covariance structure as the score extractors. This helper keeps
+#' the interaction-term matching identical across both fit classes.
+#'
+#' @param fit Fitted `lme4` or `nlme` direct model.
+#' @param term Fixed-effect term to extract. Interaction terms are matched in
+#' either order.
+#' @param use_t Logical; use a t critical value if `TRUE`.
+#' @param df Degrees of freedom for the confidence interval.
+#'
+#' @return One-row tibble with `estimate`, `se`, `ci_low`, and `ci_high`.
+extract_direct_mlm_stats <- function(fit, term = "x:z", use_t = TRUE, df = NULL) {
+  coef_tab <- tryCatch({
+    if (inherits(fit, "lme")) {
+      summary(fit)$tTable
+    } else {
+      coef(summary(fit))
+    }
+  }, error = function(e) NULL)
+
+  if (is.null(coef_tab)) {
+    return(tibble::tibble(estimate = NA_real_, se = NA_real_, ci_low = NA_real_, ci_high = NA_real_))
+  }
+
+  term_name <- if (term %in% rownames(coef_tab)) {
+    term
+  } else {
+    matched <- grep(term, rownames(coef_tab), value = TRUE)
+    if (length(matched) == 0L && identical(term, "x:z")) {
+      matched <- grep("z:x", rownames(coef_tab), value = TRUE)
+    }
+    if (length(matched) == 1L) matched else NA_character_
+  }
+
+  if (is.na(term_name)) {
+    return(tibble::tibble(estimate = NA_real_, se = NA_real_, ci_low = NA_real_, ci_high = NA_real_))
+  }
+
+  estimate_col <- if ("Estimate" %in% colnames(coef_tab)) "Estimate" else "Value"
+  se_col <- if ("Std. Error" %in% colnames(coef_tab)) "Std. Error" else "Std.Error"
+  est <- unname(coef_tab[term_name, estimate_col])
+  se <- unname(coef_tab[term_name, se_col])
+  crit <- if (isTRUE(use_t)) stats::qt(0.975, df = df) else stats::qnorm(0.975)
+
+  tibble::tibble(
+    estimate = est,
+    se = se,
+    ci_low = est - crit * se,
+    ci_high = est + crit * se
+  )
+}
+
 #' Extract the direct mixed-model benchmark row.
 #'
 #' @details
 #' The direct MLM benchmark estimates the target interaction in one model,
 #' `y ~ x + z + x:z + (1 + z | id)`. The reported row uses a t critical value
 #' with approximate residual degrees of freedom based on the number of clusters
-#' minus the number of fixed effects.
+#' minus the number of fixed effects. In non-iid residual conditions, callers
+#' pass an `nlme::lme` fit so this benchmark uses the same R-side covariance
+#' structure as the R-aware score extraction path.
 #'
-#' @param fit_direct Fitted `lme4` model or `NULL` if fitting failed.
+#' @param fit_direct Fitted direct mixed model or `NULL` if fitting failed.
 #' @param n_id Integer number of subjects/clusters.
 #'
 #' @return One-row tibble for the `direct_mlm` method.
@@ -269,7 +327,7 @@ fit_direct_mlm_row <- function(fit_direct, n_id) {
     ))
   }
 
-  extract_lmer_stats(fit_direct, term = "x:z", use_t = TRUE, df = n_id - length(lme4::fixef(fit_direct))) %>%
+  extract_direct_mlm_stats(fit_direct, term = "x:z", use_t = TRUE, df = n_id - length(stage1_fixef(fit_direct))) %>%
     dplyr::mutate(
       method = "direct_mlm",
       status_code = dplyr::if_else(is.finite(.data$estimate) & is.finite(.data$se), 0L, NA_integer_)
@@ -288,15 +346,16 @@ fit_direct_mlm_row <- function(fit_direct, n_id) {
 #' scores; and `cluster_size_x_cor` flags informative imbalance in realized
 #' trial counts.
 #'
-#' @param fit_null Fitted null `lme4` model used to extract BLUP/corrected
-#'   scores.
+#' @param stage1_score_fit Fitted null mixed model used to extract
+#'   BLUP/corrected scores. In non-iid residual conditions this should be the
+#'   R-aware `nlme::lme` fit, not the iid `lme4` starting-value fit.
 #' @param stage2_df Cluster-level Stage 2 data frame.
 #' @param sim Simulated dataset list from `simulate_dataset()`.
 #'
 #' @return One-row tibble containing shared Stage 1 diagnostics plus
 #'   BLUP-outcome-specific score diagnostics.
-make_blup_outcome_diagnostics <- function(fit_null, stage2_df, sim) {
-  stage1_diag <- get_stage1_diagnostics(fit_null, stage2_df, predictor_u0 = "u0_eb", predictor_u1 = "u1_eb")
+make_blup_outcome_diagnostics <- function(stage1_score_fit, stage2_df, sim) {
+  stage1_diag <- get_stage1_diagnostics(stage1_score_fit, stage2_df, predictor_u0 = "u0_eb", predictor_u1 = "u1_eb")
 
   safe_cor <- function(x, y) {
     ok <- is.finite(x) & is.finite(y)
@@ -423,6 +482,14 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
       method = "ML",
       control = nlme::lmeControl(returnObject = TRUE, msMaxIter = 100L, opt = "optim")
     )
+    fit_direct <- safe_lme(
+      fixed = y ~ x + z + x:z,
+      random = ~1 + z | id,
+      data = sim$dat,
+      correlation = condition_to_nlme_correlation(condition),
+      method = "ML",
+      control = nlme::lmeControl(returnObject = TRUE, msMaxIter = 100L, opt = "optim")
+    )
   }
   if (is.null(fit_null)) {
     return(empty_blup_outcome_result(blup_outcome_methods(analysis_mode), truth) %>%
@@ -488,7 +555,7 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
     dplyr::mutate(ols_slope = ols_slopes[as.character(.data$id)])
   stage2_df <- ensure_blup_outcome_stage2_columns(stage2_df)
 
-  diagnostics <- make_blup_outcome_diagnostics(fit_null, stage2_df, sim)
+  diagnostics <- make_blup_outcome_diagnostics(stage1_score_fit, stage2_df, sim)
 
   # Core estimators all regress a recovered random-slope outcome on the true
   # cluster-level predictor x, except `direct_mlm`, which estimates the target
