@@ -1742,9 +1742,10 @@ fit_fuller_dual_stepdown <- function(stage2_df,
 #' @details
 #' The alpha stepdown procedure searches separately for Step-1 and Step-3
 #' correction factors (alpha). It uses a coarse grid followed by bisection to
-#' find the largest alpha that preserves a minimum ratio of corrected to
+#' find the smallest alpha that preserves a minimum ratio of corrected to
 #' observed predictor-block eigenvalues. Step 1 guards `S1*`; Step 3 guards
-#' the final corrected `S*` matrix.
+#' the final corrected `S*` matrix. Because larger alpha values temper more
+#' of the Fuller correction, this keeps the strongest admissible correction.
 #'
 #' @inheritParams fit_fuller_dual_core
 #' @param candidate_alphas Optional numeric vector of alpha candidates for the
@@ -1802,8 +1803,11 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
   alpha_lower <- p + 1
 
   alpha_candidates <- function(alpha_upper) {
+    if (!is.finite(alpha_upper) || alpha_upper <= alpha_lower) {
+      return(alpha_lower)
+    }
     cand <- if (is.null(candidate_alphas)) {
-      seq(alpha_lower, min(alpha_lower + coarse_grid_size - 1, alpha_upper), by = 1)
+      seq(alpha_lower, alpha_upper, length.out = coarse_grid_size)
     } else {
       candidate_alphas
     }
@@ -1815,7 +1819,68 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
     if (!(alpha_lower %in% cand)) {
       cand <- c(alpha_lower, cand)
     }
+    if (is.null(candidate_alphas) && !(alpha_upper %in% cand)) {
+      cand <- c(cand, alpha_upper)
+    }
     sort(unique(cand), decreasing = FALSE)
+  }
+
+  refine_alpha_choice <- function(candidate_tbl,
+                                  alpha_col,
+                                  pass_col,
+                                  evaluate_fn,
+                                  deduplicate_fn) {
+    candidate_tbl <- deduplicate_fn(candidate_tbl)
+    pass <- as.logical(candidate_tbl[[pass_col]])
+    pass <- ifelse(is.na(pass), FALSE, pass)
+    alpha_values <- candidate_tbl[[alpha_col]]
+
+    if (!any(pass)) {
+      return(list(alpha = alpha_lower, candidates = candidate_tbl))
+    }
+
+    upper <- min(alpha_values[pass], na.rm = TRUE)
+    lower_candidates <- alpha_values[!pass & alpha_values < upper]
+
+    if (length(lower_candidates) > 0L) {
+      lower <- max(lower_candidates, na.rm = TRUE)
+      for (i in seq_len(max_refinements)) {
+        if (!is.finite(upper - lower) || (upper - lower) <= search_tolerance) {
+          break
+        }
+        midpoint <- (lower + upper) / 2
+        midpoint_tbl <- evaluate_fn(midpoint)
+        candidate_tbl <- deduplicate_fn(dplyr::bind_rows(candidate_tbl, midpoint_tbl))
+        midpoint_pass <- isTRUE(midpoint_tbl[[pass_col]][[1]])
+        midpoint_alpha <- midpoint_tbl[[alpha_col]][[1]]
+        if (midpoint_pass) {
+          upper <- midpoint_alpha
+        } else {
+          lower <- midpoint_alpha
+        }
+      }
+    }
+
+    candidate_tbl <- deduplicate_fn(candidate_tbl)
+    pass <- as.logical(candidate_tbl[[pass_col]])
+    pass <- ifelse(is.na(pass), FALSE, pass)
+    alpha_values <- candidate_tbl[[alpha_col]]
+    list(alpha = min(alpha_values[pass], na.rm = TRUE), candidates = candidate_tbl)
+  }
+
+  alpha_upper_from_lambda <- function(lambda_hat) {
+    if (!is.finite(lambda_hat) || !is.finite(m) || m <= 0) {
+      return(alpha_lower)
+    }
+    # Larger alpha tempers more of the Fuller measurement-error subtraction.
+    # When lambda exceeds the standard Fuller branch threshold, alpha values
+    # above m make c = 1 - alpha / m negative, which flips the correction into
+    # adding measurement-error covariance. Cap at m so stepdown cannot
+    # over-temper past a zero correction.
+    if (lambda_hat <= 1 + 1 / m) {
+      return(lambda_hat * m - 1)
+    }
+    m
   }
 
   score_alpha_step1 <- function(tbl) {
@@ -1896,23 +1961,20 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
     auto_tempered = TRUE
   )
   lambda1_hat <- if (nrow(base_step1) > 0L) base_step1$fuller_lambda1[[1]] else NA_real_
-  alpha_step1_upper <- if (is.finite(lambda1_hat) && is.finite(m) && m > 0) {
-    lambda1_hat * m - 1
-  } else {
-    alpha_lower
-  }
+  alpha_step1_upper <- alpha_upper_from_lambda(lambda1_hat)
   if (!is.finite(alpha_step1_upper)) {
     alpha_step1_upper <- alpha_lower
   }
   chosen_alpha_step1 <- alpha_lower
   if (alpha_step1_upper > alpha_lower) {
-    for (alpha in alpha_candidates(alpha_step1_upper)) {
-      step_tbl <- evaluate_alpha_step1(alpha)
-      if (isTRUE(step_tbl$alpha_step1_guard_pass[[1]])) {
-        chosen_alpha_step1 <- step_tbl$fuller_alpha_step1_used[[1]]
-        break
-      }
-    }
+    step1_choice <- refine_alpha_choice(
+      evaluate_alpha_step1(alpha_candidates(alpha_step1_upper)),
+      alpha_col = "fuller_alpha_step1_used",
+      pass_col = "alpha_step1_guard_pass",
+      evaluate_fn = evaluate_alpha_step1,
+      deduplicate_fn = deduplicate_alpha_step1
+    )
+    chosen_alpha_step1 <- step1_choice$alpha
   }
 
   score_alpha_step3 <- function(tbl) {
@@ -1993,23 +2055,20 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
     auto_tempered = TRUE
   )
   lambda2_hat <- if (nrow(base_step3) > 0L) base_step3$fuller_lambda2[[1]] else NA_real_
-  alpha_step3_upper <- if (is.finite(lambda2_hat) && is.finite(m) && m > 0) {
-    lambda2_hat * m - 1
-  } else {
-    alpha_lower
-  }
+  alpha_step3_upper <- alpha_upper_from_lambda(lambda2_hat)
   if (!is.finite(alpha_step3_upper)) {
     alpha_step3_upper <- alpha_lower
   }
   chosen_alpha_step3 <- alpha_lower
   if (alpha_step3_upper > alpha_lower) {
-    for (alpha in alpha_candidates(alpha_step3_upper)) {
-      step_tbl <- evaluate_alpha_step3(alpha)
-      if (isTRUE(step_tbl$alpha_step3_guard_pass[[1]])) {
-        chosen_alpha_step3 <- step_tbl$fuller_alpha_step3_used[[1]]
-        break
-      }
-    }
+    step3_choice <- refine_alpha_choice(
+      evaluate_alpha_step3(alpha_candidates(alpha_step3_upper)),
+      alpha_col = "fuller_alpha_step3_used",
+      pass_col = "alpha_step3_guard_pass",
+      evaluate_fn = evaluate_alpha_step3,
+      deduplicate_fn = deduplicate_alpha_step3
+    )
+    chosen_alpha_step3 <- step3_choice$alpha
   }
 
   score_alpha_scaling <- function(tbl) {
@@ -2099,13 +2158,14 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
   }
   chosen_alpha_scaling <- alpha_lower
   if (alpha_scaling_upper > alpha_lower) {
-    for (alpha in alpha_candidates(alpha_scaling_upper)) {
-      step_tbl <- evaluate_alpha_scaling(alpha)
-      if (isTRUE(step_tbl$alpha_scaling_guard_pass[[1]])) {
-        chosen_alpha_scaling <- step_tbl$fuller_alpha_scaling_used[[1]]
-        break
-      }
-    }
+    scaling_choice <- refine_alpha_choice(
+      evaluate_alpha_scaling(alpha_candidates(alpha_scaling_upper)),
+      alpha_col = "fuller_alpha_scaling_used",
+      pass_col = "alpha_scaling_guard_pass",
+      evaluate_fn = evaluate_alpha_scaling,
+      deduplicate_fn = deduplicate_alpha_scaling
+    )
+    chosen_alpha_scaling <- scaling_choice$alpha
   }
 
   fit_fuller_dual_core(

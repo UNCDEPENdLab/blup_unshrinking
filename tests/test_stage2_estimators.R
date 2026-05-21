@@ -311,8 +311,9 @@ stopifnot(
 )
 
 set.seed(4803)
+fuller_alpha_large_df <- simulate_fuller_known_eiv(2500L)
 fuller_alpha_large <- fit_fuller_dual_alpha_stepdown(
-  simulate_fuller_known_eiv(2500L),
+  fuller_alpha_large_df,
   outcome = "z",
   predictor_u0 = "corrected_intercept_full",
   predictor_u1 = "corrected_slope_full",
@@ -329,6 +330,33 @@ stopifnot(
   abs(fuller_alpha_large$estimate - fuller_truth) < 0.04,
   fuller_alpha_large$se > 0,
   fuller_alpha_large$se < 0.04
+)
+
+fuller_alpha_boundary <- fit_fuller_dual_alpha_stepdown(
+  fuller_alpha_large_df,
+  outcome = "z",
+  predictor_u0 = "corrected_intercept_full",
+  predictor_u1 = "corrected_slope_full",
+  meas11 = "ols_var11",
+  meas12 = "ols_var12",
+  meas22 = "ols_var22",
+  coarse_grid_size = 3L,
+  max_refinements = 8L,
+  search_tolerance = 0.1,
+  min_sx1_star_relative_eigen = 0.37,
+  min_sx_star_relative_eigen = 0.37,
+  min_scaling_relative_eigen = 0.37
+)
+
+stopifnot(
+  identical(as.integer(fuller_alpha_boundary$status_code), 0L),
+  fuller_alpha_boundary$fuller_alpha_step1_used > 4,
+  fuller_alpha_boundary$fuller_alpha_step1_used < 1252,
+  fuller_alpha_boundary$fuller_alpha_step3_used > 4,
+  fuller_alpha_boundary$fuller_alpha_step3_used < 1252,
+  fuller_alpha_boundary$fuller_sx1_star_relative_min_eigen >= 0.37,
+  fuller_alpha_boundary$fuller_sx_star_relative_min_eigen >= 0.37,
+  fuller_alpha_boundary$fuller_scaling_relative_min_eigen >= 0.37
 )
 
 set.seed(4802)
