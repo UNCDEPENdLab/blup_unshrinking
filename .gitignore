@@ -53,3 +53,6 @@ outputs/
 output/
 
 .DS_Store
+
+# keep pdf private
+BLUP_Project.pdf

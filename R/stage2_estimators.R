@@ -913,7 +913,7 @@ fit_fuller_dual_core <- function(stage2_df,
 
   alpha_step1 <- if (is.null(alpha_step1)) p + 1 else alpha_step1
   alpha_step3 <- if (is.null(alpha_step3)) p + 1 else alpha_step3
-  alpha_scaling <- if (is.null(alpha_scaling)) 1 else alpha_scaling
+  alpha_scaling <- if (is.null(alpha_scaling)) p + 1 else alpha_scaling
   if (!is.finite(alpha_step1) || !is.finite(alpha_step3) || !is.finite(alpha_scaling) ||
     alpha_step1 <= 0 || alpha_step3 <= 0 || alpha_scaling <= 0) {
     return(dplyr::mutate(
@@ -928,7 +928,7 @@ fit_fuller_dual_core <- function(stage2_df,
   }
   alpha_step1 <- max(alpha_step1, p + 1)
   alpha_step3 <- max(alpha_step3, p + 1)
-  alpha_scaling <- max(alpha_scaling, 0)
+  alpha_scaling <- max(alpha_scaling, p + 1)
   out_fail <- dplyr::mutate(
     out_fail,
     fuller_alpha_step1_requested = alpha_step1,
@@ -952,9 +952,9 @@ fit_fuller_dual_core <- function(stage2_df,
     s12 <- measurement_weight * dat[[meas12]]
     s22 <- measurement_weight * pmax(dat[[meas22]], 0)
   } else {
-    s11 <- measurement_weight * pmax(dat[[meas22]], 0)
+    s11 <- rep(0, m)
     s12 <- rep(0, m)
-    s22 <- rep(0, m)
+    s22 <- measurement_weight * pmax(dat[[meas22]], 0)
   }
 
   # y error isn't necessary but the machinery is here
@@ -972,7 +972,7 @@ fit_fuller_dual_core <- function(stage2_df,
       byrow = TRUE
     )
   } else {
-    omega_x_sum <- matrix(c(0, 0, 0, sum(s11)), nrow = p, byrow = TRUE)
+    omega_x_sum <- matrix(c(0, 0, 0, sum(s22)), nrow = p, byrow = TRUE)
   }
 
   # Helper: smallest finite generalized eigenvalue of (A, B) with B
@@ -1024,7 +1024,7 @@ fit_fuller_dual_core <- function(stage2_df,
 
   lambda1_hat <- smallest_det_root(bb_sum, omega_sum)
 
-  # Step 1: method-of-moments estimate (S1*).
+  # Step 1: modified method-of-moments estimate (S1*).
   alpha_step1_scaled <- alpha_step1 / m
   c_correction1 <- if (!is.na(lambda1_hat) && is.finite(lambda1_hat) && lambda1_hat <= 1 + 1 / m) {
     lambda1_hat - 1 / m - alpha_step1_scaled
@@ -1033,14 +1033,17 @@ fit_fuller_dual_core <- function(stage2_df,
   }
   a0_mat <- crossprod(x_mat) - c_correction1 * omega_x_sum
   b0_vec <- as.vector(crossprod(x_mat, y_vec) - c_correction1 * omega_y_sum)
+
   sx1_observed <- crossprod(x_mat) / m
   sx1_observed_diag <- fuller_matrix_diagnostics(sx1_observed[pred_block_idx, pred_block_idx, drop = FALSE])
   sx1_star <- (a0_mat / m)[pred_block_idx, pred_block_idx, drop = FALSE]
   sx1_star_diag <- fuller_matrix_diagnostics(sx1_star)
   sx1_star_relative_min_eigen <- fuller_relative_min_eigen(sx1_star_diag, sx1_observed_diag)
+
   out_fail <- dplyr::mutate(
     out_fail,
-    fuller_sx1_star_relative_min_eigen = sx1_star_relative_min_eigen
+    fuller_sx1_star_relative_min_eigen = sx1_star_relative_min_eigen,
+    fuller_c_correction1 = c_correction1,
   )
   gamma0_hat <- tryCatch(as.vector(solve(a0_mat, b0_vec)), error = function(e) NULL)
   if (is.null(gamma0_hat) || any(!is.finite(gamma0_hat))) {
@@ -1050,11 +1053,8 @@ fit_fuller_dual_core <- function(stage2_df,
       mx_issue_class = "fuller_gamma0_solve_failed",
       fuller_lambda1 = lambda1_hat,
       fuller_measurement_weight_used = measurement_weight,
-      fuller_sx1_star_relative_min_eigen = sx1_star_relative_min_eigen,
       fuller_sx1_star_condition = sx1_star_diag$condition_number,
-      fuller_sx1_star_min_eigen = sx1_star_diag$min_eigen,
-      fuller_c_correction1 = c_correction1,
-      fuller_alpha_step1 = alpha_step1
+      fuller_sx1_star_min_eigen = sx1_star_diag$min_eigen
     ))
   }
   gamma0_u0 <- gamma0_hat[2]
@@ -1124,7 +1124,7 @@ fit_fuller_dual_core <- function(stage2_df,
       byrow = TRUE
     )
   } else {
-    omega_x_sum_w <- matrix(c(0, 0, 0, sum(w_inv * s11)), nrow = p, byrow = TRUE)
+    omega_x_sum_w <- matrix(c(0, 0, 0, sum(w_inv * s22)), nrow = p, byrow = TRUE)
   }
   omega_sum_w <- matrix(0, nrow = p + 1L, ncol = p + 1L)
   omega_sum_w[1, 1] <- sum(w_inv * omega_y)
@@ -1157,17 +1157,14 @@ fit_fuller_dual_core <- function(stage2_df,
       fuller_correction_c = c_correction,
       fuller_measurement_weight_used = measurement_weight,
       fuller_sx_star_condition = sx_star_diag$condition_number,
-      fuller_sx_star_min_eigen = sx_star_diag$min_eigen,
-      fuller_sx1_star_condition = sx1_star_diag$condition_number,
-      fuller_sx1_star_min_eigen = sx1_star_diag$min_eigen,
-      fuller_sx1_star_relative_min_eigen = sx1_star_relative_min_eigen
+      fuller_sx_star_min_eigen = sx_star_diag$min_eigen
     ))
   }
 
   # Standard errors (Fuller, 1987).
   xw_sum <- crossprod(x_mat * sqrt(w_inv))
  
-  s_x_observed <- xw_sum / m
+  s_x_observed <- xw_sum 
   sx_observed_diag <- fuller_matrix_diagnostics(s_x_observed[pred_block_idx, pred_block_idx, drop = FALSE])
   sx_star_relative_min_eigen <- fuller_relative_min_eigen(sx_star_diag, sx_observed_diag)
   out_fail <- dplyr::mutate(
@@ -1188,13 +1185,9 @@ fit_fuller_dual_core <- function(stage2_df,
       fuller_weight_max = max(w_j),
       fuller_correction_c = c_correction,
       fuller_measurement_weight_used = measurement_weight,
-      fuller_sx1_star_relative_min_eigen = sx1_star_relative_min_eigen,
-      fuller_sx1_star_condition = sx1_star_diag$condition_number,
-      fuller_sx1_star_min_eigen = sx1_star_diag$min_eigen,
       fuller_sx_star_condition = sx_star_diag$condition_number,
       fuller_sx_star_min_eigen = sx_star_diag$min_eigen,
-      fuller_sx_observed_max_eigen = sx_observed_diag$max_eigen,
-      fuller_sx_star_relative_min_eigen = sx_star_relative_min_eigen
+      fuller_sx_observed_max_eigen = sx_observed_diag$max_eigen
     ))
   }
 
@@ -1206,7 +1199,7 @@ fit_fuller_dual_core <- function(stage2_df,
       -(s12 * gamma0_u0 + s22 * gamma0_u1)
     )
   } else {
-    tilde_mat <- cbind(0, -(s11 * gamma0_u0))
+    tilde_mat <- cbind(0, -(s22 * gamma0_u1))
   }
 
   meat_sum <- xw_sum + crossprod(tilde_mat * w_inv) # w_inv is actually squared here
@@ -1226,9 +1219,6 @@ fit_fuller_dual_core <- function(stage2_df,
       fuller_weight_max = max(w_j),
       fuller_correction_c = c_correction,
       fuller_measurement_weight_used = measurement_weight,
-      fuller_sx1_star_relative_min_eigen = sx1_star_relative_min_eigen,
-      fuller_sx1_star_condition = sx1_star_diag$condition_number,
-      fuller_sx1_star_min_eigen = sx1_star_diag$min_eigen,
       fuller_sx_star_condition = sx_star_diag$condition_number,
       fuller_sx_star_min_eigen = sx_star_diag$min_eigen,
       fuller_sx_observed_max_eigen = sx_observed_diag$max_eigen,
@@ -1272,7 +1262,7 @@ fit_fuller_dual_core <- function(stage2_df,
       byrow = TRUE
     )
   } else {
-    omega_x_sum_pred_w <- matrix(sum(w_inv * s11), nrow = 1L)
+    omega_x_sum_pred_w <- matrix(sum(w_inv * s22), nrow = 1L)
   }
 
   # we have to choose a third alpha since we're now working with centered x
@@ -1310,13 +1300,6 @@ fit_fuller_dual_core <- function(stage2_df,
       fuller_correction_c = c_correction,
       fuller_correction_scaling = c_correction_scaling,
       fuller_measurement_weight_used = measurement_weight,
-      fuller_sx1_star_condition = sx1_star_diag$condition_number,
-      fuller_sx1_star_min_eigen = sx1_star_diag$min_eigen,
-      fuller_sx1_star_relative_min_eigen = sx1_star_relative_min_eigen,
-      fuller_sx_star_condition = sx_star_diag$condition_number,
-      fuller_sx_star_min_eigen = sx_star_diag$min_eigen,
-      fuller_sx_observed_max_eigen = sx_observed_diag$max_eigen,
-      fuller_sx_star_relative_min_eigen = sx_star_relative_min_eigen,
       fuller_scaling_condition = scaling_diag$condition_number,
       fuller_scaling_min_eigen = scaling_diag$min_eigen,
       fuller_scaling_observed_max_eigen = scaling_observed_diag$max_eigen,
@@ -1341,13 +1324,6 @@ fit_fuller_dual_core <- function(stage2_df,
       fuller_correction_c = c_correction,
       fuller_correction_scaling = c_correction_scaling,
       fuller_measurement_weight_used = measurement_weight,
-      fuller_sx1_star_condition = sx1_star_diag$condition_number,
-      fuller_sx1_star_min_eigen = sx1_star_diag$min_eigen,
-      fuller_sx1_star_relative_min_eigen = sx1_star_relative_min_eigen,
-      fuller_sx_star_condition = sx_star_diag$condition_number,
-      fuller_sx_star_min_eigen = sx_star_diag$min_eigen,
-      fuller_sx_observed_max_eigen = sx_observed_diag$max_eigen,
-      fuller_sx_star_relative_min_eigen = sx_star_relative_min_eigen,
       fuller_scaling_condition = scaling_diag$condition_number,
       fuller_scaling_min_eigen = scaling_diag$min_eigen,
       fuller_scaling_observed_max_eigen = scaling_observed_diag$max_eigen,
@@ -1369,6 +1345,7 @@ fit_fuller_dual_core <- function(stage2_df,
     fuller_sigma2 = sigma2_hat,
     fuller_weight_min = min(w_j),
     fuller_weight_max = max(w_j),
+    fuller_correction1 = c_correction1,
     fuller_correction_c = c_correction,
     fuller_correction_scaling = c_correction_scaling,
     fuller_measurement_weight_requested = measurement_weight,
@@ -1382,6 +1359,7 @@ fit_fuller_dual_core <- function(stage2_df,
     fuller_auto_tempered = auto_tempered,
     fuller_sx1_star_condition = sx1_star_diag$condition_number,
     fuller_sx1_star_min_eigen = sx1_star_diag$min_eigen,
+    fuller_sx1_observed_max_eigen = sx1_observed_diag$max_eigen,
     fuller_sx1_star_relative_min_eigen = sx1_star_relative_min_eigen,
     fuller_sx_star_condition = sx_star_diag$condition_number,
     fuller_sx_star_min_eigen = sx_star_diag$min_eigen,
@@ -1855,7 +1833,7 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
       !condition_ok ~ "sx1_star_condition_cap",
       TRUE ~ "ok"
     )
-    eig_penalty <- fuller_guard_penalty(tbl$fuller_sx1_star_min_eigen, min_sx1_star_relative_eigen) +
+    eig_penalty <- fuller_guard_penalty(tbl$fuller_sx1_star_min_eigen, min_sx1_star_eigen) +
       fuller_guard_penalty(tbl$fuller_sx1_star_relative_min_eigen, min_sx1_star_relative_eigen)
     condition_penalty <- ifelse(
       is.finite(tbl$fuller_sx1_star_condition) &
@@ -1952,7 +1930,7 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
       !condition_ok ~ "sx_star_condition_cap",
       TRUE ~ "ok"
     )
-    eig_penalty <- fuller_guard_penalty(tbl$fuller_sx_star_min_eigen, min_sx_star_relative_eigen) +
+    eig_penalty <- fuller_guard_penalty(tbl$fuller_sx_star_min_eigen, min_sx_star_eigen) +
       fuller_guard_penalty(tbl$fuller_sx_star_relative_min_eigen, min_sx_star_relative_eigen)
     condition_penalty <- ifelse(
       is.finite(tbl$fuller_sx_star_condition) &
@@ -1972,7 +1950,7 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
 
   deduplicate_alpha_step3 <- function(tbl) {
     tbl <- dplyr::mutate(tbl, .alpha_key = round(fuller_alpha_step3_used, 10L))
-    tbl <- dplyr::arrange(tbl, dplyr::desc(fuller_alpha_step3_used), dplyr::desc(alpha_step3_guard_pass))
+    tbl <- dplyr::arrange(tbl, fuller_alpha_step3_used, dplyr::desc(alpha_step3_guard_pass))
     tbl <- dplyr::group_by(tbl, .alpha_key)
     tbl <- dplyr::slice(tbl, 1L)
     tbl <- dplyr::ungroup(tbl)
@@ -1980,7 +1958,7 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
   }
 
   evaluate_alpha_step3 <- function(alphas) {
-    alphas <- sort(unique(alphas), decreasing = TRUE)
+    alphas <- sort(unique(alphas), decreasing = FALSE)
     candidate_results <- lapply(alphas, function(alpha) {
       fit_fuller_dual_core(
         stage2_df,
@@ -2046,7 +2024,7 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
       !scaling_relative_ok ~ "scaling_relative_eigen_floor",
       TRUE ~ "ok"
     )
-    eigen_penalty <- fuller_guard_penalty(tbl$fuller_scaling_min_eigen, min_scaling_eigen) +
+    eig_penalty <- fuller_guard_penalty(tbl$fuller_scaling_min_eigen, min_scaling_eigen) +
       fuller_guard_penalty(tbl$fuller_scaling_relative_min_eigen, min_scaling_relative_eigen)
     condition_penalty <- ifelse(
       is.finite(tbl$fuller_scaling_condition) &
@@ -2060,13 +2038,13 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
       tbl,
       alpha_scaling_guard_pass = status_ok & scaling_ok & scaling_relative_ok,
       alpha_scaling_guard_reason = reason,
-      alpha_scaling_guard_score = status_penalty + eigen_penalty + condition_penalty
+      alpha_scaling_guard_score = status_penalty + eig_penalty + condition_penalty
     )
   }
 
   deduplicate_alpha_scaling <- function(tbl) {
     tbl <- dplyr::mutate(tbl, .alpha_key = round(fuller_alpha_scaling_used, 10L))
-    tbl <- dplyr::arrange(tbl, dplyr::desc(fuller_alpha_scaling_used), dplyr::desc(alpha_scaling_guard_pass))
+    tbl <- dplyr::arrange(tbl, fuller_alpha_scaling_used, dplyr::desc(alpha_scaling_guard_pass))
     tbl <- dplyr::group_by(tbl, .alpha_key)
     tbl <- dplyr::slice(tbl, 1L)
     tbl <- dplyr::ungroup(tbl)
@@ -2074,7 +2052,7 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
   }
 
   evaluate_alpha_scaling <- function(alphas) {
-    alphas <- sort(unique(alphas), decreasing = TRUE)
+    alphas <- sort(unique(alphas), decreasing = FALSE)
     candidate_results <- lapply(alphas, function(alpha_scaling) {
       fit_fuller_dual_core(
         stage2_df,
