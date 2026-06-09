@@ -98,8 +98,10 @@ summarize_blup_outcome_results <- function(results) {
       "blup_variance_ratio", "diag_corrected_variance_ratio", "matrix_corrected_variance_ratio",
       "closed_form_variance_ratio", "blup_true_cor", "matrix_corrected_true_cor",
       "closed_form_true_cor", "diag_corrected_failure_rate", "matrix_corrected_failure_rate",
-      "closed_form_failure_rate", "cluster_size_x_cor", "stage1_re_corr", "stage1_eb_corr",
-      "stage1_design_kappa"
+      "closed_form_failure_rate", "cluster_size_x_cor",
+      "empirical_g_error", "empirical_structural_r2",
+      "empirical_reliability", "residual_g_min_eigenvalue",
+      "stage1_re_corr", "stage1_eb_corr", "stage1_design_kappa"
     ),
     names(results)
   )
@@ -302,9 +304,13 @@ blup_outcome_parallel_exports <- function() {
     "run_blup_outcome_rep", "resolve_blup_outcome_simulation_parameters",
     "blup_outcome_methods", "empty_blup_outcome_result",
     "standardize_estimator_rows", "fit_score_outcome_ols", "empty_stacked_rows",
-    "extract_direct_mlm_stats", "fit_direct_mlm_row", "make_blup_outcome_diagnostics", "balance_mode_to_sim_arg",
+    "extract_direct_mlm_stats", "fit_direct_mlm_row",
+    "make_blup_outcome_diagnostics", "make_calibrated_dgp_diagnostics",
+    "balance_mode_to_sim_arg",
     "condition_to_r_spec", "condition_to_nlme_correlation", "condition_uses_non_iid_R",
     "draw_random_effects", "simulate_dataset", "safe_lmer", "safe_lme", "safe_mean",
+    "make_random_effect_covariance", "posterior_random_effect_covariance",
+    "expected_slope_reliability",
     "compact_message", "get_stage1_diagnostics", "empty_stage1_diagnostics",
     "get_corrected_scores", "get_diagonal_corrected_scores", "get_closed_form_corrected_scores",
     "normalize_R_list", "as_plain_vcov_matrix", "stage1_fixef", "format_stage1_eb_row",

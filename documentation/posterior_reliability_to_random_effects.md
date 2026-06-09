@@ -431,6 +431,24 @@ For every calibrated cell:
 5. Confirm that the empirical structural $R^2$ approaches its target and that
    $\mathbf{G}_{\text{residual}}$ is positive definite.
 
+The BLUP-outcome runner records these checks in every calibrated replication:
+
+- `empirical_reliability`: reliability recomputed from the target
+  $\mathbf{G}_{\text{marginal}}$ and that replication's realized
+  $\mathbf{Z}_i$ and $\mathbf{R}_i$;
+- `empirical_g_error`: maximum absolute elementwise difference between the
+  empirical covariance of the simulated total random effects and
+  $\mathbf{G}_{\text{marginal}}$;
+- `empirical_structural_r2`: squared sample correlation between $x_i$ and the
+  simulated total random slope;
+- `residual_g_min_eigenvalue`: minimum eigenvalue of
+  $\mathbf{G}_{\text{residual}}$.
+
+The first three quantities may fluctuate across replications because they use
+realized samples or designs. The residual-$G$ eigenvalue is fixed within a
+condition because the same calibrated population covariance is shared across
+replications. Legacy, non-calibrated grids report these fields as missing.
+
 The accompanying implementation is
 [`posterior_reliability_calibration_demo.R`](../posterior_reliability_calibration_demo.R).
 

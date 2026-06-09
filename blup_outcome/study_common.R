@@ -93,7 +93,11 @@ empty_blup_outcome_diagnostics <- function() {
       diag_corrected_failure_rate = NA_real_,
       matrix_corrected_failure_rate = NA_real_,
       closed_form_failure_rate = NA_real_,
-      cluster_size_x_cor = NA_real_
+      cluster_size_x_cor = NA_real_,
+      empirical_g_error = NA_real_,
+      empirical_structural_r2 = NA_real_,
+      empirical_reliability = NA_real_,
+      residual_g_min_eigenvalue = NA_real_
     )
   )
 }
@@ -109,9 +113,11 @@ empty_blup_outcome_diagnostics <- function() {
 #' @param results Estimator result tibble, usually from
 #'   `empty_blup_outcome_result()`.
 #' @param sim Optional simulated dataset list returned by `simulate_dataset()`.
+#' @param condition Optional one-row design condition used to retain calibrated
+#'   DGP diagnostics even when Stage 1 fitting fails.
 #'
 #' @return `results` with diagnostic and realized-trial columns appended.
-add_empty_blup_outcome_context <- function(results, sim = NULL) {
+add_empty_blup_outcome_context <- function(results, sim = NULL, condition = NULL) {
   if (is.null(sim)) {
     return(results %>%
       dplyr::bind_cols(empty_blup_outcome_diagnostics()[rep(1L, nrow(results)), , drop = FALSE]) %>%
@@ -123,8 +129,12 @@ add_empty_blup_outcome_context <- function(results, sim = NULL) {
       ))
   }
 
+  diagnostics <- empty_blup_outcome_diagnostics()
+  calibrated_dgp <- make_calibrated_dgp_diagnostics(condition = condition, sim = sim)
+  diagnostics[names(calibrated_dgp)] <- calibrated_dgp
+
   results %>%
-    dplyr::bind_cols(empty_blup_outcome_diagnostics()[rep(1L, nrow(results)), , drop = FALSE]) %>%
+    dplyr::bind_cols(diagnostics[rep(1L, nrow(results)), , drop = FALSE]) %>%
     dplyr::mutate(
       mean_realized_trials = sim$mean_realized_trials,
       min_realized_trials = sim$min_realized_trials,
@@ -351,10 +361,13 @@ fit_direct_mlm_row <- function(fit_direct, n_id) {
 #'   R-aware `nlme::lme` fit, not the iid `lme4` starting-value fit.
 #' @param stage2_df Cluster-level Stage 2 data frame.
 #' @param sim Simulated dataset list from `simulate_dataset()`.
+#' @param condition Optional one-row design condition. Calibrated conditions
+#'   supply the fixed marginal/residual covariance targets needed for empirical
+#'   DGP diagnostics; legacy conditions return `NA` for those fields.
 #'
 #' @return One-row tibble containing shared Stage 1 diagnostics plus
 #'   BLUP-outcome-specific score diagnostics.
-make_blup_outcome_diagnostics <- function(stage1_score_fit, stage2_df, sim) {
+make_blup_outcome_diagnostics <- function(stage1_score_fit, stage2_df, sim, condition = NULL) {
   stage1_diag <- get_stage1_diagnostics(stage1_score_fit, stage2_df, predictor_u0 = "u0_eb", predictor_u1 = "u1_eb")
 
   safe_cor <- function(x, y) {
@@ -398,6 +411,8 @@ make_blup_outcome_diagnostics <- function(stage1_score_fit, stage2_df, sim) {
     NA_real_
   }
 
+  calibrated_dgp <- make_calibrated_dgp_diagnostics(condition = condition, sim = sim)
+
   dplyr::bind_cols(
     stage1_diag,
     tibble::tibble(
@@ -415,7 +430,120 @@ make_blup_outcome_diagnostics <- function(stage1_score_fit, stage2_df, sim) {
       matrix_corrected_failure_rate = failure_rate(stage2_df$corrected_z),
       closed_form_failure_rate = failure_rate(stage2_df$corrected_slope_full),
       cluster_size_x_cor = cluster_size_x_cor
-    )
+    ),
+    calibrated_dgp
+  )
+}
+
+#' Diagnose whether a calibrated replication realizes its intended DGP.
+#'
+#' @details
+#' These diagnostics are computed from the true simulated subject effects and
+#' the fixed condition-level calibration parameters, not from fitted Stage-1
+#' variance-component estimates:
+#'
+#' - `empirical_g_error` is the largest absolute elementwise difference
+#'   between the empirical covariance of `(true_intercept_dev, true_slope_dev)`
+#'   and the target marginal G matrix.
+#' - `empirical_structural_r2` is the sample R-squared from regressing the true
+#'   total slope on the simulated standardized predictor `x`.
+#' - `empirical_reliability` recomputes posterior reliability using the
+#'   replication's realized `Z_i` and generated `R_i`, while holding the target
+#'   marginal G fixed.
+#' - `residual_g_min_eigenvalue` is the minimum eigenvalue of the fixed residual
+#'   G matrix used to draw `(u0, u1)`.
+#'
+#' Finite-sample empirical covariance, R-squared, and design reliability should
+#' fluctuate around their condition targets. The residual-G eigenvalue is fixed
+#' across replications because population parameters are calibrated once per
+#' condition.
+#'
+#' @param condition Optional one-row calibrated design condition.
+#' @param sim Simulated dataset list from `simulate_dataset()`.
+#'
+#' @return One-row tibble with four calibrated-DGP diagnostics. Returns all
+#'   missing values for legacy conditions.
+make_calibrated_dgp_diagnostics <- function(condition, sim) {
+  empty <- tibble::tibble(
+    empirical_g_error = NA_real_,
+    empirical_structural_r2 = NA_real_,
+    empirical_reliability = NA_real_,
+    residual_g_min_eigenvalue = NA_real_
+  )
+
+  required <- c(
+    "calibration_tau0", "slope_variance_marginal",
+    "slope_variance_residual", "marginal_rho", "rho_residual"
+  )
+  if (is.null(condition) || !all(required %in% names(condition)) ||
+      is.null(sim) || is.null(sim$id_df) || is.null(sim$dat) ||
+      is.null(sim$R_list)) {
+    return(empty)
+  }
+
+  tau0 <- as.numeric(condition$calibration_tau0[[1]])
+  slope_variance_marginal <- as.numeric(condition$slope_variance_marginal[[1]])
+  slope_variance_residual <- as.numeric(condition$slope_variance_residual[[1]])
+  marginal_rho <- as.numeric(condition$marginal_rho[[1]])
+  residual_rho <- as.numeric(condition$rho_residual[[1]])
+
+  G_marginal <- make_random_effect_covariance(
+    intercept_variance = tau0^2,
+    slope_variance = slope_variance_marginal,
+    intercept_slope_correlation = marginal_rho
+  )
+  G_residual <- make_random_effect_covariance(
+    intercept_variance = tau0^2,
+    slope_variance = slope_variance_residual,
+    intercept_slope_correlation = residual_rho
+  )
+
+  true_effects <- sim$id_df[, c("true_intercept_dev", "true_slope_dev"), drop = FALSE]
+  complete_effects <- stats::complete.cases(true_effects)
+  empirical_g_error <- if (sum(complete_effects) >= 2L) {
+    empirical_G <- stats::cov(true_effects[complete_effects, , drop = FALSE])
+    max(abs(empirical_G - G_marginal))
+  } else {
+    NA_real_
+  }
+
+  structural_complete <- stats::complete.cases(
+    sim$id_df[, c("x", "true_slope_dev"), drop = FALSE]
+  )
+  empirical_structural_r2 <- if (sum(structural_complete) >= 3L &&
+      stats::sd(sim$id_df$x[structural_complete]) > sqrt(.Machine$double.eps) &&
+      stats::sd(sim$id_df$true_slope_dev[structural_complete]) >
+        sqrt(.Machine$double.eps)) {
+    stats::cor(
+      sim$id_df$x[structural_complete],
+      sim$id_df$true_slope_dev[structural_complete]
+    )^2
+  } else {
+    NA_real_
+  }
+
+  ordered_ids <- as.character(sim$id_df$id)
+  split_dat <- split(sim$dat, as.character(sim$dat$id), drop = TRUE)[ordered_ids]
+  Z_list <- lapply(split_dat, function(df_i) {
+    cbind(intercept = 1, slope = as.numeric(df_i$z))
+  })
+  R_list <- sim$R_list[ordered_ids]
+  empirical_reliability <- tryCatch(
+    expected_slope_reliability(G_marginal, Z_list, R_list),
+    error = function(e) NA_real_
+  )
+
+  residual_g_min_eigenvalue <- min(eigen(
+    G_residual,
+    symmetric = TRUE,
+    only.values = TRUE
+  )$values)
+
+  tibble::tibble(
+    empirical_g_error = empirical_g_error,
+    empirical_structural_r2 = empirical_structural_r2,
+    empirical_reliability = empirical_reliability,
+    residual_g_min_eigenvalue = residual_g_min_eigenvalue
   )
 }
 
@@ -530,7 +658,7 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
   }
   if (is.null(fit_null)) {
     return(empty_blup_outcome_result(blup_outcome_methods(analysis_mode), truth) %>%
-      add_empty_blup_outcome_context(sim = sim))
+      add_empty_blup_outcome_context(sim = sim, condition = condition))
   }
 
   ordered_ids <- as.character(sim$id_df$id)
@@ -592,7 +720,12 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
     dplyr::mutate(ols_slope = ols_slopes[as.character(.data$id)])
   stage2_df <- ensure_blup_outcome_stage2_columns(stage2_df)
 
-  diagnostics <- make_blup_outcome_diagnostics(stage1_score_fit, stage2_df, sim)
+  diagnostics <- make_blup_outcome_diagnostics(
+    stage1_score_fit,
+    stage2_df,
+    sim,
+    condition = condition
+  )
 
   # Core estimators all regress a recovered random-slope outcome on the true
   # cluster-level predictor x, except `direct_mlm`, which estimates the target

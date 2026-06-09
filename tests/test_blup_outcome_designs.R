@@ -2,10 +2,13 @@
 
 suppressPackageStartupMessages({
   library(dplyr)
+  library(purrr)
+  library(tibble)
   library(tidyr)
 })
 
 source(file.path("R", "reliability_calibration.R"), local = TRUE)
+source(file.path("R", "sim_helpers.R"), local = TRUE)
 source(file.path("blup_outcome", "designs.R"), local = TRUE)
 source(file.path("blup_outcome", "study_common.R"), local = TRUE)
 
@@ -95,6 +98,46 @@ stopifnot(
     calibrated_resolved$sim_params$rho,
     reliability_smoke_design$rho_residual[[1]]
   )
+)
+
+set.seed(20260609)
+calibrated_sim <- simulate_dataset(
+  n_id = 1000L,
+  mean_n_trial = reliability_smoke_design$mean_n_trial[[1]],
+  params = calibrated_resolved$sim_params,
+  tau1 = calibrated_resolved$tau1,
+  sigma = reliability_smoke_design$sigma[[1]],
+  has_random_slope = TRUE,
+  balanced = balance_mode_to_sim_arg(reliability_smoke_design$balance_mode[[1]]),
+  min_n_trial = reliability_smoke_design$min_n_trial[[1]],
+  highly_unbalanced_min_n_trial =
+    reliability_smoke_design$highly_unbalanced_min_n_trial[[1]],
+  highly_unbalanced_power =
+    reliability_smoke_design$highly_unbalanced_power[[1]],
+  r_spec = condition_to_r_spec(reliability_smoke_design)
+)
+calibrated_diagnostics <- make_calibrated_dgp_diagnostics(
+  condition = reliability_smoke_design,
+  sim = calibrated_sim
+)
+legacy_diagnostics <- make_calibrated_dgp_diagnostics(
+  condition = smoke_design,
+  sim = calibrated_sim
+)
+
+stopifnot(
+  all(is.finite(unlist(calibrated_diagnostics))),
+  calibrated_diagnostics$empirical_g_error < 0.10,
+  abs(
+    calibrated_diagnostics$empirical_structural_r2 -
+      reliability_smoke_design$structural_r2[[1]]
+  ) < 0.05,
+  abs(
+    calibrated_diagnostics$empirical_reliability -
+      reliability_smoke_design$target_reliability[[1]]
+  ) < 1e-8,
+  calibrated_diagnostics$residual_g_min_eigenvalue > 0,
+  all(is.na(unlist(legacy_diagnostics)))
 )
 
 cat("BLUP-outcome design tests ok\n")
