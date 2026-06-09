@@ -104,6 +104,19 @@ summarize_blup_outcome_results <- function(results) {
     names(results)
   )
 
+  grouping_cols <- intersect(
+    c(
+      "condition_id", "method", "n_id", "mean_n_trial",
+      "target_reliability", "achieved_reliability", "structural_r2",
+      "standardized_beta", "marginal_rho", "rho_residual",
+      "slope_variance_marginal", "slope_variance_residual",
+      "gamma_x_on_slope", "rho", "balance_mode", "tau1", "tau1_residual",
+      "sigma", "min_n_trial", "highly_unbalanced_min_n_trial",
+      "highly_unbalanced_power", "r_structure", "r_rho", "design_source"
+    ),
+    names(results)
+  )
+
   summary_df <- results %>%
     dplyr::mutate(
       # Status 10 is the OpenMx broad failure code used by the Lai wrappers;
@@ -114,12 +127,7 @@ summarize_blup_outcome_results <- function(results) {
       sq_error = (.data$estimate - .data$truth)^2,
       covered = .data$ci_low <= .data$truth & .data$ci_high >= .data$truth
     ) %>%
-    dplyr::group_by(
-      .data$condition_id, .data$method, .data$n_id, .data$mean_n_trial, .data$gamma_x_on_slope,
-      .data$rho, .data$balance_mode, .data$tau1, .data$sigma, .data$min_n_trial,
-      .data$highly_unbalanced_min_n_trial, .data$highly_unbalanced_power,
-      .data$r_structure, .data$r_rho, .data$design_source
-    ) %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(grouping_cols))) %>%
     dplyr::summarise(
       truth = dplyr::first(.data$truth),
       n_rep = dplyr::n(),
@@ -168,13 +176,20 @@ summarize_blup_outcome_issues <- function(results) {
     return(tibble::tibble())
   }
 
+  grouping_cols <- intersect(
+    c(
+      "condition_id", "method", "mx_issue_class", "n_id", "mean_n_trial",
+      "target_reliability", "structural_r2", "standardized_beta",
+      "marginal_rho", "rho_residual", "gamma_x_on_slope", "rho",
+      "balance_mode", "tau1", "tau1_residual", "sigma",
+      "r_structure", "r_rho"
+    ),
+    names(results)
+  )
+
   results %>%
     dplyr::filter(!is.na(.data$mx_issue_class), .data$mx_issue_class != "ok") %>%
-    dplyr::group_by(
-      .data$condition_id, .data$method, .data$mx_issue_class, .data$n_id, .data$mean_n_trial,
-      .data$gamma_x_on_slope, .data$rho, .data$balance_mode, .data$tau1, .data$sigma,
-      .data$r_structure, .data$r_rho
-    ) %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(grouping_cols))) %>%
     dplyr::summarise(
       n_rep = dplyr::n(),
       n_distinct_issue_details = dplyr::n_distinct(.data$mx_issue_detail[!is.na(.data$mx_issue_detail)]),
@@ -284,7 +299,8 @@ write_blup_outcome_aggregate_outputs <- function(results, out_dir, prefix = "blu
 #' @return Character vector of object names passed to `foreach(..., .export)`.
 blup_outcome_parallel_exports <- function() {
   c(
-    "run_blup_outcome_rep", "blup_outcome_methods", "empty_blup_outcome_result",
+    "run_blup_outcome_rep", "resolve_blup_outcome_simulation_parameters",
+    "blup_outcome_methods", "empty_blup_outcome_result",
     "standardize_estimator_rows", "fit_score_outcome_ols", "empty_stacked_rows",
     "extract_direct_mlm_stats", "fit_direct_mlm_row", "make_blup_outcome_diagnostics", "balance_mode_to_sim_arg",
     "condition_to_r_spec", "condition_to_nlme_correlation", "condition_uses_non_iid_R",
@@ -357,7 +373,7 @@ run_blup_outcome_condition_replications <- function(condition, n_sim, n_cores, p
       rep_id = rep_ids,
       .combine = dplyr::bind_rows,
       .inorder = FALSE,
-      .packages = c("lme4", "MASS", "dplyr", "tidyr", "purrr", "tibble", "OpenMx", "sandwich", "glmnet", "geigen"),
+      .packages = c("lme4", "MASS", "dplyr", "tidyr", "purrr", "tibble", "OpenMx", "sandwich", "glmnet"),
       .export = blup_outcome_parallel_exports()
     ) %dopar% {
       run_single_rep(rep_id)

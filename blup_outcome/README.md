@@ -18,7 +18,9 @@ Arguments are:
 2. output directory,
 3. number of cores,
 4. derivative backend (`handcoded`, `numDeriv`, `merDeriv`, `tmb`, or `analytical`),
-5. grid mode (`smoke`, `residual_ar1`, `base`, `heteroscedastic`, `heteroscedastic_sparse`, or `expanded`),
+5. grid mode (`posterior_reliability_smoke`, `posterior_reliability`, `smoke`,
+   `residual_ar1`, `base`, `heteroscedastic`, `heteroscedastic_sparse`, or
+   `expanded`),
 6. analysis mode (`screen` or `full`),
 7. chunk index,
 8. chunk size,
@@ -60,7 +62,10 @@ The wrapper accepts these variables:
 - `BLUP_OUTCOME_OUT_DIR`: shared output directory; defaults to `outputs/blup_outcome_slurm` under the repository.
 - `BLUP_OUTCOME_N_CORES`: cores passed to the R runner; defaults to `SLURM_CPUS_PER_TASK`.
 - `BLUP_OUTCOME_DERIVATIVE_METHOD`: `handcoded`, `numDeriv`, `merDeriv`, `tmb`, or `analytical`; defaults to `handcoded`.
-- `BLUP_OUTCOME_GRID_MODE`: `smoke`, `residual_ar1`, `base`, `heteroscedastic`, `heteroscedastic_sparse`, or `expanded`; defaults to `base`.
+- `BLUP_OUTCOME_GRID_MODE`: `posterior_reliability_smoke`,
+  `posterior_reliability`, `smoke`, `residual_ar1`, `base`,
+  `heteroscedastic`, `heteroscedastic_sparse`, or `expanded`; defaults to
+  `base`.
 - `BLUP_OUTCOME_ANALYSIS_MODE`: `screen` or `full`; defaults to `full`.
 - `BLUP_OUTCOME_MAX_CONDITIONS`: optional pre-chunk condition cap; defaults to `NA`.
 - `BLUP_OUTCOME_CHUNK_INDEX`: explicit chunk index; defaults to `SLURM_ARRAY_TASK_ID`.

@@ -419,6 +419,44 @@ make_blup_outcome_diagnostics <- function(stage1_score_fit, stage2_df, sim) {
   )
 }
 
+#' Resolve legacy or reliability-calibrated simulation parameters.
+#'
+#' Reliability-calibrated conditions distinguish the marginal intercept-slope
+#' correlation targeted in the Stage-1 G matrix from the residual correlation
+#' used to draw `(u0, u1)` before adding `gamma * x`. Legacy conditions contain
+#' no `rho_residual` field and retain their original `rho`/`tau1` semantics.
+#'
+#' @param condition One-row design condition.
+#' @param params Shared fixed simulation parameters.
+#'
+#' @return List containing `truth`, `sim_params`, and residual `tau1`.
+resolve_blup_outcome_simulation_parameters <- function(condition, params) {
+  truth <- as.numeric(condition$gamma_x_on_slope[[1]])
+  sim_params <- params
+  sim_params$gamma_x_on_slope <- truth
+
+  calibrated <- all(c(
+    "target_reliability", "structural_r2", "marginal_rho",
+    "rho_residual", "tau1_residual", "calibration_tau0"
+  ) %in% names(condition))
+
+  if (calibrated) {
+    sim_params$tau0 <- as.numeric(condition$calibration_tau0[[1]])
+    sim_params$rho <- as.numeric(condition$rho_residual[[1]])
+    tau1 <- as.numeric(condition$tau1_residual[[1]])
+  } else {
+    sim_params$rho <- as.numeric(condition$rho[[1]])
+    tau1 <- as.numeric(condition$tau1[[1]])
+  }
+
+  list(
+    calibrated = calibrated,
+    truth = truth,
+    sim_params = sim_params,
+    tau1 = tau1
+  )
+}
+
 #' Run one BLUP-outcome Monte Carlo replication.
 #'
 #' @details
@@ -448,17 +486,16 @@ make_blup_outcome_diagnostics <- function(stage1_score_fit, stage2_df, sim) {
 #'
 #' @return Replication-level tibble with one row per estimator method.
 run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis_mode = "full") {
-  truth <- as.numeric(condition$gamma_x_on_slope[[1]])
-  sim_params <- params
-  sim_params$gamma_x_on_slope <- truth
-  sim_params$rho <- as.numeric(condition$rho[[1]])
+  resolved <- resolve_blup_outcome_simulation_parameters(condition, params)
+  truth <- resolved$truth
+  sim_params <- resolved$sim_params
   r_spec <- condition_to_r_spec(condition)
 
   sim <- simulate_dataset(
     n_id = condition$n_id[[1]],
     mean_n_trial = condition$mean_n_trial[[1]],
     params = sim_params,
-    tau1 = condition$tau1[[1]],
+    tau1 = resolved$tau1,
     sigma = condition$sigma[[1]],
     has_random_slope = TRUE,
     balanced = balance_mode_to_sim_arg(condition$balance_mode[[1]]),

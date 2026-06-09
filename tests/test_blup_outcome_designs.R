@@ -5,12 +5,15 @@ suppressPackageStartupMessages({
   library(tidyr)
 })
 
+source(file.path("R", "reliability_calibration.R"), local = TRUE)
 source(file.path("blup_outcome", "designs.R"), local = TRUE)
 source(file.path("blup_outcome", "study_common.R"), local = TRUE)
 
 smoke_design <- make_blup_outcome_design("smoke")
 base_design <- make_blup_outcome_design("base")
 ar1_design <- make_blup_outcome_design("residual_ar1")
+reliability_smoke_design <- make_blup_outcome_design("posterior_reliability_smoke")
+reliability_design <- make_blup_outcome_design("posterior_reliability")
 
 stopifnot(
   nrow(smoke_design) == 1L,
@@ -28,7 +31,18 @@ stopifnot(
   any(base_design$mean_n_trial <= 4L),
   identical(balance_mode_to_sim_arg("balanced"), "balanced"),
   identical(balance_mode_to_sim_arg("unbalanced"), FALSE),
-  identical(balance_mode_to_sim_arg("informative_unbalanced"), "highly_unbalanced")
+  identical(balance_mode_to_sim_arg("informative_unbalanced"), "highly_unbalanced"),
+  nrow(reliability_smoke_design) == 1L,
+  nrow(reliability_design) == 720L,
+  all(c(0.25, 0.50, 0.80) %in% unique(reliability_design$target_reliability)),
+  all(c(0, 0.04, 0.16, 0.36) %in% unique(reliability_design$structural_r2)),
+  max(abs(
+    reliability_design$target_reliability -
+      reliability_design$achieved_reliability
+  )) < 1e-8,
+  all(reliability_design$tau1 == reliability_design$tau1_residual),
+  all(reliability_design$rho == reliability_design$marginal_rho),
+  any(abs(reliability_design$rho_residual - reliability_design$marginal_rho) > 1e-8)
 )
 
 tau_sigma_pairs <- base_design %>%
@@ -57,6 +71,30 @@ stopifnot(
     "theta11", "theta12", "theta22",
     "corrected_z_var", "corrected_z_diag_var", "ols_var22"
   )]))
+)
+
+legacy_resolved <- resolve_blup_outcome_simulation_parameters(
+  smoke_design,
+  params = list(beta_0 = 1, beta_z = 0.6, tau0 = 0.9)
+)
+calibrated_resolved <- resolve_blup_outcome_simulation_parameters(
+  reliability_smoke_design,
+  params = list(beta_0 = 1, beta_z = 0.6, tau0 = 0.9)
+)
+
+stopifnot(
+  !legacy_resolved$calibrated,
+  identical(legacy_resolved$tau1, smoke_design$tau1[[1]]),
+  identical(legacy_resolved$sim_params$rho, smoke_design$rho[[1]]),
+  calibrated_resolved$calibrated,
+  identical(
+    calibrated_resolved$tau1,
+    reliability_smoke_design$tau1_residual[[1]]
+  ),
+  identical(
+    calibrated_resolved$sim_params$rho,
+    reliability_smoke_design$rho_residual[[1]]
+  )
 )
 
 cat("BLUP-outcome design tests ok\n")

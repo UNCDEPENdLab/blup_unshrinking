@@ -12,6 +12,7 @@ project_helper_source_order <- function() {
     "tmb_stage1_helpers.R",
     "stacked_sandwich_helpers.R",
     "sim_helpers.R",
+    "reliability_calibration.R",
     "stats_helpers.R",
     "stage2_estimators.R",
     "blup_helpers.R",

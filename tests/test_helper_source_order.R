@@ -23,6 +23,7 @@ expected_functions <- c(
   "make_tmb_stage1_data",
   "stacked_sandwich_for_corrected_scores",
   "simulate_dataset",
+  "calibrate_random_slope_condition",
   "extract_lm_stats",
   "format_stacked_sandwich_rows",
   "select_eiv_result_columns",
