@@ -211,7 +211,8 @@ where $c$ indexes simulation cells. A raw value such as $\gamma=.4$ can
 represent a moderate effect in one cell, an extremely large effect in another,
 or an impossible effect if $\gamma^2>G_{\text{marginal},22,c}$.
 
-Instead, define the structural effect by the proportion of total slope variance
+To resolve this, we must parameterize the simulation using a scale-free metric.
+We can define the structural effect by the proportion of total slope variance
 explained by $x_i$:
 
 $$
@@ -221,13 +222,21 @@ R_{\text{struct}}^2
 {G_{\text{marginal},22}}.
 $$
 
-With one standardized predictor,
+For a single standardized predictor, this proportion of variance explained is
+exactly the square of the standardized coefficient. The two metrics are simply
+equivalent representations of the same scale-free effect:
 
 $$
 \beta_{\text{std}}
 =
-\operatorname{sign}(\gamma)\sqrt{R_{\text{struct}}^2}.
+\operatorname{sign}(\gamma)\sqrt{R_{\text{struct}}^2}
+\quad \iff \quad
+R_{\text{struct}}^2 = \beta_{\text{std}}^2.
 $$
+
+We choose to parameterize the effect-size grid using $R_{\text{struct}}^2$
+because the calibration equations fundamentally deal with partitioning variance,
+and $R_{\text{struct}}^2$ naturally extends to models with multiple predictors.
 
 The original standardized-effect targets
 $\{0,.2,.4,.6\}$ therefore correspond exactly to
