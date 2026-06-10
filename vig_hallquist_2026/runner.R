@@ -1,10 +1,9 @@
-#' Generic runner and output aggregation for Lai simulation modules.
+#' Generic runner and output aggregation for Vig-Hallquist (2026).
 #'
-#' This file contains the orchestration layer for the Lai apples-to-apples
-#' replication simulations. Study-specific modules define the data generators
-#' and estimators; the runner is responsible for selecting design conditions,
-#' executing replications, writing per-condition artifacts, and rebuilding
-#' aggregate summaries from completed condition files.
+#' Study-specific modules define the data generators and estimators; the runner
+#' is responsible for selecting design conditions, executing replications,
+#' writing per-condition artifacts, and rebuilding aggregate summaries from
+#' completed condition files.
 
 #' Parse an optional command-line integer argument.
 #'
@@ -163,7 +162,7 @@ get_condition_file_paths <- function(out_dir, condition_id) {
 #'
 #' @details
 #' The summary is computed at the condition-study-method level while preserving
-#' the design parameters needed to compare rows across the Lai study grids.
+#' the design parameters needed to compare rows across the study grids.
 #' OpenMx status-code-10 failures are counted separately and are excluded from
 #' the convergence flag even if an estimate column is present. Bias, RMSE, and
 #' coverage are based on the standardized estimand stored in `truth`.
@@ -188,6 +187,7 @@ summarize_results_df <- function(results) {
       sq_error = (estimate - truth)^2,
       covered = ci_low <= truth & ci_high >= truth
     ) %>%
+    # TODO: update these columns
     dplyr::group_by(
       condition_id, study, method, num_clus, clus_size, icc, vr_u1_u0, cor_u0_u1, beta_zu1,
       design_source, condition_note
@@ -236,6 +236,7 @@ summarize_stage1_problem_df <- function(results) {
       sq_error = (estimate - truth)^2,
       covered = ci_low <= truth & ci_high >= truth
     ) %>%
+    # TODO: update these columns
     dplyr::group_by(
       condition_id, study, method, stage1_singular_problem, num_clus, clus_size, icc, vr_u1_u0, cor_u0_u1, beta_zu1,
       design_source, condition_note
@@ -281,6 +282,7 @@ summarize_issue_df <- function(results) {
     dplyr::mutate(n_rep_total = dplyr::n()) %>%
     dplyr::ungroup() %>%
     dplyr::filter(!is.na(mx_issue_class), mx_issue_class != "ok") %>%
+    # TODO: update these columns
     dplyr::group_by(
       condition_id, study, method, mx_issue_class, num_clus, clus_size, icc, vr_u1_u0, cor_u0_u1, beta_zu1,
       design_source, condition_note
@@ -338,11 +340,10 @@ read_replication_results_file <- function(path) {
   # Keep these casts centralized so aggregate rebuilds do not depend on the
   # exact type inference chosen by fread for any single condition file.
   numeric_cols <- intersect(
+    # TODO: update these columns
     c(
       "estimate", "se", "ci_low", "ci_high", "truth",
       "mx_condition_number",
-      "eiv_measurement_weight_requested", "eiv_measurement_weight_used",
-      "eiv_latent_cov_min_eigen", "eiv_latent_cov_condition_number",
       "stage1_re_corr", "stage1_eb_corr", "stage1_design_kappa",
       "icc", "vr_u1_u0", "cor_u0_u1", "beta_zu1",
       "sigma2", "var_u1", "sigma_z", "fuller_lambda1", "fuller_lambda2",
@@ -356,7 +357,7 @@ read_replication_results_file <- function(path) {
     names(out)
   )
   logical_cols <- intersect(
-    c("stage1_singular_problem", "stage1_lmer_singular", "eiv_regularized"),
+    c("stage1_singular_problem", "stage1_lmer_singular"),
     names(out)
   )
 
@@ -418,7 +419,7 @@ condition_output_has_methods <- function(path, expected_methods) {
   all(expected_methods %in% unique(out$method))
 }
 
-#' Dispatch one replication to the correct Lai study module.
+#' Dispatch one replication to the correct study module.
 #'
 #' @param condition One-row condition tibble with a `study` column equal to
 #'   `"study1"`, `"study2"`, `"study3"`, or `"study4"`.
@@ -433,7 +434,7 @@ run_one_rep <- function(condition) {
     study2 = run_study2_rep(condition),
     study3 = run_study3_rep(condition),
     study4 = run_study4_rep(condition),
-    stop("Unsupported Lai study key: ", study_key)
+    stop("Unsupported VH study key: ", study_key)
   )
 }
 
@@ -446,7 +447,8 @@ run_one_rep <- function(condition) {
 #' utilities used anywhere below `run_one_rep()`.
 #'
 #' @return A character vector of object names passed to `foreach(..., .export)`.
-lai_parallel_exports <- function() {
+vig_hallquist_parallel_exports <- function() {
+  # TODO: update this list
   c(
     "run_one_rep", "run_study1_rep", "run_study2_rep", "run_study3_rep", "run_study4_rep",
     "simulate_study1", "simulate_study2", "simulate_study3", "simulate_study4",
@@ -510,8 +512,9 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
     foreach::foreach(
       rep_id = rep_ids,
       .combine = dplyr::bind_rows,
+      # TODO: check these exports
       .packages = c("data.table", "lme4", "MASS", "dplyr", "tidyr", "purrr", "tibble", "OpenMx", "glmnet", "sandwich", "geigen"),
-      .export = lai_parallel_exports()
+      .export = vig_hallquist_parallel_exports()
     ) %dopar% {
       run_single_rep(rep_id)
     }
@@ -520,10 +523,10 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
   }
 }
 
-#' Run a Lai apples-to-apples simulation batch.
+#' Run a Vig-Hallquist simulation batch.
 #'
 #' @details
-#' This is the top-level entry point used by the Lai replication script. It
+#' This is the top-level entry point used by the replication script. It
 #' selects the requested study design, optionally slices the design into a
 #' chunk, runs each condition, writes condition-level artifacts immediately, and
 #' finally rebuilds aggregate replication and summary files from the completed
@@ -547,7 +550,7 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
 #' @param study_arg Study selector passed to `select_design()`, typically
 #'   `"all"`, `"study1"`, `"study2"`, or `"study3"`.
 #' @param out_dir Root output directory. Defaults to
-#'   `file.path(lai_dir, "outputs", "lai_apples_to_apples")`.
+#'   `file.path(vig_hallquist_dir, "outputs", "vig_hallquist")`.
 #' @param n_cores Positive integer number of worker cores. Values greater than
 #'   one register a `doParallel` backend and use the parallel replication path.
 #' @param max_conditions Optional cap passed to `select_design()` after study
@@ -558,22 +561,17 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
 #'   supplied with `chunk_index`.
 #' @param resume_existing Logical. If `TRUE`, skip conditions whose
 #'   per-condition replication and summary files already exist.
-#' @param include_tempered_eiv Logical. If `TRUE`, append tempered EIV
-#'   sensitivity rows (`tempered_eiv_dual_corrected_l25/l50/l75`) to each
-#'   condition. The default core simulation excludes these regularization-path
-#'   variants.
 #'
 #' @return Invisibly returns a list with aggregate `results`, `summary`,
 #'   `issue_summary`, and `stage1_summary` tibbles.
 run_simulation <- function(n_sim = 100L,
                            study_arg = "all",
-                           out_dir = file.path(lai_dir, "outputs", "lai_apples_to_apples"),
+                           out_dir = file.path(vig_hallquist_dir, "outputs", "vig_hallquist"),
                            n_cores = 1L,
                            max_conditions = NA_integer_,
                            chunk_index = NA_integer_,
                            chunk_size = NA_integer_,
-                           resume_existing = TRUE,
-                           include_tempered_eiv = FALSE) {
+                           resume_existing = TRUE) {
   if (is.na(n_sim) || n_sim < 1L) {
     stop("`n_sim` must be a positive integer.")
   }
@@ -583,11 +581,10 @@ run_simulation <- function(n_sim = 100L,
 
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   design <- select_design(study_arg = study_arg, max_conditions = max_conditions)
-  design$include_tempered_eiv <- isTRUE(include_tempered_eiv)
   design <- slice_design_chunk(design, chunk_index = chunk_index, chunk_size = chunk_size)
   chunk_meta <- attr(design, "chunk_meta")
   chunk_label <- make_chunk_label(chunk_meta)
-  file_prefix <- sprintf("lai_apples_to_apples_%s", chunk_label)
+  file_prefix <- sprintf("vig_hallquist_%s", chunk_label)
 
   # Chunk labels keep concurrently run jobs from overwriting each other's
   # aggregate files while preserving condition-level paths shared by resume.
@@ -678,10 +675,10 @@ run_simulation <- function(n_sim = 100L,
   # Preserve the original aggregate filenames for downstream scripts that do
   # not know about chunk-specific output naming.
   if (identical(chunk_label, "full_selection")) {
-    data.table::fwrite(results, file = file.path(out_dir, "lai_apples_to_apples_replication_results.csv.gz"))
-    utils::write.csv(summary_df, file = file.path(out_dir, "lai_apples_to_apples_summary.csv"), row.names = FALSE)
-    utils::write.csv(issue_summary_df, file = file.path(out_dir, "lai_apples_to_apples_issue_summary.csv"), row.names = FALSE)
-    utils::write.csv(stage1_summary_df, file = file.path(out_dir, "lai_apples_to_apples_stage1_problem_summary.csv"), row.names = FALSE)
+    data.table::fwrite(results, file = file.path(out_dir, "vig_hallquist_replication_results.csv.gz"))
+    utils::write.csv(summary_df, file = file.path(out_dir, "vig_hallquist_summary.csv"), row.names = FALSE)
+    utils::write.csv(issue_summary_df, file = file.path(out_dir, "vig_hallquist_issue_summary.csv"), row.names = FALSE)
+    utils::write.csv(stage1_summary_df, file = file.path(out_dir, "vig_hallquist_stage1_problem_summary.csv"), row.names = FALSE)
   }
 
   message("Saved outputs to: ", normalizePath(out_dir))

@@ -7,6 +7,14 @@ fixed_params <- list(
   z_intercept = 1.5
 )
 
+lai_residual_structures <- function() {
+  tibble::tribble(
+    ~r_structure, ~r_rho,
+    "ar1", 0.3,
+    "ar1", 0.6
+  )
+}
+
 make_study1_design <- function() {
   tidyr::crossing(
     study = "study1",
@@ -15,7 +23,8 @@ make_study1_design <- function() {
     icc = c(0.05, 0.20, 0.50),
     vr_u1_u0 = c(0.5, 1.0, 2.0),
     cor_u0_u1 = c(-0.5, 0.0, 0.5),
-    beta_zu1 = c(0.0, 0.4)
+    beta_zu1 = c(0.0, 0.4),
+    r_structure = "iid"
   ) %>%
     dplyr::mutate(
       sigma2 = 1 - icc,
@@ -33,7 +42,8 @@ make_study2_design <- function() {
     icc = c(0.05, 0.50),
     vr_u1_u0 = c(0.5, 2.0),
     cor_u0_u1 = c(-0.5, 0.0, 0.5),
-    beta_zu1 = c(0.0, -0.3)
+    beta_zu1 = c(0.0, -0.3),
+    r_structure = "iid"
   ) %>%
     dplyr::mutate(
       sigma2 = 1 - icc,
@@ -52,7 +62,8 @@ make_study3_design <- function() {
     icc = c(0.05, 0.50),
     vr_u1_u0 = c(0.5, 2.0),
     cor_u0_u1 = c(-0.5, 0.0, 0.5),
-    beta_zu1 = c(0.0, -0.3)
+    beta_zu1 = c(0.0, -0.3),
+    r_structure = "iid"
   ) %>%
     dplyr::mutate(
       sigma2 = 1 - icc,
@@ -65,10 +76,30 @@ make_study3_design <- function() {
     )
 }
 
+make_study4_design <- function() {
+  tidyr::crossing(
+    study = "study4",
+    num_clus = c(30L, 100L, 500L),
+    clus_size = c(3L, 10L, 25L),
+    icc = c(0.05, 0.20, 0.50),
+    vr_u1_u0 = c(0.5, 1.0, 2.0),
+    cor_u0_u1 = c(-0.5, 0.0, 0.5),
+    beta_zu1 = c(0.0, 0.4),
+  ) %>%
+    dplyr::mutate(
+      sigma2 = 1 - icc,
+      var_u1 = vr_u1_u0 * icc,
+      design_source = "supplement_script",
+      condition_note = "Same conditions as Lai Study 1 with heteroskedastic residuals."
+    ) %>%
+    tidyr::crossing(lai_residual_structures())
+}
+
 all_designs <- dplyr::bind_rows(
   make_study1_design(),
   make_study2_design(),
-  make_study3_design()
+  make_study3_design(),
+  make_study4_design()
 )
 
 select_design <- function(study_arg = "all", max_conditions = NA_integer_) {
@@ -85,7 +116,7 @@ select_design <- function(study_arg = "all", max_conditions = NA_integer_) {
   }
 
   if (nrow(design) == 0L) {
-    stop("No study conditions selected. Use `all`, `1`, `2`, `3`, or a comma-separated combination like `1,2`.")
+    stop("No study conditions selected. Use `all`, `1`, `2`, `3`, `4`, or a comma-separated combination like `1,2`.")
   }
 
   design %>%

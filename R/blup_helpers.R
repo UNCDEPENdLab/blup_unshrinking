@@ -1128,3 +1128,404 @@ get_closed_form_corrected_scores <- function(fit_obj, data, cluster_var, outcome
     out
   })
 }
+
+
+
+#' Compute various cluster scores from the same Stage-1 ingredients.
+run_scoring_methods <- function(fit_obj, data, cluster_var, outcome_var, within_var = NULL,
+                                     R_list = NULL, group = NULL) {
+  cluster_ids <- unique(as.character(data[[cluster_var]]))
+  split_dat <- split(data, as.character(data[[cluster_var]]), drop = TRUE)[cluster_ids]
+  n_re <- if (is.null(within_var)) 1L else 2L
+
+  stage1 <- extract_stage1_components(
+    fit_obj = fit_obj,
+    data = data,
+    cluster_var = cluster_var,
+    within_var = within_var,
+    R_list = R_list,
+    group = group
+  )
+  beta_hat <- stage1$beta_hat
+  g_hat <- stage1$G_hat
+  R_list <- normalize_R_list(stage1$R_list, cluster_ids)
+
+  re_names_raw <- stage1$re_names_raw
+  if (is.null(re_names_raw) || length(re_names_raw) != n_re) {
+    re_names_raw <- if (is.null(within_var)) "(Intercept)" else c("(Intercept)", within_var)
+  }
+  re_names <- sanitize_re_name(re_names_raw)
+
+  if (nrow(g_hat) != n_re || ncol(g_hat) != n_re) {
+    stop("The fitted random-effect covariance dimension does not match `within_var`.")
+  }
+  purrr::map_dfr(cluster_ids, function(cluster_id) {
+    df_i <- split_dat[[cluster_id]]
+    if (is.null(within_var)) {
+      z_mat <- matrix(1, nrow = nrow(df_i), ncol = 1L)
+      x_mat <- z_mat
+      beta_vec <- beta_hat[[1]]
+    } else {
+      z_vec <- df_i[[within_var]]
+      z_mat <- cbind(1, z_vec)
+      x_mat <- z_mat
+      beta_vec <- c(beta_hat[[1]], beta_hat[[within_var]])
+    }
+
+    R_i <- as.matrix(R_list[[cluster_id]])
+
+    try_scoring_methods(
+      z_mat = z_mat,
+      x_mat = x_mat,
+      y_vec = df_i[[outcome_var]],
+      beta_vec = beta_vec,
+      g_hat = g_hat,
+      R_i = R_i,
+      n_re = n_re
+    )
+  })
+}
+
+#' Try multiple scoring methods on the same cluster data, returning a list of
+#' results with error handling for each method.
+try_scoring_methods <- function(
+  z_mat,
+  x_mat,
+  y_vec,
+  beta_vec,
+  g_hat,
+  R_i,
+  n_re
+) {
+  methods <- c("closed_form", "unweight_full", "unweight_diag", "g_r_conversion", "g_sigma_conversion")
+
+  # if (!is.matrix(R_i) || nrow(R_i) != nrow(df_i) || ncol(R_i) != nrow(df_i)) {
+  #       stop("R_i has incompatible dimensions.")
+  #     }
+
+  dplyr::bind_rows(
+    try_scoring_closed_form(
+      z_mat = z_mat,
+      x_mat = x_mat,
+      y_vec = y_vec,
+      beta_vec = beta_vec,
+      R_i = R_i,
+      n_re = n_re
+    ),
+    try_scoring_unweight_full(
+      z_mat = z_mat,
+      x_mat = x_mat,
+      y_vec = y_vec,
+      beta_vec = beta_vec,
+      g_hat = g_hat,
+      R_i = R_i,
+      n_re = n_re
+    ),
+    try_scoring_unweight_diag(
+      z_mat = z_mat,
+      x_mat = x_mat,
+      y_vec = y_vec,
+      beta_vec = beta_vec,
+      g_hat = g_hat,
+      R_i = R_i,
+      n_re = n_re
+    ),
+    try_scoring_g_r_conversion(
+      z_mat = z_mat,
+      x_mat = x_mat,
+      y_vec = y_vec,
+      beta_vec = beta_vec,
+      g_hat = g_hat,
+      R_i = R_i,
+      n_re = n_re
+    ),
+    try_scoring_g_sigma_conversion(
+      z_mat = z_mat,
+      x_mat = x_mat,
+      y_vec = y_vec,
+      beta_vec = beta_vec,
+      g_hat = g_hat,
+      R_i = R_i,
+      n_re = n_re
+    )
+  )
+}
+
+try_scoring_closed_form <- function(
+  z_mat,
+  x_mat,
+  y_vec,
+  beta_vec,
+  R_i,
+  n_re
+) {
+
+  resid_i <- y_vec - as.numeric(x_mat %*% beta_vec)
+  
+  result <- tryCatch({
+
+    failed_step <- "r inverse z"
+    R_inv_Z <- solve(R_i, z_mat)
+
+    failed_step <- "r inverse resid"
+    R_inv_resid <- solve(R_i, resid_i)
+
+    failed_step <- "z crossprod r inverse z"
+    z_Rinv_z <- crossprod(z_mat, R_inv_Z)
+
+    failed_step <- "z_r_z inverse"
+    gls_vcov <- solve(z_Rinv_z)
+
+    failed_step <- "closed form score calculation"
+    gls_score <- as.numeric(gls_vcov %*% crossprod(z_mat, R_inv_resid))
+
+    dplyr::tibble(
+      method = "closed_form",
+      success = TRUE,
+      err_step = "none",
+      err_msg = "none",
+      score1 = gls_score[1],
+      score2 = if (n_re > 1L) gls_score[2] else NA_real_
+    )
+  }, error = function(e) {
+    dplyr::tibble(
+      method = "closed_form",
+      success = FALSE,
+      err_step = failed_step,
+      err_msg = e$message,
+      score1 = NA_real_,
+      score2 = NA_real_
+    )
+  })
+
+  return(result)
+}
+
+try_scoring_unweight_full <- function(
+  z_mat,
+  x_mat,
+  y_vec,
+  beta_vec,
+  g_hat,
+  R_i,
+  n_re
+) {
+  
+  resid_i <- y_vec - as.numeric(x_mat %*% beta_vec)
+  sigma_y_i <- z_mat %*% g_hat %*% t(z_mat) + R_i
+
+  result <- tryCatch({
+    failed_step <- "sigma y inverse"
+    sigma_y_inv <- solve(sigma_y_i)
+
+    failed_step <- "shrinkage matrix calculation"
+    a_i <- g_hat %*% t(z_mat) %*% sigma_y_inv
+
+    failed_step <- "eb score calculation"
+    eb_score <- as.numeric(a_i %*% resid_i)
+
+    failed_step <- "posterior covariance calculation"
+    post_vcov <- g_hat - a_i %*% z_mat %*% g_hat
+    post_vcov <- (post_vcov + t(post_vcov)) / 2
+
+    failed_step <- "uw score calculation"
+    uw <- solve(
+      solve(post_vcov) - solve(g_hat),
+      solve(post_vcov, eb_score)
+    )
+    
+    dplyr::tibble(
+      method = "unweight_full",
+      success = TRUE,
+      err_step = "none",
+      err_msg = "none",
+      score1 = uw[1],
+      score2 = if (n_re > 1L) uw[2] else NA_real_
+    )
+  }, error = function(e) {
+    dplyr::tibble(
+      method = "unweight_full",
+      success = FALSE,
+      err_step = failed_step,
+      err_msg = e$message,
+      score1 = NA_real_,
+      score2 = NA_real_
+    )
+  })
+
+  return(result)
+}
+
+try_scoring_unweight_diag <- function(
+  z_mat,
+  x_mat,
+  y_vec,
+  beta_vec,
+  g_hat,
+  R_i,
+  n_re
+) {
+  
+  resid_i <- y_vec - as.numeric(x_mat %*% beta_vec)
+  sigma_y_i <- z_mat %*% g_hat %*% t(z_mat) + R_i
+
+  result <- tryCatch({
+    failed_step <- "sigma y inverse"
+    sigma_y_inv <- solve(sigma_y_i)
+
+    failed_step <- "shrinkage matrix calculation"
+    a_i <- g_hat %*% t(z_mat) %*% sigma_y_inv
+
+    failed_step <- "eb score calculation"
+    eb_score <- as.numeric(a_i %*% resid_i)
+
+    failed_step <- "posterior covariance calculation"
+    post_vcov <- g_hat - a_i %*% z_mat %*% g_hat
+    post_vcov <- (post_vcov + t(post_vcov)) / 2
+
+    diag_corrected <- rep(NA_real_, n_re)
+    for (j in seq_len(n_re)) {
+      failed_step <- paste("unweight diag calculation for component", j)
+      denom <- (1 / post_vcov[j, j]) - (1 / g_hat[j, j])
+      if (is.finite(denom) && denom > sqrt(.Machine$double.eps)) {
+        failed_step <- paste("unweight diag score calculation for component", j)
+        diag_corrected[[j]] <- (1 / denom) * eb_score[[j]] / post_vcov[j, j]
+      }
+    }
+    
+    dplyr::tibble(
+      method = "unweight_diag",
+      success = TRUE,
+      err_step = "none",
+      err_msg = "none",
+      score1 = diag_corrected[1],
+      score2 = if (n_re > 1L) diag_corrected[2] else NA_real_
+    )
+  }, error = function(e) {
+    dplyr::tibble(
+      method = "unweight_diag",
+      success = FALSE,
+      err_step = failed_step,
+      err_msg = e$message,
+      score1 = NA_real_,
+      score2 = NA_real_
+    )
+  })
+
+  return(result)
+}
+
+try_scoring_g_r_conversion <- function(
+  z_mat,
+  x_mat,
+  y_vec,
+  beta_vec,
+  g_hat,
+  R_i,
+  n_re
+) {
+  
+  resid_i <- y_vec - as.numeric(x_mat %*% beta_vec)
+  sigma_y_i <- z_mat %*% g_hat %*% t(z_mat) + R_i
+
+  result <- tryCatch({
+    failed_step <- "g_z_r_inv_z calculation"
+    gzrz <- g_hat %*% t(z_mat) %*% solve(R_i, z_mat)
+
+    # failed_step <- "g_z_r_inv_z inverse"
+    # gzrz_inv <- solve(gzrz)
+    # g_r_conversion <- gzrz_inv + diag(n_re)
+
+    # # regular EB calculations
+    # failed_step <- "sigma y inverse"
+    # sigma_y_inv <- solve(sigma_y_i)
+
+    # failed_step <- "shrinkage matrix calculation"
+    # a_i <- g_hat %*% t(z_mat) %*% sigma_y_inv
+
+    failed_step <- "eb score calculation"
+    eb_score <- g_hat %*% t(z_mat) %*% solve(sigma_y_i, resid_i)
+
+    # final conversion step
+    failed_step <- "g_r conversion score calculation"
+    g_r_score <- as.numeric(solve(gzrz, eb_score) + eb_score)
+
+    dplyr::tibble(
+      method = "g_r_conversion",
+      success = TRUE,
+      err_step = "none",
+      err_msg = "none",
+      score1 = g_r_score[1],
+      score2 = if (n_re > 1L) g_r_score[2] else NA_real_
+    )
+
+    }, error = function(e) {
+      dplyr::tibble(
+        method = "g_r_conversion",
+        success = FALSE,
+        err_step = failed_step,
+        err_msg = e$message,
+        score1 = NA_real_,
+        score2 = NA_real_
+      )
+  })
+
+  return(result)
+
+}
+
+try_scoring_g_sigma_conversion <- function(
+  z_mat,
+  x_mat,
+  y_vec,
+  beta_vec,
+  g_hat,
+  R_i,
+  n_re
+) {
+  
+  resid_i <- y_vec - as.numeric(x_mat %*% beta_vec)
+  sigma_y_i <- z_mat %*% g_hat %*% t(z_mat) + R_i
+
+  result <- tryCatch({
+
+    # failed_step <- "sigma y inverse"
+    # sigma_y_inv <- solve(sigma_y_i)
+
+    failed_step <- "g_z_sigma_inv_z calculation"
+    gzsz <- g_hat %*% t(z_mat) %*% solve(sigma_y_i, z_mat)
+
+    # failed_step <- "g_z_sigma_inv_z inverse"
+    # g_sigma_conversion <- solve(gzsz)
+
+    # regular EB calculations
+    failed_step <- "eb score calculation"
+    eb_score <- g_hat %*% t(z_mat) %*% solve(sigma_y_i, resid_i)
+
+    # final conversion step
+    failed_step <- "g_sigma conversion score calculation"
+    g_sigma_score <- as.numeric(solve(gzsz, eb_score))
+
+    dplyr::tibble(
+      method = "g_sigma_conversion",
+      success = TRUE,
+      err_step = "none",
+      err_msg = "none",
+      score1 = g_sigma_score[1],
+      score2 = if (n_re > 1L) g_sigma_score[2] else NA_real_
+    )
+
+    }, error = function(e) {
+      dplyr::tibble(
+        method = "g_sigma_conversion",
+        success = FALSE,
+        err_step = failed_step,
+        err_msg = e$message,
+        score1 = NA_real_,
+        score2 = NA_real_
+      )
+  })
+
+  return(result)
+
+}

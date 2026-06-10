@@ -15,7 +15,7 @@ Rscript lai_replication/mlm_random_slope_lai_apples_to_apples_sim.R 1 1 /private
 Arguments are:
 
 1. number of replications,
-2. study selector (`all`, `1`, `2`, `3`, or comma-separated),
+2. study selector (`all`, `1`, `2`, `3`, `4`, or comma-separated),
 3. output directory,
 4. number of cores,
 5. maximum number of conditions,
@@ -37,6 +37,7 @@ Outputs are written under the requested output directory. For each selected cond
 - `study1.R`: Study 1 data generation and replication wrapper for the balanced matched-clustering design.
 - `study2.R`: Study 2 data generation and replication wrapper for the larger unbalanced matched-clustering design.
 - `study3.R`: Study 3 data generation and replication wrapper for the disparate-clustering design where `Y` and `Z` have separate first-stage models.
+- `study4.R`: Study 4 data generation and replication wrapper for AR-1 residual structural study (same design as Study 1).
 - `study_common.R`: Lai-only utilities shared by the study modules, including covariance construction, failure rows, truth calculation, and the matched-outcome analysis pipeline used by Studies 1 and 2.
 
 ## Runner
@@ -68,6 +69,7 @@ For study-specific runs with `LAI_CHUNK_SIZE=5`, override the array range:
 sbatch --array=1-98  --export=ALL,LAI_STUDY=1 lai_replication/slurm/lai_condition_array.sbatch
 sbatch --array=1-10  --export=ALL,LAI_STUDY=2 lai_replication/slurm/lai_condition_array.sbatch
 sbatch --array=1-10  --export=ALL,LAI_STUDY=3 lai_replication/slurm/lai_condition_array.sbatch
+sbatch --array=1-98  --export=ALL,LAI_STUDY=4 lai_replication/slurm/lai_condition_array.sbatch
 ```
 
 The wrapper accepts these variables:
@@ -76,7 +78,7 @@ The wrapper accepts these variables:
   repository.
 - `LAI_RSCRIPT`: Rscript executable; defaults to `Rscript`.
 - `LAI_N_SIM`: replications per condition; defaults to `1000`.
-- `LAI_STUDY`: `all`, `1`, `2`, `3`, or comma-separated selectors; defaults
+- `LAI_STUDY`: `all`, `1`, `2`, `3`, `4` or comma-separated selectors; defaults
   to `all`.
 - `LAI_OUT_DIR`: shared output directory; defaults to
   `outputs/lai_apples_to_apples_slurm` under the repository.
@@ -115,6 +117,7 @@ These repository-level helpers are intentionally shared with non-Lai simulation 
 ## Tests
 
 - `tests/smoke_lai_helpers.R`: one-replication smoke test for the Study 1 path through the full Lai runner.
+- `tests/smoke_lai_study4.R`: Study 4 smoke test covering the Study 4 design selector, data generator, and replication wrapper.
 - `../tests/test_lai_openmx_inputs.R`: unit checks for shared Lai/OpenMx EB measurement input construction.
 - `../tests/test_openmx_lai_wrapper.R`: small synthetic check for the shared Lai structural-slope OpenMx wrapper.
 - `../tests/test_helper_source_order.R`: smoke check that the repository-level helpers used by the Lai runner source cleanly in script order.
@@ -126,4 +129,5 @@ Rscript tests/test_lai_openmx_inputs.R
 Rscript tests/test_openmx_lai_wrapper.R
 Rscript tests/test_helper_source_order.R
 Rscript lai_replication/tests/smoke_lai_helpers.R
+Rscript lai_replication/tests/smoke_lai_study4.R
 ```

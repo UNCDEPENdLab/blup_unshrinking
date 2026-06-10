@@ -1,6 +1,5 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=blup-outcome-array
-#SBATCH --array=1-173
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
 #SBATCH --time=16:00:00
@@ -8,6 +7,9 @@
 #SBATCH --error=/dev/null
 
 set -euo pipefail
+
+# The array range depends on the selected design grid and chunk size, so it is
+# supplied at submission time by the companion launcher or via `sbatch --array`.
 
 # Submit from the repository root, or set BLUP_OUTCOME_REPO_ROOT explicitly.
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

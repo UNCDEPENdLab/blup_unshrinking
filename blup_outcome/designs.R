@@ -67,6 +67,37 @@ condition_uses_non_iid_R <- function(condition) {
   !identical(r_structure, "iid")
 }
 
+parse_optional_integer_value <- function(x) {
+  if (is.null(x) || length(x) == 0L || is.na(x) || x %in% c("", "NA", "NaN", "NULL", "null")) {
+    return(NA_integer_)
+  }
+  as.integer(x[[1]])
+}
+
+#' Return the number of chunked tasks needed for a BLUP-outcome design.
+#'
+#' @details
+#' The SLURM array length depends on the selected design grid and any
+#' `max_conditions` cap, then is rounded up by `chunk_size`. This helper keeps
+#' the submission wrapper aligned with the runner's chunking behavior.
+#'
+#' @param grid_mode Character scalar design grid mode.
+#' @param chunk_size Integer-like number of conditions per array task.
+#' @param max_conditions Optional pre-chunk cap on the selected design.
+#'
+#' @return Integer scalar number of array tasks required to cover the selected
+#'   design.
+blup_outcome_chunk_count <- function(grid_mode = "base", chunk_size = 5L, max_conditions = NA_integer_) {
+  chunk_size <- parse_optional_integer_value(chunk_size)
+  if (is.na(chunk_size) || chunk_size < 1L) {
+    stop("`chunk_size` must be a positive integer.")
+  }
+
+  max_conditions <- parse_optional_integer_value(max_conditions)
+  n_conditions <- nrow(make_blup_outcome_design(grid_mode = grid_mode, max_conditions = max_conditions))
+  as.integer(ceiling(n_conditions / chunk_size))
+}
+
 #' Add fixed posterior-reliability calibration parameters to a condition grid.
 #'
 #' Calibration is performed once while the grid is constructed. The resulting
@@ -142,6 +173,7 @@ make_blup_outcome_design <- function(
     reliability_tau0 = 0.9,
     calibration_reference_n = 1001L) {
   grid_mode <- as.character(grid_mode[[1]])
+  max_conditions <- parse_optional_integer_value(max_conditions)
 
   design <- switch(
     grid_mode,

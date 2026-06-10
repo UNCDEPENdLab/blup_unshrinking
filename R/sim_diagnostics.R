@@ -79,7 +79,11 @@ get_stage1_diagnostics <- function(fit_obj, stage2_df, predictor_u0 = "u0_eb", p
   # Compute the condition number (kappa) of the design matrix. A kappa > 1e6
   # suggests extreme multicollinearity that can destabilize stage-2 estimators.
   design_kappa <- if (nrow(dat) >= 3L) {
-    tryCatch(kappa(cbind(1, as.matrix(dat))), error = function(e) NA_real_)
+    tryCatch({
+      k <- kappa(cbind(1, as.matrix(dat)))
+      if (k > 1/.Machine$double.eps) { Inf } else { k }
+    }, error = function(e) NA_real_
+    )
   } else {
     NA_real_
   }

@@ -1,12 +1,13 @@
 #!/usr/bin/env Rscript
 
 #' ---
-#' title: "Lai Apples-to-Apples Predictor Simulation"
-#' description: "Replicate the Lai & Liu random-slope predictor simulation designs
-#'               using study-specific modules, while adding Vig-style corrected-score
-#'               comparators under the same data-generating conditions."
+#' title: "Vig & Hallquist 2026 Random Effects Simulation"
+#' description: "Four simulation studies including: (1) RE as outcome, 
+#'               (2) RE as predictor, (3) RE as predictor and outcome,
+#'               (4) TBD"
 #' ---
 
+# TODO: check these exports
 suppressPackageStartupMessages({
   library(data.table)
   library(lme4)
@@ -52,28 +53,29 @@ find_repo_root <- function() {
   ), mustWork = FALSE))
 
   for (candidate in candidates) {
+    # these are just example files that should exist in the repo root
     if (file.exists(file.path(candidate, "R", "core_utils.R")) &&
       file.exists(file.path(candidate, "R", "lai_openmx_helpers.R"))) {
       return(candidate)
     }
   }
 
-  stop("Could not locate repository root containing shared R/ helpers and lai_replication/ scripts.")
+  stop("Could not locate repository root containing shared R/ helpers and vig_hallquist_2026/ scripts.")
 }
 
 repo_root <- find_repo_root()
-lai_dir <- file.path(repo_root, "lai_replication")
+vig_hallquist_dir <- file.path(repo_root, "vig_hallquist_2026")
 
 source(file.path(repo_root, "R", "source_helpers.R"), local = TRUE)
 source_project_helpers(repo_root)
 
-source(file.path(lai_dir, "designs.R"), local = TRUE)
-source(file.path(lai_dir, "study_common.R"), local = TRUE)
-source(file.path(lai_dir, "study1.R"), local = TRUE)
-source(file.path(lai_dir, "study2.R"), local = TRUE)
-source(file.path(lai_dir, "study3.R"), local = TRUE)
-source(file.path(lai_dir, "study4.R"), local = TRUE)
-source(file.path(lai_dir, "runner.R"), local = TRUE)
+source(file.path(vig_hallquist_dir, "designs.R"), local = TRUE)
+source(file.path(vig_hallquist_dir, "study_common.R"), local = TRUE)
+source(file.path(vig_hallquist_dir, "study1.R"), local = TRUE)
+source(file.path(vig_hallquist_dir, "study2.R"), local = TRUE)
+source(file.path(vig_hallquist_dir, "study3.R"), local = TRUE)
+source(file.path(vig_hallquist_dir, "study4.R"), local = TRUE)
+source(file.path(vig_hallquist_dir, "runner.R"), local = TRUE)
 
 Sys.setenv(OMP_NUM_THREADS = "1", OPENBLAS_NUM_THREADS = "1", MKL_NUM_THREADS = "1")
 OpenMx::mxOption(NULL, "Number of Threads", 1L)
@@ -83,13 +85,12 @@ args <- commandArgs(trailingOnly = TRUE)
 if (sys.nframe() == 0L) {
   n_sim <- if (length(args) >= 1L) as.integer(args[[1]]) else 100L
   study_arg <- if (length(args) >= 2L) args[[2]] else "all"
-  out_dir <- if (length(args) >= 3L) args[[3]] else file.path(lai_dir, "outputs", "lai_apples_to_apples")
+  out_dir <- if (length(args) >= 3L) args[[3]] else file.path(vig_hallquist_dir, "outputs", "vig_hallquist")
   n_cores <- if (length(args) >= 4L) as.integer(args[[4]]) else 1L
   max_conditions <- if (length(args) >= 5L) parse_optional_integer_arg(args[[5]]) else NA_integer_
   chunk_index <- if (length(args) >= 6L) parse_optional_integer_arg(args[[6]]) else NA_integer_
   chunk_size <- if (length(args) >= 7L) parse_optional_integer_arg(args[[7]]) else NA_integer_
   resume_existing <- if (length(args) >= 8L) parse_logical_arg(args[[8]], default = TRUE) else TRUE
-  include_tempered_eiv <- if (length(args) >= 9L) parse_logical_arg(args[[9]], default = FALSE) else FALSE
 
   run_simulation(
     n_sim = n_sim,
@@ -99,7 +100,6 @@ if (sys.nframe() == 0L) {
     max_conditions = max_conditions,
     chunk_index = chunk_index,
     chunk_size = chunk_size,
-    resume_existing = resume_existing,
-    include_tempered_eiv = include_tempered_eiv
+    resume_existing = resume_existing
   )
 }

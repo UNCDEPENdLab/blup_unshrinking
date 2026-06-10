@@ -40,17 +40,27 @@ Outputs are written under the requested output directory. For each selected cond
 
 ## SLURM Array Runs
 
-`slurm/blup_outcome_condition_array.sbatch` runs the BLUP-outcome entry point as a SLURM array job. The script defaults to the base grid with `BLUP_OUTCOME_CHUNK_SIZE=5` and a 173-task array (`base` has 864 conditions), so a typical launch is:
+`slurm/submit_blup_outcome_condition_array.sh` computes the correct SLURM array length for the selected grid and chunk size, then submits `slurm/blup_outcome_condition_array.sbatch` as the job payload. With the default base grid and `BLUP_OUTCOME_CHUNK_SIZE=5`, the wrapper submits 173 tasks; for `residual_ar1` it submits 29 tasks.
 
 ```sh
-sbatch blup_outcome/slurm/blup_outcome_condition_array.sbatch
+blup_outcome/slurm/submit_blup_outcome_condition_array.sh
 ```
 
 Common overrides can be supplied as environment variables:
 
 ```sh
+BLUP_OUTCOME_GRID_MODE=residual_ar1 \
+BLUP_OUTCOME_CHUNK_SIZE=5 \
+blup_outcome/slurm/submit_blup_outcome_condition_array.sh
+```
+
+You can still submit the payload manually with `sbatch --array=...` if you want to
+override the computed range yourself:
+
+```sh
 sbatch \
-  --export=ALL,BLUP_OUTCOME_N_SIM=1000,BLUP_OUTCOME_GRID_MODE=base,BLUP_OUTCOME_OUT_DIR=/path/to/blup_outcome,BLUP_OUTCOME_CHUNK_SIZE=5 \
+  --array=1-29 \
+  --export=ALL,BLUP_OUTCOME_N_SIM=1000,BLUP_OUTCOME_GRID_MODE=residual_ar1,BLUP_OUTCOME_OUT_DIR=/path/to/blup_outcome,BLUP_OUTCOME_CHUNK_SIZE=5 \
   blup_outcome/slurm/blup_outcome_condition_array.sbatch
 ```
 

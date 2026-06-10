@@ -353,7 +353,11 @@ run_mx_safe <- function(mx_mod, max_tries = 5L, warning_log = NULL) {
     )
     if (!is.null(fit_try)) {
       last_fit <- fit_try
-      if (identical(fit_try$output$status$code, 0L)) {
+      ok <- tryCatch(
+        identical(fit_try$output$status$code, 0L),
+        error = function(e) FALSE
+      )
+      if (ok) {
         return(fit_try)
       }
     }

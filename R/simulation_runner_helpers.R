@@ -109,11 +109,38 @@ condition_file_paths <- function(out_dir, condition_id, prefix = "condition", co
   )
 }
 
-read_condition_results_file <- function(path) {
-  if (requireNamespace("data.table", quietly = TRUE)) {
-    return(tibble::as_tibble(data.table::fread(path)))
+# Default numeric whitelist: columns we should attempt to coerce to numeric on read.
+# This helps with extremely large numbers in previous runs; current runs have a 
+# screen for this issue
+default_numeric_whitelist <- c("stage1_design_kappa")
+
+# Try to coerce one or more columns to numeric if all non-missing entries parse as numeric.
+coerce_numeric_if_possible <- function(df, cols) {
+  cols <- intersect(as.character(cols), names(df))
+  for (col in cols) {
+    x <- df[[col]]
+    if (is.numeric(x)) {
+      next
+    }
+    if (all(is.na(x) | suppressWarnings(!is.na(as.numeric(x))))) {
+      df[[col]] <- as.numeric(x)
+    }
   }
-  utils::read.csv(path, stringsAsFactors = FALSE)
+  return(df)
+}
+
+read_condition_results_file <- function(path, numeric_whitelist = default_numeric_whitelist) {
+  if (requireNamespace("data.table", quietly = TRUE)) {
+    out <- tibble::as_tibble(data.table::fread(path))
+  } else {
+    out <- utils::read.csv(path, stringsAsFactors = FALSE)
+  }
+
+  for (col in numeric_whitelist) {
+    out <- coerce_numeric_if_possible(out, default_numeric_whitelist)
+  }
+
+  out
 }
 
 load_completed_condition_results <- function(condition_grid,
