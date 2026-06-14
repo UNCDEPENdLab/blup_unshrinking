@@ -1,0 +1,233 @@
+---
+title: "Calibrating the Structural Outcome Model"
+output: html_document
+---
+
+# From Posterior Reliability to a Structural Outcome Model
+
+Consider the two-stage model in which first-stage random effects serve as
+predictors of a cluster-level outcome $z_i$.
+
+## 1. The Structural Model
+
+The first-stage mixed model is:
+
+$$
+\mathbf{y}_i = \mathbf{X}_i\boldsymbol{\beta}
+  + \mathbf{Z}_i\mathbf{b}_i + \mathbf{e}_i,
+\qquad
+\mathbf{b}_i \sim N(\mathbf{0},\mathbf{G}_{\text{marginal}}),
+\qquad
+\mathbf{e}_i \sim N(\mathbf{0},\mathbf{R}_i).
+$$
+
+The cluster-level structural model is:
+
+$$
+z_i = \beta_0 + \beta_1 b_{0i} + \beta_2 b_{1i} + u_i,
+\qquad
+u_i \sim N(0, \sigma_u^2),
+$$
+
+where $b_{0i}$ and $b_{1i}$ are the random intercept and slope for cluster $i$,
+$\beta_1$ is a fixed nuisance coefficient, and $\beta_2$ is the calibrated
+coefficient of interest.
+
+The total variance of $z_i$ is fixed to $\sigma_z^2$ across all conditions:
+
+$$
+\text{Var}(z_i) = V_{\text{pred}} + \sigma_u^2 = \sigma_z^2.
+$$
+
+## 2. The Variance of the Linear Predictor
+
+$V_{\text{pred}}$ is the variance of the predicted part of $z_i$:
+
+$$
+V_{\text{pred}} = \text{Var}(\beta_1 b_{0i} + \beta_2 b_{1i}).
+$$
+
+Since $(b_{0i}, b_{1i})^\top \sim N(\mathbf{0}, \mathbf{G}_{\text{marginal}})$,
+this is a quadratic form:
+
+$$
+V_{\text{pred}}
+= \boldsymbol{\beta}^\top \mathbf{G}_{\text{marginal}}\, \boldsymbol{\beta}
+= \beta_1^2 G_{11} + 2\beta_1\beta_2 G_{12} + \beta_2^2 G_{22}.
+$$
+
+The structural $R^2$ is the proportion of total variance explained by the
+predictors:
+
+$$
+R^2_{\text{struct}} = \frac{V_{\text{pred}}}{\sigma_z^2}.
+$$
+
+$V_{\text{pred}}$ and $R^2_{\text{struct}}$ are numerically equal only when
+$\sigma_z^2 = 1$. In general, the target variance explained by the predictors
+is:
+
+$$
+V_{\text{pred}} = R^2_{\text{target}} \cdot \sigma_z^2.
+$$
+
+## 3. Calibrating $\beta_2$
+
+After first-stage reliability calibration, $\mathbf{G}_{\text{marginal}}$ is
+known. With $\beta_1$ and $\sigma_z^2$ fixed, setting $V_{\text{pred}} =
+R^2_{\text{target}} \cdot \sigma_z^2$ gives a quadratic in $\beta_2$:
+
+$$
+G_{22}\beta_2^2 + 2\beta_1 G_{12}\beta_2
++ (\beta_1^2 G_{11} - R^2_{\text{target}}\sigma_z^2) = 0.
+$$
+
+Applying the quadratic formula:
+
+$$
+\beta_2 = \frac{-\beta_1 G_{12} \pm \sqrt{G_{22} R^2_{\text{target}} \sigma_z^2
+- \beta_1^2 \det(\mathbf{G}_{\text{marginal}})}}{G_{22}}.
+$$
+
+Taking the positive root (`effect_sign = 1`):
+
+$$
+\beta_2 = \frac{-\beta_1 G_{12} + \sqrt{G_{22} R^2_{\text{target}} \sigma_z^2
+- \beta_1^2 \det(\mathbf{G}_{\text{marginal}})}}{G_{22}}.
+$$
+
+The residual variance follows directly:
+
+$$
+\sigma_u^2 = \sigma_z^2(1 - R^2_{\text{target}}).
+$$
+
+Note that $\sigma_u^2$ does not depend on $\mathbf{G}_{\text{marginal}}$.
+
+## 4. Feasibility
+
+The discriminant must be non-negative. The minimum attainable $V_{\text{pred}}$
+over all choices of $\beta_2$ is achieved at
+$\beta_2^* = -\beta_1 G_{12} / G_{22}$:
+
+$$
+V_{\text{pred,min}} = \beta_1^2 \left(G_{11} - \frac{G_{12}^2}{G_{22}}\right)
+= \frac{\beta_1^2 \det(\mathbf{G}_{\text{marginal}})}{G_{22}}.
+$$
+
+This equals $\beta_1^2$ times the **conditional variance of $b_{0i}$ given
+$b_{1i}$** — the portion of $\beta_1$'s contribution to $V_{\text{pred}}$ that
+no choice of $\beta_2$ can cancel. The minimum attainable $R^2$ is therefore:
+
+$$
+R^2_{\min} = \frac{V_{\text{pred,min}}}{\sigma_z^2}
+= \frac{\beta_1^2 \det(\mathbf{G}_{\text{marginal}})}{G_{22}\sigma_z^2}.
+$$
+
+If $R^2_{\text{target}} < R^2_{\min}$, no real $\beta_2$ exists. Such cells
+must be flagged and reported rather than silently modified.
+
+## 5. Relationship Between $\mathbf{G}_{\text{residual}}$ and $\mathbf{G}_{\text{marginal}}$
+
+In the original workflow, the random slope was the **outcome** of a structural
+model $b_{1i} = \gamma x_i + u_{1i}$. The random effects were drawn from a
+reduced $\mathbf{G}_{\text{residual}}$ and the total slope was reconstructed
+by adding back the $\gamma x_i$ component, so that the marginal covariance
+across all clusters equaled $\mathbf{G}_{\text{marginal}}$.
+
+In the current workflow, the random effects are **predictors** of $z_i$, not
+outcomes of a structural model. They are drawn whole from
+$\mathbf{G}_{\text{marginal}}$ and $z_i$ is generated conditional on them.
+There is nothing to partial out, so:
+
+$$
+\mathbf{G}_{\text{residual}} = \mathbf{G}_{\text{marginal}}.
+$$
+
+The distinction between the two matrices disappears entirely in this design.
+
+## 6. Calibration Workflow
+
+For each first-stage condition (cluster size, time design, residual structure,
+reliability, and correlation):
+
+1. Calibrate $\mathbf{G}_{\text{marginal}}$ from the reliability target
+   following the first-stage workflow.
+2. Fix $\beta_1$, $\sigma_z^2$, and $R^2_{\text{target}}$.
+3. Compute $R^2_{\min}$ and check feasibility.
+4. Solve for $\beta_2$ using the quadratic formula above.
+5. Set $\sigma_u^2 = \sigma_z^2(1 - R^2_{\text{target}})$.
+6. Draw $(b_{0i}, b_{1i})^\top \sim N(\mathbf{0}, \mathbf{G}_{\text{marginal}})$
+   and generate:
+
+$$
+z_i = \beta_0 + \beta_1 b_{0i} + \beta_2 b_{1i} + u_i,
+\qquad u_i \sim N(0, \sigma_u^2).
+$$
+
+As in the first-stage calibration, these parameters are calibrated once when
+the condition manifest is constructed and held fixed across all Monte Carlo
+replications of that condition.
+
+## 7. Verification
+
+For every calibrated cell:
+
+1. Recompute $V_{\text{pred}} = \beta_1^2 G_{11} + 2\beta_1\beta_2 G_{12} +
+   \beta_2^2 G_{22}$ and confirm $V_{\text{pred}} / \sigma_z^2 =
+   R^2_{\text{target}}$ within numerical tolerance.
+2. Confirm $\sigma_u^2 + V_{\text{pred}} = \sigma_z^2$.
+3. Simulate $z_i$ and confirm that its empirical variance approaches
+   $\sigma_z^2$ and its empirical $R^2$ approaches $R^2_{\text{target}}$.
+4. Confirm $\mathbf{G}_{\text{marginal}}$ is positive definite.
+
+## 8. Implementation
+
+```r
+calibrate_beta2 <- function(beta1, G_marginal, r2_target, var_z = 1) {
+
+  # Extract G matrix elements
+  G11 <- G_marginal[1, 1]
+  G12 <- G_marginal[1, 2]
+  G22 <- G_marginal[2, 2]
+
+  # det(G) = G11*G22 - G12^2, used in discriminant and feasibility floor.
+  # For a positive-definite G this is always positive.
+  det_G <- G11 * G22 - G12^2
+
+  # Minimum attainable V_pred over all choices of beta2, achieved at
+  # beta2* = -beta1 * G12 / G22. This equals beta1^2 times the conditional
+  # variance of b0i given b1i -- the portion of beta1's contribution that
+  # no choice of beta2 can cancel.
+  v_pred_min <- beta1^2 * det_G / G22
+  r2_min <- v_pred_min / var_z
+
+  # Feasibility check: target V_pred = r2_target * var_z must exceed the
+  # minimum. If not, no real beta2 exists that achieves the target.
+  if (r2_target < r2_min) {
+    stop(sprintf(
+      "Infeasible cell: r2_target = %.4f is below the minimum attainable R^2 = %.4f",
+      r2_target, r2_min
+    ))
+  }
+
+  # Discriminant of the quadratic in beta2:
+  #   G22 * beta2^2 + 2*beta1*G12 * beta2 + (beta1^2*G11 - r2_target*var_z) = 0
+  # Discriminant = G22 * r2_target * var_z - beta1^2 * det_G
+  discriminant <- G22 * r2_target * var_z - beta1^2 * det_G
+
+  # Take the positive root (effect_sign = 1): beta2 adds to rather than
+  # subtracts from the variance contribution already made by beta1.
+  beta2 <- (-beta1 * G12 + sqrt(discriminant)) / G22
+
+  # With Var(z) fixed to var_z and V_pred = r2_target * var_z, the residual
+  # variance is the remainder. sigma_u^2 does not depend on G_marginal.
+  sigma_u_z <- var_z * (1 - r2_target)
+
+  list(
+    beta2     = beta2,
+    sigma_u_z = sigma_u_z,  # variance, passed to sqrt() at data generation
+    r2_min    = r2_min       # retain for feasibility reporting in the manifest
+  )
+}
+```

@@ -426,7 +426,7 @@ condition_output_has_methods <- function(path, expected_methods) {
 #'
 #' @return A replication-level result tibble from the corresponding
 #'   `run_study*_rep()` function.
-run_one_rep <- function(condition) {
+run_study_rep <- function(condition) {
   study_key <- as.character(condition$study[[1]])
   switch(
     study_key,
@@ -444,13 +444,13 @@ run_one_rep <- function(condition) {
 #' `foreach` workers run in separate R processes and therefore need explicit
 #' access to locally defined functions that are not package exports. This list
 #' includes study simulators, estimator helpers, diagnostics, and OpenMx
-#' utilities used anywhere below `run_one_rep()`.
+#' utilities used anywhere below `run_study_rep()`.
 #'
 #' @return A character vector of object names passed to `foreach(..., .export)`.
 vig_hallquist_parallel_exports <- function() {
   # TODO: update this list
   c(
-    "run_one_rep", "run_study1_rep", "run_study2_rep", "run_study3_rep", "run_study4_rep",
+    "run_study_rep", "run_study1_rep", "run_study2_rep", "run_study3_rep", "run_study4_rep",
     "simulate_study1", "simulate_study2", "simulate_study3", "simulate_study4",
     "run_matched_outcome_rep", "make_failed_result", "add_study_result_context",
     "matched_study_methods", "disparate_study_methods", "study_methods_for_condition", "tempered_eiv_methods",
@@ -499,8 +499,8 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
   run_single_rep <- function(rep_id) {
     # The large condition multiplier avoids seed collisions across conditions
     # even for high replication counts.
-    set.seed(20260419 + (as.integer(condition$condition_id) * 100000L) + as.integer(rep_id))
-    rep_out <- run_one_rep(condition)
+    set.seed(20260612 + (as.integer(condition$condition_id) * 100000L) + as.integer(rep_id))
+    rep_out <- run_study_rep(condition)
     dplyr::bind_cols(
       rep_out,
       condition[rep(1L, nrow(rep_out)), , drop = FALSE] %>% dplyr::select(-study),
@@ -548,7 +548,7 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
 #'
 #' @param n_sim Positive integer number of replications per condition.
 #' @param study_arg Study selector passed to `select_design()`, typically
-#'   `"all"`, `"study1"`, `"study2"`, or `"study3"`.
+#'   `"all"`, `"study1"`, `"study2"`, `"study3"`, or `"study4"`.
 #' @param out_dir Root output directory. Defaults to
 #'   `file.path(vig_hallquist_dir, "outputs", "vig_hallquist")`.
 #' @param n_cores Positive integer number of worker cores. Values greater than

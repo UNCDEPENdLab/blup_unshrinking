@@ -7,7 +7,7 @@ study2_methods <- function() {
     "closed_form",
     "naive_slope_blup",
     "fuller_closed_form",
-    "fuller_alpha_stepdown_closed_form"
+    "fuller_alpha_stepdown_closed_form",
     "single_subject_ols",
     "lai_2spa",
     "msem"
@@ -15,9 +15,10 @@ study2_methods <- function() {
 }
 
 simulate_study2 <- function(condition) {
-
+  
 }
 
 run_study2_rep <- function(condition) {
+  sim <- simulate_data_blup_as_predictor(condition)
   # run_matched_outcome_rep(condition, simulate_study2(condition))
 }

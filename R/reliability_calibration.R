@@ -431,7 +431,8 @@ calibrate_slope_variance <- function(
 decompose_structural_slope <- function(
     calibration,
     structural_r_squared = 0,
-    effect_sign = 1) {
+    effect_sign = 1,
+    study_structure) {
   structural_r_squared <- as.numeric(structural_r_squared[[1]])
   effect_sign <- sign(as.numeric(effect_sign[[1]]))
   if (!is.finite(structural_r_squared) ||
@@ -443,40 +444,75 @@ decompose_structural_slope <- function(
   }
 
   G_marginal <- calibration$G_marginal
+  total_intercept_variance <- G_marginal[1L, 1L]
   total_slope_variance <- G_marginal[2L, 2L]
   covariance_01 <- G_marginal[1L, 2L]
-  # With Var(x) = 1, gamma^2 is exactly the explained slope variance.
-  gamma <- effect_sign * sqrt(structural_r_squared * total_slope_variance)
-  residual_slope_variance <- total_slope_variance - gamma^2
-
-  # Preserve the marginal intercept-slope covariance. Since x is independent of
-  # b0, Cov(b0, b1) = Cov(b0, u1).
-  G_residual <- matrix(
-    c(
-      G_marginal[1L, 1L], covariance_01,
-      covariance_01, residual_slope_variance
-    ),
-    nrow = 2L,
-    dimnames = dimnames(G_marginal)
-  )
-  # A large structural R-squared can leave too little residual slope variance
-  # to support the requested covariance. Detect that before simulation.
-  eigenvalues <- eigen(G_residual, symmetric = TRUE, only.values = TRUE)$values
-  if (min(eigenvalues) <= sqrt(.Machine$double.eps)) {
-    stop(sprintf(
-      paste0(
-        "The requested structural R-squared %.3f is incompatible with the ",
-        "calibrated intercept-slope covariance. Residual G is not positive definite."
+  if (study_structure == "w") {
+    # With Var(x) = 1, gamma^2 is exactly the explained slope variance.
+    gamma <- effect_sign * sqrt(structural_r_squared * total_slope_variance)
+    residual_slope_variance <- total_slope_variance - gamma^2
+  
+    # Preserve the marginal intercept-slope covariance. Since x is independent of
+    # b0, Cov(b0, b1) = Cov(b0, u1).
+    G_residual <- matrix(
+      c(
+        G_marginal[1L, 1L], covariance_01,
+        covariance_01, residual_slope_variance
       ),
-      structural_r_squared
-    ))
+      nrow = 2L,
+      dimnames = dimnames(G_marginal)
+    )
+    # A large structural R-squared can leave too little residual slope variance
+    # to support the requested covariance. Detect that before simulation.
+    eigenvalues <- eigen(G_residual, symmetric = TRUE, only.values = TRUE)$values
+    if (min(eigenvalues) <= sqrt(.Machine$double.eps)) {
+      stop(sprintf(
+        paste0(
+          "The requested structural R-squared %.3f is incompatible with the ",
+          "calibrated intercept-slope covariance. Residual G is not positive definite."
+        ),
+        structural_r_squared
+      ))
+    }
+  
+    # This is the correlation expected by draw_random_effects() and
+    # simulate_dataset(); it is not the target marginal correlation.
+    residual_correlation <- covariance_01 / sqrt(
+      G_residual[1L, 1L] * G_residual[2L, 2L]
+    )
+  } else if (study_structure == "z") {
+    # det(G) = G11*G22 - G12^2, used in discriminant and feasibility floor.
+    # For a positive-definite G this is always positive.
+    det_G <- total_intercept_variance * total_slope_variance - covariance_01^2
+    
+    # Minimum attainable V_pred over all choices of beta2, achieved at
+    # beta2* = -beta1 * G12 / G22. This equals beta1^2 times the conditional
+    # variance of b0i given b1i -- the portion of beta1's contribution that
+    # no choice of beta2 can cancel.
+    v_pred_min <- fixed_params$beta1z^2 * det_G / total_slope_variance
+    r2_min <- v_pred_min / fixed_params$z_variance
+    
+    # Feasibility check: the target V_pred = r2_target * var_z must exceed the
+    # minimum. If not, no real beta2 exists that achieves the target.
+    if (structural_r_squared < r2_min) {
+      stop(sprintf(
+        "Infeasible cell: r2_target = %.4f is below the minimum attainable R^2 = %.4f",
+        structural_r_squared, r2_min
+      ))
+    }
+    
+    # Discriminant of the quadratic in beta2:
+    #   G22 * beta2^2 + 2*beta1*G12 * beta2 + (beta1^2*G11 - r2_target*var_z) = 0
+    # Discriminant = G22 * r2_target * var_z - beta1^2 * det_G
+    discriminant <- total_slope_variance * structural_r_squared * fixed_params$z_variance - fixed_params$beta1z^2 * det_G
+    
+    # Take the positive root (effect_sign = 1): beta2 adds to rather than
+    # subtracts from the variance contribution already made by beta1.
+    gamma <- (-fixed_params$beta1z * covariance_01 + sqrt(discriminant)) / total_slope_variance
+    
+    # This matrix is not used in structure "z", so we set it to NA for clarity
+    residual_slope_variance <- G_residual <- residual_correlation <- NA
   }
-
-  # This is the correlation expected by draw_random_effects() and
-  # simulate_dataset(); it is not the target marginal correlation.
-  residual_correlation <- covariance_01 / sqrt(
-    G_residual[1L, 1L] * G_residual[2L, 2L]
-  )
 
   list(
     gamma_x_on_slope = gamma,
@@ -699,7 +735,9 @@ calibrate_random_slope_condition <- function(
     highly_unbalanced_power = 3,
     r_spec = NULL,
     n_reference = 1001L,
-    effect_sign = 1) {
+    effect_sign = 1,
+    study_structure = c("w", "z")) {
+  study_structure <- match.arg(study_structure)
   # The reference profile is deterministic, so repeated calls for the same
   # condition return identical population parameters.
   reference <- make_reliability_reference_design(
@@ -727,7 +765,8 @@ calibrate_random_slope_condition <- function(
   structural <- decompose_structural_slope(
     calibration,
     structural_r_squared = structural_r_squared,
-    effect_sign = effect_sign
+    effect_sign = effect_sign,
+    study_structure = study_structure
   )
 
   list(

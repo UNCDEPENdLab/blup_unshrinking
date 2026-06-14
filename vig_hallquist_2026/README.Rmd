@@ -1,0 +1,61 @@
+---
+title: "Vig & Hallquist (2026)"
+output: html_document
+---
+
+# Notes
+
+- Previous studies mixed and matched the terms `n_id` and `num_clus` (for level 2 N),
+and `n_trial` and `clus_size` (for level 1 N). This study will use the cluster language since
+it's more general. Of note is that some functions from other studies (including in the
+"R/" folder) use the trial/id language, so there may be mismatches between arguments 
+(just something to aware of).
+
+- Some of the machinery is set-up for non-diagonal R. Since this isn't part of the
+current study, there may be parts of that lost -- so if those structures are included
+in future study there may need to be some work to fill in the gaps.
+
+# Study Models from other studies
+
+Note that the two workflows swap beta and gamma
+
+- Study 1: BLUP as Outcome
+Level 1: y_i = beta_0 + intercept_dev_subj + (beta_z + slope_dev_subj) * z_i + e_i,  for each cluster j
+Level 2: slope_dev_subj = gamma_x_on_slope * x_i + re[, "u1"],  where (u_{0i}, u_{1i}) ~ MVN(0, tau0, tau1, rho)
+                                              ^ I'm going to change this to w in later steps for clarity
+
+- Study 2: BLUP(s) as Predictor(s)
+Level 1: y = gamma0 + gamma1 * x + u[cid, ] + u[cid, ] * x + (r),  for each cluster j, r ~ N(0, sigma2, ...)
+Level 2: z = z_intercept + beta_zu0 * u[, 1] + beta_zu1 * u[, 2] + r, where r ~ N(0, ev_z)
+
+
+# This project key:
+all variances
+G: tau0, tau1, rho
+R: sigma, r_rho
+
+
+simulate_data_blup_as_outcome()
+L1: y = gamma0_outcome + u0 + gamma1_outcome * x +  u1 * x + r
+L2: u1 = beta0w + beta1w * w + e
+                    ^ effect of interest
+
+Convert:
+[x] beta_0 -> gamma0_outcome
+[x] beta_z -> gamma1_outcome
+[don't need this] beta0w = 0
+[x] gamma_x_on_slope -> beta1w
+
+simulate_data_blup_as_predictor()
+L1: y = gamma0 + u0 + gamma1 * x  + u1 * x + r
+L2: z = beta0z + beta1z * u0 + beta2z * u1 + e
+                                ^ effect ofs
+
+Convert:
+[x] z_intercept -> beta0z
+[x] beta_zu0 -> beta1z
+[x] beta_zu1 -> beta2z
+[x] sqrt(ev_z) -> sigma_e
+[x] gamma0 -> gamma0_predictor
+[x] gamma1 -> gamma1_predictor
+
