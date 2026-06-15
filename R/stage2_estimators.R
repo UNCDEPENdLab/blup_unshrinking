@@ -740,6 +740,7 @@ fuller_dual_result_columns <- function() {
   )
 }
 
+# TODO: fuller already does some type of scaling which should probably only be done if reporting_scale is NULL (?)
 rescale_fuller_to_population_sd <- function(result, reporting_scale) {
   reporting_scale <- as.numeric(reporting_scale[[1]])
   if (!is.finite(reporting_scale) || reporting_scale <= 0) {

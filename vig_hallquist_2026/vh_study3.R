@@ -125,6 +125,7 @@ run_study3_rep <- function(condition) {
     )
   )
 
+  # TODO: get rid of HC3 variants
   results <- dplyr::bind_rows(
     fit_observed_dual(
       stage2_df,
