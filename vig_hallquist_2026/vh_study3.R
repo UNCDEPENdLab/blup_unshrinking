@@ -9,7 +9,8 @@ study3_methods <- function() {
     "closed_form_on_closed_form",
     "fuller_closed_form",
     "fuller_alpha_stepdown_closed_form",
-    "lai_2spa", "lai_2spaa"
+    "lai_2spa", "lai_2spaa",
+    "sem"
   )
 }
 

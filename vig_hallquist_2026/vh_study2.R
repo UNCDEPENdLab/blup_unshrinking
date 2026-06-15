@@ -10,7 +10,8 @@ study2_methods <- function() {
     "lai_2spa",
     "naive_slope_blup",
     "centered_slope_blup",
-    "closed_form_slope"
+    "closed_form_slope",
+    "msem"
   )
 }
 
