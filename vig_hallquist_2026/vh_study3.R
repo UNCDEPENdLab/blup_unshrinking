@@ -3,10 +3,10 @@
 study3_methods <- function() {
   c(
     "oracle_dual",
-    "naive_blup_on_blup", "naive_blup_on_blup_hc3",
-    "closed_form_on_blup", "closed_form_on_blup_hc3",
-    "blup_on_closed_form", "blup_on_closed_form_hc3",
-    "closed_form_on_closed_form", "closed_form_on_closed_form_hc3",
+    "naive_blup_on_blup",
+    "closed_form_on_blup",
+    "blup_on_closed_form",
+    "closed_form_on_closed_form",
     "fuller_closed_form",
     "fuller_alpha_stepdown_closed_form",
     "lai_2spa", "lai_2spaa"

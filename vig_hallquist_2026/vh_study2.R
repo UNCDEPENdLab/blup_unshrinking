@@ -3,14 +3,14 @@
 study2_methods <- function() {
   c(
     "oracle_dual",
-    "naive_dual_blup", "naive_dual_blup_hc3",
-    "closed_form_dual", "closed_form_dual_hc3",
+    "naive_dual_blup",
+    "closed_form_dual",
     "fuller_closed_form",
     "fuller_alpha_stepdown_closed_form",
-    "lai_2spa", "lai_2spaa",
-    "naive_slope_blup", "naive_slope_blup_hc3",
-    "centered_slope_blup", "centered_slope_blup_hc3",
-    "closed_form_slope", "closed_form_slope_hc3"
+    "lai_2spa",
+    "naive_slope_blup",
+    "centered_slope_blup",
+    "closed_form_slope"
   )
 }
 
