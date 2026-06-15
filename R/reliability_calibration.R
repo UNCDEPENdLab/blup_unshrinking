@@ -6,7 +6,8 @@
 # 1. Solve for the marginal random-slope variance that produces a requested
 #    expected posterior reliability under the planned Z and R matrices.
 # 2. Decompose that marginal slope into `gamma * x + u1` for a requested
-#    structural R-squared, preserving the marginal intercept-slope covariance.
+#    standardized structural coefficient, preserving the marginal
+#    intercept-slope covariance.
 #
 # The target first-stage covariance and the covariance used to draw residual
 # random effects are therefore different objects:
@@ -397,21 +398,21 @@ calibrate_slope_variance <- function(
   )
 }
 
-#' Decompose a calibrated marginal slope using a structural R-squared.
+#' Decompose a calibrated marginal slope using a standardized coefficient.
 #'
 #' @details
 #' The first-stage model sees a total slope
 #'
 #' `b1_i = gamma * x_i + u1_i`,
 #'
-#' where `Var(x) = 1` and `x` is independent of `(b0, u1)`. If structural
-#' `R^2` is the fraction of marginal slope variance explained by `x`, then
+#' where `Var(x) = 1` and `x` is independent of `(b0, u1)`. If
+#' `standardized_beta = gamma / SD(b1)`, then
 #'
-#' `gamma^2 = R^2 * Var(b1)`
+#' `gamma = standardized_beta * SD(b1)`
 #'
 #' and
 #'
-#' `Var(u1) = (1 - R^2) * Var(b1)`.
+#' `Var(u1) = (1 - standardized_beta^2) * Var(b1)`.
 #'
 #' The marginal covariance `Cov(b0, b1)` is preserved as `Cov(b0, u1)`.
 #' Because the residual slope variance is smaller than the marginal slope
@@ -419,10 +420,8 @@ calibrate_slope_variance <- function(
 #' differs from the marginal correlation used during reliability calibration.
 #'
 #' @param calibration Output from `calibrate_slope_variance()`.
-#' @param structural_r_squared Fraction of marginal slope variance explained by
-#'   the standardized structural predictor; must be in `[0, 1)`.
-#' @param effect_sign Sign of the structural coefficient. Positive values yield
-#'   a positive coefficient and negative values yield a negative coefficient.
+#' @param standardized_beta Standardized coefficient for the structural
+#'   predictor. Its absolute value must be below one.
 #'
 #' @return A list containing the raw structural coefficient, standardized beta,
 #'   residual slope variance and standard deviation, preserved covariance,
@@ -430,93 +429,47 @@ calibrate_slope_variance <- function(
 #'   `(b0, u1)`.
 decompose_structural_slope <- function(
     calibration,
-    structural_r_squared = 0,
-    effect_sign = 1,
-    study_structure) {
-  structural_r_squared <- as.numeric(structural_r_squared[[1]])
-  effect_sign <- sign(as.numeric(effect_sign[[1]]))
-  if (!is.finite(structural_r_squared) ||
-      structural_r_squared < 0 || structural_r_squared >= 1) {
-    stop("`structural_r_squared` must be in [0, 1).")
-  }
-  if (effect_sign == 0) {
-    stop("`effect_sign` must be positive or negative.")
+    standardized_beta = 0) {
+  standardized_beta <- as.numeric(standardized_beta[[1]])
+  if (!is.finite(standardized_beta) || abs(standardized_beta) >= 1) {
+    stop("`standardized_beta` must be finite with absolute value below one.")
   }
 
   G_marginal <- calibration$G_marginal
-  total_intercept_variance <- G_marginal[1L, 1L]
   total_slope_variance <- G_marginal[2L, 2L]
   covariance_01 <- G_marginal[1L, 2L]
-  if (study_structure == "w") {
-    # With Var(x) = 1, gamma^2 is exactly the explained slope variance.
-    gamma <- effect_sign * sqrt(structural_r_squared * total_slope_variance)
-    residual_slope_variance <- total_slope_variance - gamma^2
-  
-    # Preserve the marginal intercept-slope covariance. Since x is independent of
-    # b0, Cov(b0, b1) = Cov(b0, u1).
-    G_residual <- matrix(
-      c(
-        G_marginal[1L, 1L], covariance_01,
-        covariance_01, residual_slope_variance
+  structural_r_squared <- standardized_beta^2
+  gamma <- standardized_beta * sqrt(total_slope_variance)
+  residual_slope_variance <- total_slope_variance - gamma^2
+
+  # Preserve the marginal intercept-slope covariance. Since x is independent of
+  # b0, Cov(b0, b1) = Cov(b0, u1).
+  G_residual <- matrix(
+    c(
+      G_marginal[1L, 1L], covariance_01,
+      covariance_01, residual_slope_variance
+    ),
+    nrow = 2L,
+    dimnames = dimnames(G_marginal)
+  )
+  eigenvalues <- eigen(G_residual, symmetric = TRUE, only.values = TRUE)$values
+  if (min(eigenvalues) <= sqrt(.Machine$double.eps)) {
+    stop(sprintf(
+      paste0(
+        "The requested standardized beta %.3f is incompatible with the ",
+        "calibrated intercept-slope covariance. Residual G is not positive definite."
       ),
-      nrow = 2L,
-      dimnames = dimnames(G_marginal)
-    )
-    # A large structural R-squared can leave too little residual slope variance
-    # to support the requested covariance. Detect that before simulation.
-    eigenvalues <- eigen(G_residual, symmetric = TRUE, only.values = TRUE)$values
-    if (min(eigenvalues) <= sqrt(.Machine$double.eps)) {
-      stop(sprintf(
-        paste0(
-          "The requested structural R-squared %.3f is incompatible with the ",
-          "calibrated intercept-slope covariance. Residual G is not positive definite."
-        ),
-        structural_r_squared
-      ))
-    }
-  
-    # This is the correlation expected by draw_random_effects() and
-    # simulate_dataset(); it is not the target marginal correlation.
-    residual_correlation <- covariance_01 / sqrt(
-      G_residual[1L, 1L] * G_residual[2L, 2L]
-    )
-  } else if (study_structure == "z") {
-    # det(G) = G11*G22 - G12^2, used in discriminant and feasibility floor.
-    # For a positive-definite G this is always positive.
-    det_G <- total_intercept_variance * total_slope_variance - covariance_01^2
-    
-    # Minimum attainable V_pred over all choices of beta2, achieved at
-    # beta2* = -beta1 * G12 / G22. This equals beta1^2 times the conditional
-    # variance of b0i given b1i -- the portion of beta1's contribution that
-    # no choice of beta2 can cancel.
-    v_pred_min <- fixed_params$beta1z^2 * det_G / total_slope_variance
-    r2_min <- v_pred_min / fixed_params$z_variance
-    
-    # Feasibility check: the target V_pred = r2_target * var_z must exceed the
-    # minimum. If not, no real beta2 exists that achieves the target.
-    if (structural_r_squared < r2_min) {
-      stop(sprintf(
-        "Infeasible cell: r2_target = %.4f is below the minimum attainable R^2 = %.4f",
-        structural_r_squared, r2_min
-      ))
-    }
-    
-    # Discriminant of the quadratic in beta2:
-    #   G22 * beta2^2 + 2*beta1*G12 * beta2 + (beta1^2*G11 - r2_target*var_z) = 0
-    # Discriminant = G22 * r2_target * var_z - beta1^2 * det_G
-    discriminant <- total_slope_variance * structural_r_squared * fixed_params$z_variance - fixed_params$beta1z^2 * det_G
-    
-    # Take the positive root (effect_sign = 1): beta2 adds to rather than
-    # subtracts from the variance contribution already made by beta1.
-    gamma <- (-fixed_params$beta1z * covariance_01 + sqrt(discriminant)) / total_slope_variance
-    
-    # This matrix is not used in structure "z", so we set it to NA for clarity
-    residual_slope_variance <- G_residual <- residual_correlation <- NA
+      standardized_beta
+    ))
   }
+
+  residual_correlation <- covariance_01 / sqrt(
+    G_residual[1L, 1L] * G_residual[2L, 2L]
+  )
 
   list(
     gamma_x_on_slope = gamma,
-    standardized_beta = effect_sign * sqrt(structural_r_squared),
+    standardized_beta = standardized_beta,
     structural_r_squared = structural_r_squared,
     slope_variance_marginal = total_slope_variance,
     slope_variance_residual = residual_slope_variance,
@@ -524,6 +477,222 @@ decompose_structural_slope <- function(
     intercept_slope_covariance_residual = covariance_01,
     intercept_slope_correlation_residual = residual_correlation,
     G_residual = G_residual
+  )
+}
+
+#' Calibrate a standardized latent-slope effect between two growth processes.
+#'
+#' @details
+#' The predictor process has marginal random-effect covariance `G_predictor`.
+#' The outcome process has a separately reliability-calibrated marginal
+#' covariance `G_outcome`. The outcome slope is generated as
+#'
+#' `b_q1 = theta0 * b_y0 + theta1 * b_y1 + v`.
+#'
+#' Both structural coefficients are specified on a fully standardized scale.
+#' The residual `(b_q0, v)` covariance preserves the calibrated marginal
+#' covariance between the outcome intercept and outcome slope. Predictor-process
+#' random effects are independent of this residual outcome block.
+calibrate_dual_process_effect <- function(
+    G_predictor,
+    G_outcome,
+    standardized_slope_beta,
+    structural_target = c("slope_only", "intercept_slope"),
+    nuisance_intercept_standardized_beta = 0) {
+  structural_target <- match.arg(structural_target)
+  standardized_slope_beta <- as.numeric(standardized_slope_beta[[1]])
+  nuisance_intercept_standardized_beta <-
+    as.numeric(nuisance_intercept_standardized_beta[[1]])
+
+  validate_G <- function(G, name) {
+    if (!all(dim(G) == c(2L, 2L)) || any(!is.finite(G)) ||
+        min(eigen(G, symmetric = TRUE, only.values = TRUE)$values) <= 0) {
+      stop(sprintf("`%s` must be a finite positive-definite 2 x 2 matrix.", name))
+    }
+  }
+  validate_G(G_predictor, "G_predictor")
+  validate_G(G_outcome, "G_outcome")
+  if (!is.finite(standardized_slope_beta) ||
+      !is.finite(nuisance_intercept_standardized_beta)) {
+    stop("Standardized structural coefficients must be finite.")
+  }
+
+  outcome_slope_sd <- sqrt(G_outcome[2L, 2L])
+  predictor_intercept_sd <- sqrt(G_predictor[1L, 1L])
+  predictor_slope_sd <- sqrt(G_predictor[2L, 2L])
+  theta0_std <- if (identical(structural_target, "slope_only")) {
+    0
+  } else {
+    nuisance_intercept_standardized_beta
+  }
+  theta0 <- theta0_std * outcome_slope_sd / predictor_intercept_sd
+  theta1 <- standardized_slope_beta * outcome_slope_sd / predictor_slope_sd
+  coefficients <- c(intercept = theta0, slope = theta1)
+  structural_variance <- drop(
+    t(coefficients) %*% G_predictor %*% coefficients
+  )
+  residual_slope_variance <- G_outcome[2L, 2L] - structural_variance
+  outcome_covariance <- G_outcome[1L, 2L]
+  G_outcome_residual <- matrix(
+    c(
+      G_outcome[1L, 1L], outcome_covariance,
+      outcome_covariance, residual_slope_variance
+    ),
+    nrow = 2L,
+    dimnames = list(c("q_intercept", "q_slope_residual"),
+                    c("q_intercept", "q_slope_residual"))
+  )
+
+  tolerance <- sqrt(.Machine$double.eps) * max(1, G_outcome[2L, 2L])
+  residual_eigenvalues <- eigen(
+    G_outcome_residual,
+    symmetric = TRUE,
+    only.values = TRUE
+  )$values
+  if (residual_slope_variance <= tolerance ||
+      min(residual_eigenvalues) <= tolerance) {
+    stop(sprintf(
+      paste0(
+        "Infeasible dual-process condition: standardized theta0=%.3f and ",
+        "theta1=%.3f leave an inadmissible residual outcome-slope covariance."
+      ),
+      theta0_std, standardized_slope_beta
+    ))
+  }
+
+  predictor_to_outcome_slope <- drop(G_predictor %*% coefficients)
+  G_joint <- matrix(
+    0,
+    nrow = 4L,
+    ncol = 4L,
+    dimnames = list(
+      c("y_intercept", "y_slope", "q_intercept", "q_slope"),
+      c("y_intercept", "y_slope", "q_intercept", "q_slope")
+    )
+  )
+  G_joint[1:2, 1:2] <- G_predictor
+  G_joint[3:4, 3:4] <- G_outcome
+  G_joint[1:2, 4] <- predictor_to_outcome_slope
+  G_joint[4, 1:2] <- predictor_to_outcome_slope
+  if (min(eigen(G_joint, symmetric = TRUE, only.values = TRUE)$values) <= tolerance) {
+    stop("Calibrated dual-process marginal covariance is not positive definite.")
+  }
+
+  focal_predictor_variance <- if (identical(structural_target, "slope_only")) {
+    G_predictor[2L, 2L]
+  } else {
+    G_predictor[2L, 2L] -
+      G_predictor[1L, 2L]^2 / G_predictor[1L, 1L]
+  }
+
+  list(
+    structural_target = structural_target,
+    standardized_intercept_beta = theta0_std,
+    standardized_slope_beta = standardized_slope_beta,
+    theta0_intercept = theta0,
+    theta1_slope = theta1,
+    structural_variance = structural_variance,
+    outcome_slope_residual_variance = residual_slope_variance,
+    outcome_residual_correlation = outcome_covariance / sqrt(
+      G_outcome_residual[1L, 1L] * G_outcome_residual[2L, 2L]
+    ),
+    total_structural_r_squared =
+      structural_variance / G_outcome[2L, 2L],
+    focal_unique_r_squared =
+      theta1^2 * focal_predictor_variance / G_outcome[2L, 2L],
+    G_outcome_residual = G_outcome_residual,
+    G_joint_marginal = G_joint
+  )
+}
+
+#' Calibrate a focal standardized random-slope effect on an external outcome.
+#'
+#' @details
+#' For BLUPs used as predictors, first-stage reliability determines the
+#' marginal random-effect covariance `G`; the structural model does not alter
+#' that covariance. The focal effect is therefore calibrated directly as the
+#' standardized regression coefficient
+#'
+#' `beta2_std = beta2 * sqrt(Var(b1)) / sqrt(Var(z))`.
+#'
+#' This parameterization isolates the slope coefficient when a fixed nuisance
+#' intercept coefficient is also present. In contrast, targeting total
+#' structural R-squared combines the intercept, slope, and their covariance and
+#' cannot represent null or small focal slope effects below the nuisance-effect
+#' variance floor.
+#'
+#' @param G_marginal Positive-definite `2 x 2` marginal random-effect
+#'   covariance matrix.
+#' @param standardized_slope_beta Target standardized coefficient for the
+#'   random slope.
+#' @param structural_target Either `"slope_only"` or `"intercept_slope"`.
+#' @param nuisance_intercept_beta Raw coefficient for the random intercept in
+#'   the dual-predictor target. Ignored for the slope-only target.
+#' @param outcome_variance Fixed marginal variance of the external outcome.
+#'
+#' @return A list with raw coefficients, residual outcome variance, total
+#' structural R-squared, and the focal slope's unique variance fraction.
+calibrate_blup_predictor_effect <- function(
+    G_marginal,
+    standardized_slope_beta,
+    structural_target = c("slope_only", "intercept_slope"),
+    nuisance_intercept_beta = 0,
+    outcome_variance = 1) {
+  structural_target <- match.arg(structural_target)
+  standardized_slope_beta <- as.numeric(standardized_slope_beta[[1]])
+  nuisance_intercept_beta <- as.numeric(nuisance_intercept_beta[[1]])
+  outcome_variance <- as.numeric(outcome_variance[[1]])
+
+  if (!all(dim(G_marginal) == c(2L, 2L)) ||
+      any(!is.finite(G_marginal)) ||
+      min(eigen(G_marginal, symmetric = TRUE, only.values = TRUE)$values) <= 0) {
+    stop("`G_marginal` must be a finite positive-definite 2 x 2 matrix.")
+  }
+  if (!is.finite(standardized_slope_beta) ||
+      !is.finite(nuisance_intercept_beta) ||
+      !is.finite(outcome_variance) || outcome_variance <= 0) {
+    stop("Structural coefficients must be finite and `outcome_variance` must be positive.")
+  }
+
+  beta1 <- if (identical(structural_target, "slope_only")) {
+    0
+  } else {
+    nuisance_intercept_beta
+  }
+  beta2 <- standardized_slope_beta *
+    sqrt(outcome_variance / G_marginal[2L, 2L])
+  coefficients <- c(intercept = beta1, slope = beta2)
+  predictor_variance <- drop(t(coefficients) %*% G_marginal %*% coefficients)
+  residual_variance <- outcome_variance - predictor_variance
+
+  tolerance <- sqrt(.Machine$double.eps) * max(1, outcome_variance)
+  if (residual_variance <= tolerance) {
+    stop(sprintf(
+      paste0(
+        "Infeasible predictor model: explained variance %.6f leaves ",
+        "non-positive residual variance for outcome variance %.6f."
+      ),
+      predictor_variance, outcome_variance
+    ))
+  }
+
+  focal_predictor_variance <- if (identical(structural_target, "slope_only")) {
+    G_marginal[2L, 2L]
+  } else {
+    G_marginal[2L, 2L] -
+      G_marginal[1L, 2L]^2 / G_marginal[1L, 1L]
+  }
+  focal_unique_r_squared <- beta2^2 * focal_predictor_variance / outcome_variance
+
+  list(
+    structural_target = structural_target,
+    standardized_slope_beta = standardized_slope_beta,
+    beta1_intercept = beta1,
+    beta2_slope = beta2,
+    predictor_variance = predictor_variance,
+    outcome_residual_variance = residual_variance,
+    total_structural_r_squared = predictor_variance / outcome_variance,
+    focal_unique_r_squared = focal_unique_r_squared
   )
 }
 
@@ -677,7 +846,7 @@ make_reliability_reference_design <- function(
   )
 }
 
-#' Calibrate all simulation inputs for one reliability/R-squared condition.
+#' Calibrate all simulation inputs for one reliability/beta condition.
 #'
 #' @details
 #' This is the high-level condition-calibration entry point used by simulation
@@ -685,7 +854,7 @@ make_reliability_reference_design <- function(
 #'
 #' 1. constructs a deterministic reference distribution of cluster designs;
 #' 2. solves for the marginal slope variance that attains the reliability target;
-#' 3. decomposes the marginal slope according to structural `R^2`;
+#' 3. decomposes the marginal slope according to standardized beta;
 #' 4. returns the residual slope SD and residual correlation expected by
 #'    `simulate_dataset()`.
 #'
@@ -695,8 +864,8 @@ make_reliability_reference_design <- function(
 #' outcomes vary across replications.
 #'
 #' @param target_reliability Desired expected posterior slope reliability.
-#' @param structural_r_squared Fraction of marginal slope variance explained by
-#'   the standardized cluster-level predictor.
+#' @param standardized_beta Standardized effect of the cluster-level predictor
+#'   on the marginal random slope.
 #' @param marginal_rho Target correlation between the total random intercept and
 #'   total random slope in the first-stage marginal `G`.
 #' @param tau0 Positive marginal random-intercept standard deviation.
@@ -710,12 +879,10 @@ make_reliability_reference_design <- function(
 #' @param r_spec Residual covariance specification.
 #' @param n_reference Number of deterministic reference quantiles used for
 #'   unbalanced calibration.
-#' @param effect_sign Sign of the structural coefficient.
-#'
 #' @return A list containing:
 #'
 #' - target and achieved posterior reliability;
-#' - structural `R^2` and standardized beta;
+#' - standardized beta and its derived structural `R^2`;
 #' - marginal and residual intercept-slope correlations;
 #' - cell-specific `gamma_x_on_slope`;
 #' - marginal and residual slope variances;
@@ -724,7 +891,7 @@ make_reliability_reference_design <- function(
 #' - summaries of the deterministic reference count profile.
 calibrate_random_slope_condition <- function(
     target_reliability,
-    structural_r_squared,
+    standardized_beta,
     marginal_rho,
     tau0,
     mean_n_trial,
@@ -734,10 +901,7 @@ calibrate_random_slope_condition <- function(
     highly_unbalanced_min_n_trial = 2L,
     highly_unbalanced_power = 3,
     r_spec = NULL,
-    n_reference = 1001L,
-    effect_sign = 1,
-    study_structure = c("w", "z")) {
-  study_structure <- match.arg(study_structure)
+    n_reference = 1001L) {
   # The reference profile is deterministic, so repeated calls for the same
   # condition return identical population parameters.
   reference <- make_reliability_reference_design(
@@ -764,9 +928,7 @@ calibrate_random_slope_condition <- function(
   # the existing data generator already accepts.
   structural <- decompose_structural_slope(
     calibration,
-    structural_r_squared = structural_r_squared,
-    effect_sign = effect_sign,
-    study_structure = study_structure
+    standardized_beta = standardized_beta
   )
 
   list(
@@ -786,5 +948,70 @@ calibrate_random_slope_condition <- function(
     reference_min_n_trial = reference$min_trial_count,
     reference_max_n_trial = reference$max_trial_count,
     calibration_reference_n = length(reference$trial_counts)
+  )
+}
+
+#' Calibrate reliability and a standardized BLUP-as-predictor effect.
+#'
+#' This is the predictor-side counterpart to
+#' `calibrate_random_slope_condition()`. It retains the full marginal `G` for
+#' data generation and calibrates the external-outcome coefficient without
+#' decomposing the random slope.
+calibrate_blup_predictor_condition <- function(
+    target_reliability,
+    standardized_slope_beta,
+    structural_target,
+    marginal_rho,
+    tau0,
+    mean_n_trial,
+    sigma,
+    nuisance_intercept_beta = 0,
+    outcome_variance = 1,
+    balance_mode = "balanced",
+    min_n_trial = 2L,
+    highly_unbalanced_min_n_trial = 2L,
+    highly_unbalanced_power = 3,
+    r_spec = NULL,
+    n_reference = 1001L) {
+  reference <- make_reliability_reference_design(
+    mean_n_trial = mean_n_trial,
+    sigma = sigma,
+    balance_mode = balance_mode,
+    min_n_trial = min_n_trial,
+    highly_unbalanced_min_n_trial = highly_unbalanced_min_n_trial,
+    highly_unbalanced_power = highly_unbalanced_power,
+    r_spec = r_spec,
+    n_reference = n_reference
+  )
+  reliability <- calibrate_slope_variance(
+    target_reliability = target_reliability,
+    Z_list = reference$Z_list,
+    R_list = reference$R_list,
+    weights = reference$count_weights,
+    intercept_variance = tau0^2,
+    intercept_slope_correlation = marginal_rho
+  )
+  structural <- calibrate_blup_predictor_effect(
+    G_marginal = reliability$G_marginal,
+    standardized_slope_beta = standardized_slope_beta,
+    structural_target = structural_target,
+    nuisance_intercept_beta = nuisance_intercept_beta,
+    outcome_variance = outcome_variance
+  )
+
+  c(
+    list(
+      target_reliability = reliability$target_reliability,
+      achieved_reliability = reliability$achieved_reliability,
+      marginal_rho = as.numeric(marginal_rho[[1]]),
+      slope_variance_marginal = reliability$slope_variance_marginal,
+      tau1_marginal = sqrt(reliability$slope_variance_marginal),
+      G_marginal = reliability$G_marginal,
+      reference_mean_n_trial = reference$mean_trial_count,
+      reference_min_n_trial = reference$min_trial_count,
+      reference_max_n_trial = reference$max_trial_count,
+      calibration_reference_n = length(reference$trial_counts)
+    ),
+    structural
   )
 }

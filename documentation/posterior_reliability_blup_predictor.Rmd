@@ -1,9 +1,28 @@
 ---
-title: "Calibrating the Structural Outcome Model"
+title: "Calibrating the BLUP-as-Predictor Structural Model"
 output: html_document
 ---
 
-# From Posterior Reliability to a Structural Outcome Model
+# Recommendation
+
+For the primary BLUP-as-predictor study, calibrate the focal effect as a
+**standardized regression coefficient**, not as total structural $R^2$.
+
+The planned effect-size factor is the effect of the random slope on the
+external outcome: $0$, $.2$, $.4$, and $.6$. When the random intercept is also
+included with a fixed nonzero coefficient, total $R^2$ no longer isolates that
+focal effect. It combines:
+
+1. variance explained by the random intercept;
+2. variance explained by the random slope; and
+3. their covariance contribution.
+
+Consequently, the fixed intercept effect imposes a positive floor on total
+$R^2$, making some null and small slope-effect cells impossible. The
+standardized-beta parameterization avoids that problem and permits all planned
+effect-size conditions.
+
+# Primary Calibration: Standardized Focal Beta
 
 Consider the two-stage model in which first-stage random effects serve as
 predictors of a cluster-level outcome $z_i$.
@@ -33,31 +52,87 @@ where $b_{0i}$ and $b_{1i}$ are the random intercept and slope for cluster $i$,
 $\beta_1$ is a fixed nuisance coefficient, and $\beta_2$ is the calibrated
 coefficient of interest.
 
-The total variance of $z_i$ is fixed to $\sigma_z^2$ across all conditions:
+The total variance of $z_i$ is fixed to $\sigma_z^2$ across all conditions.
+Let $\beta_{2,\mathrm{std}}$ denote the planned standardized slope coefficient:
 
 $$
-\text{Var}(z_i) = V_{\text{pred}} + \sigma_u^2 = \sigma_z^2.
+\beta_{2,\mathrm{std}}
+= \beta_2 \frac{\sqrt{G_{22}}}{\sigma_z}.
 $$
 
-## 2. The Variance of the Linear Predictor
-
-$V_{\text{pred}}$ is the variance of the predicted part of $z_i$:
+Therefore:
 
 $$
-V_{\text{pred}} = \text{Var}(\beta_1 b_{0i} + \beta_2 b_{1i}).
+\beta_2
+= \beta_{2,\mathrm{std}}\frac{\sigma_z}{\sqrt{G_{22}}}.
 $$
 
-Since $(b_{0i}, b_{1i})^\top \sim N(\mathbf{0}, \mathbf{G}_{\text{marginal}})$,
-this is a quadratic form:
+For the slope-only target, set $\beta_1=0$. For the intercept-plus-slope target,
+set $\beta_1$ to its fixed nuisance value. Then compute:
 
 $$
 V_{\text{pred}}
-= \boldsymbol{\beta}^\top \mathbf{G}_{\text{marginal}}\, \boldsymbol{\beta}
-= \beta_1^2 G_{11} + 2\beta_1\beta_2 G_{12} + \beta_2^2 G_{22}.
+= \beta_1^2 G_{11} + 2\beta_1\beta_2 G_{12} + \beta_2^2 G_{22},
 $$
 
-The structural $R^2$ is the proportion of total variance explained by the
-predictors:
+and:
+
+$$
+\sigma_u^2 = \sigma_z^2 - V_{\text{pred}}.
+$$
+
+The condition is feasible whenever $\sigma_u^2>0$. With the current nuisance
+coefficient and planned standardized slope effects, all combinations of
+$\beta_{2,\mathrm{std}}\in\{0,.2,.4,.6\}$ and
+$\rho\in\{-.5,0,.5\}$ are feasible.
+
+The total structural $R^2$ is retained as a derived diagnostic:
+
+$$
+R^2_{\text{total}} = \frac{V_{\text{pred}}}{\sigma_z^2}.
+$$
+
+It should not be treated as the manipulated focal effect in the dual-predictor
+conditions.
+
+For estimation, the primary second-stage model always includes both latent
+random effects, even when the data-generating intercept coefficient is zero:
+
+$$
+z_i = \beta_0 + \beta_1 b_{0i} + \beta_2 b_{1i} + u_i.
+$$
+
+Only the standardized slope coefficient is reported. Slope-only regressions
+are retained as diagnostics for the contamination produced by omitting the
+random intercept when $b_{0i}$ and $b_{1i}$ are correlated.
+
+For Monte Carlo comparison, every estimator is converted to this standardized
+scale using the same calibrated population SD of $b_{1i}$. This prevents
+method-specific estimates of the latent slope variance from changing the
+estimand being compared.
+
+## Calibration Workflow
+
+For each first-stage condition:
+
+1. Calibrate $\mathbf{G}_{\text{marginal}}$ from the posterior-reliability
+   target.
+2. Select the structural target.
+3. Set $\beta_1=0$ for `slope_only`, or to the fixed nuisance coefficient for
+   `intercept_slope`.
+4. Convert the target standardized slope coefficient to raw $\beta_2$.
+5. Compute $V_{\text{pred}}$, total $R^2$, and $\sigma_u^2$.
+6. Verify that $\sigma_u^2>0$.
+7. Draw the random effects from $\mathbf{G}_{\text{marginal}}$ and generate the
+   external outcome.
+
+# Optional Alternative: Targeting Total Structural $R^2$
+
+The quadratic calibration below is mathematically valid when the scientific
+design explicitly targets **total model $R^2$**. It is not recommended for the
+primary focal-effect grid.
+
+## The Variance of the Linear Predictor
 
 $$
 R^2_{\text{struct}} = \frac{V_{\text{pred}}}{\sigma_z^2}.
@@ -71,7 +146,7 @@ $$
 V_{\text{pred}} = R^2_{\text{target}} \cdot \sigma_z^2.
 $$
 
-## 3. Calibrating $\beta_2$
+## Calibrating $\beta_2$ From Total $R^2$
 
 After first-stage reliability calibration, $\mathbf{G}_{\text{marginal}}$ is
 known. With $\beta_1$ and $\sigma_z^2$ fixed, setting $V_{\text{pred}} =
@@ -104,7 +179,7 @@ $$
 
 Note that $\sigma_u^2$ does not depend on $\mathbf{G}_{\text{marginal}}$.
 
-## 4. Feasibility
+## Feasibility
 
 The discriminant must be non-negative. The minimum attainable $V_{\text{pred}}$
 over all choices of $\beta_2$ is achieved at
@@ -127,7 +202,7 @@ $$
 If $R^2_{\text{target}} < R^2_{\min}$, no real $\beta_2$ exists. Such cells
 must be flagged and reported rather than silently modified.
 
-## 5. Relationship Between $\mathbf{G}_{\text{residual}}$ and $\mathbf{G}_{\text{marginal}}$
+## Relationship Between $\mathbf{G}_{\text{residual}}$ and $\mathbf{G}_{\text{marginal}}$
 
 In the original workflow, the random slope was the **outcome** of a structural
 model $b_{1i} = \gamma x_i + u_{1i}$. The random effects were drawn from a
@@ -146,30 +221,7 @@ $$
 
 The distinction between the two matrices disappears entirely in this design.
 
-## 6. Calibration Workflow
-
-For each first-stage condition (cluster size, time design, residual structure,
-reliability, and correlation):
-
-1. Calibrate $\mathbf{G}_{\text{marginal}}$ from the reliability target
-   following the first-stage workflow.
-2. Fix $\beta_1$, $\sigma_z^2$, and $R^2_{\text{target}}$.
-3. Compute $R^2_{\min}$ and check feasibility.
-4. Solve for $\beta_2$ using the quadratic formula above.
-5. Set $\sigma_u^2 = \sigma_z^2(1 - R^2_{\text{target}})$.
-6. Draw $(b_{0i}, b_{1i})^\top \sim N(\mathbf{0}, \mathbf{G}_{\text{marginal}})$
-   and generate:
-
-$$
-z_i = \beta_0 + \beta_1 b_{0i} + \beta_2 b_{1i} + u_i,
-\qquad u_i \sim N(0, \sigma_u^2).
-$$
-
-As in the first-stage calibration, these parameters are calibrated once when
-the condition manifest is constructed and held fixed across all Monte Carlo
-replications of that condition.
-
-## 7. Verification
+## Verification
 
 For every calibrated cell:
 
@@ -181,7 +233,7 @@ For every calibrated cell:
    $\sigma_z^2$ and its empirical $R^2$ approaches $R^2_{\text{target}}$.
 4. Confirm $\mathbf{G}_{\text{marginal}}$ is positive definite.
 
-## 8. Implementation
+## Total-$R^2$ Implementation
 
 ```r
 calibrate_beta2 <- function(beta1, G_marginal, r2_target, var_z = 1) {

@@ -211,15 +211,12 @@ where $c$ indexes simulation cells. A raw value such as $\gamma=.4$ can
 represent a moderate effect in one cell, an extremely large effect in another,
 or an impossible effect if $\gamma^2>G_{\text{marginal},22,c}$.
 
-To resolve this, we must parameterize the simulation using a scale-free metric.
-We can define the structural effect by the proportion of total slope variance
-explained by $x_i$:
+To resolve this, parameterize the simulation using the standardized coefficient:
 
 $$
-R_{\text{struct}}^2
+\beta_{\text{std}}
 =
-\frac{\gamma^2}
-{G_{\text{marginal},22}}.
+\frac{\gamma}{\sqrt{G_{\text{marginal},22}}}.
 $$
 
 For a single standardized predictor, this proportion of variance explained is
@@ -234,12 +231,9 @@ $$
 R_{\text{struct}}^2 = \beta_{\text{std}}^2.
 $$
 
-We choose to parameterize the effect-size grid using $R_{\text{struct}}^2$
-because the calibration equations fundamentally deal with partitioning variance,
-and $R_{\text{struct}}^2$ naturally extends to models with multiple predictors.
-
-The original standardized-effect targets
-$\{0,.2,.4,.6\}$ therefore correspond exactly to
+The effect-size grid is parameterized directly using the original standardized
+targets $\{0,.2,.4,.6\}$. Structural $R^2$ remains a derived variance-allocation
+quantity in this one-predictor model:
 
 | Standardized effect $\beta_{\text{std}}$ | Structural $R^2$ |
 |---:|---:|
@@ -248,10 +242,10 @@ $\{0,.2,.4,.6\}$ therefore correspond exactly to
 | .40 | .16 |
 | .60 | .36 |
 
-The amended effect-size grid is
+The effect-size grid is
 
 $$
-\boxed{R_{\text{struct}}^2\in\{0,.04,.16,.36\}}.
+\boxed{\beta_{\text{std}}\in\{0,.2,.4,.6\}}.
 $$
 
 This preserves the original intended standardized effects while allowing the
@@ -262,8 +256,7 @@ Calibrate the **marginal** slope variance first. For each cell, set
 $$
 \gamma_c
 =
-\operatorname{sign}(\beta_{\text{std}})
-\sqrt{R_{\text{struct}}^2\,G_{\text{marginal},22}},
+\beta_{\text{std}}\sqrt{G_{\text{marginal},22}},
 $$
 
 and
@@ -324,12 +317,12 @@ When the marginal intercept-slope correlation is $\rho$, positive definiteness
 of $\mathbf{G}_{\text{residual}}$ additionally requires
 
 $$
-R_{\text{struct}}^2 < 1-\rho^2.
+\beta_{\text{std}}^2 < 1-\rho^2.
 $$
 
-The largest planned structural effect is $.36$. With $|\rho|=.5$,
-$1-\rho^2=.75$, so all four amended structural-effect levels satisfy this
-condition.
+The largest planned standardized beta is $.60$, whose derived structural
+$R^2$ is $.36$. With $|\rho|=.5$, $1-\rho^2=.75$, so all four amended
+standardized-beta levels satisfy this condition.
 
 ## 7. Revised calibration workflow
 
@@ -339,7 +332,7 @@ correlation cell:
 1. Set $r_{\text{target}}\in\{.25,.50,.80\}$.
 2. Fix $\mathbf{Z}_i$, $\mathbf{R}_i$, $\tau_0^2$, and the marginal $\rho$.
 3. Solve for $G_{\text{marginal},22}$.
-4. Select $R_{\text{struct}}^2\in\{0,.04,.16,.36\}$.
+4. Select $\beta_{\text{std}}\in\{0,.20,.40,.60\}$.
 5. Compute the cell-specific $\gamma_c$ and
    $\mathbf{G}_{\text{residual}}$.
 6. Draw $(b_{0i},u_{1i})^\top$ from
@@ -417,7 +410,7 @@ This would create several problems:
 Condition-level calibration therefore separates two sources of variation:
 
 - **Between conditions:** deliberate changes in target reliability,
-  structural $R^2$, cluster-size mechanism, residual structure, and
+  standardized beta, cluster-size mechanism, residual structure, and
   correlation.
 - **Within a condition:** random sampling of subjects, realized cluster sizes,
   random effects, and residual outcomes under one fixed set of population
@@ -437,7 +430,8 @@ For every calibrated cell:
 3. Simulate the residual random effects and reconstruct the total slopes.
 4. Confirm that their empirical covariance approaches
    $\mathbf{G}_{\text{marginal}}$.
-5. Confirm that the empirical structural $R^2$ approaches its target and that
+5. Confirm that the empirical standardized beta approaches its target, its
+   square approaches the derived structural $R^2$, and
    $\mathbf{G}_{\text{residual}}$ is positive definite.
 
 The BLUP-outcome runner records these checks in every calibrated replication:
@@ -448,8 +442,9 @@ The BLUP-outcome runner records these checks in every calibrated replication:
 - `empirical_g_error`: maximum absolute elementwise difference between the
   empirical covariance of the simulated total random effects and
   $\mathbf{G}_{\text{marginal}}$;
-- `empirical_structural_r2`: squared sample correlation between $x_i$ and the
+- `empirical_standardized_beta`: sample correlation between $x_i$ and the
   simulated total random slope;
+- `empirical_structural_r2`: square of the empirical standardized beta;
 - `residual_g_min_eigenvalue`: minimum eigenvalue of
   $\mathbf{G}_{\text{residual}}$.
 
@@ -475,8 +470,8 @@ condition manifest. Each calibrated condition stores:
   $\mathbf{G}_{\text{marginal}}$;
 - `rho_residual`: correlation passed to `simulate_dataset()` when drawing
   $(b_{0i},u_{1i})$;
-- `gamma_x_on_slope`: cell-specific raw coefficient implied by structural
-  $R^2$;
+- `gamma_x_on_slope`: cell-specific raw coefficient implied by standardized
+  beta;
 - `tau1_residual`: residual slope standard deviation passed to
   `simulate_dataset()`.
 

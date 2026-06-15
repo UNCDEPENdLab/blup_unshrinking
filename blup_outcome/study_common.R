@@ -95,6 +95,7 @@ empty_blup_outcome_diagnostics <- function() {
       closed_form_failure_rate = NA_real_,
       cluster_size_x_cor = NA_real_,
       empirical_g_error = NA_real_,
+      empirical_standardized_beta = NA_real_,
       empirical_structural_r2 = NA_real_,
       empirical_reliability = NA_real_,
       residual_g_min_eigenvalue = NA_real_
@@ -466,6 +467,7 @@ make_blup_outcome_diagnostics <- function(stage1_score_fit, stage2_df, sim, cond
 make_calibrated_dgp_diagnostics <- function(condition, sim) {
   empty <- tibble::tibble(
     empirical_g_error = NA_real_,
+    empirical_standardized_beta = NA_real_,
     empirical_structural_r2 = NA_real_,
     empirical_reliability = NA_real_,
     residual_g_min_eigenvalue = NA_real_
@@ -510,17 +512,18 @@ make_calibrated_dgp_diagnostics <- function(condition, sim) {
   structural_complete <- stats::complete.cases(
     sim$id_df[, c("x", "true_slope_dev"), drop = FALSE]
   )
-  empirical_structural_r2 <- if (sum(structural_complete) >= 3L &&
+  empirical_standardized_beta <- if (sum(structural_complete) >= 3L &&
       stats::sd(sim$id_df$x[structural_complete]) > sqrt(.Machine$double.eps) &&
       stats::sd(sim$id_df$true_slope_dev[structural_complete]) >
         sqrt(.Machine$double.eps)) {
     stats::cor(
       sim$id_df$x[structural_complete],
       sim$id_df$true_slope_dev[structural_complete]
-    )^2
+    )
   } else {
     NA_real_
   }
+  empirical_structural_r2 <- empirical_standardized_beta^2
 
   ordered_ids <- as.character(sim$id_df$id)
   split_dat <- split(sim$dat, as.character(sim$dat$id), drop = TRUE)[ordered_ids]
@@ -541,6 +544,7 @@ make_calibrated_dgp_diagnostics <- function(condition, sim) {
 
   tibble::tibble(
     empirical_g_error = empirical_g_error,
+    empirical_standardized_beta = empirical_standardized_beta,
     empirical_structural_r2 = empirical_structural_r2,
     empirical_reliability = empirical_reliability,
     residual_g_min_eigenvalue = residual_g_min_eigenvalue
@@ -559,12 +563,12 @@ make_calibrated_dgp_diagnostics <- function(condition, sim) {
 #'
 #' @return List containing `truth`, `sim_params`, and residual `tau1`.
 resolve_blup_outcome_simulation_parameters <- function(condition, params) {
-  truth <- as.numeric(condition$gamma_x_on_slope[[1]])
+  raw_effect <- as.numeric(condition$gamma_x_on_slope[[1]])
   sim_params <- params
-  sim_params$gamma_x_on_slope <- truth
+  sim_params$gamma_x_on_slope <- raw_effect
 
   calibrated <- all(c(
-    "target_reliability", "structural_r2", "marginal_rho",
+    "target_reliability", "standardized_beta_target", "marginal_rho",
     "rho_residual", "tau1_residual", "calibration_tau0"
   ) %in% names(condition))
 
@@ -572,14 +576,22 @@ resolve_blup_outcome_simulation_parameters <- function(condition, params) {
     sim_params$tau0 <- as.numeric(condition$calibration_tau0[[1]])
     sim_params$rho <- as.numeric(condition$rho_residual[[1]])
     tau1 <- as.numeric(condition$tau1_residual[[1]])
+    truth <- as.numeric(condition$standardized_beta_target[[1]])
+    reporting_scale <- 1 / sqrt(
+      as.numeric(condition$slope_variance_marginal[[1]])
+    )
   } else {
     sim_params$rho <- as.numeric(condition$rho[[1]])
     tau1 <- as.numeric(condition$tau1[[1]])
+    truth <- raw_effect
+    reporting_scale <- 1
   }
 
   list(
     calibrated = calibrated,
     truth = truth,
+    raw_effect = raw_effect,
+    reporting_scale = reporting_scale,
     sim_params = sim_params,
     tau1 = tau1
   )
@@ -838,7 +850,8 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
       ) %>%
         dplyr::mutate(method = "fuller_alpha_closed_form") %>%
         dplyr::select("method", dplyr::everything())
-    )
+    ) %>%
+      rescale_fuller_to_population_sd(1)
 
     sandwich_rows <- tryCatch({
       stacked_R_list <- if (identical(sim$r_spec$structure, "iid")) NULL else sim$R_list
@@ -866,7 +879,18 @@ run_blup_outcome_rep <- function(condition, params, derivative_backend, analysis
   # Every method row receives the same replication-level diagnostics and
   # realized-trial descriptors so downstream summaries can group by method while
   # retaining information about the Stage 1 data quality.
-  dplyr::bind_rows(base_rows, full_rows) %>%
+  all_rows <- dplyr::bind_rows(base_rows, full_rows)
+  if (resolved$calibrated) {
+    all_rows <- all_rows %>%
+      dplyr::mutate(
+        dplyr::across(
+          dplyr::any_of(c("estimate", "se", "ci_low", "ci_high")),
+          ~ .x * resolved$reporting_scale
+        )
+      )
+  }
+
+  all_rows %>%
     standardize_estimator_rows(truth = truth) %>%
     dplyr::bind_cols(diagnostics[rep(1L, nrow(.)), , drop = FALSE]) %>%
     dplyr::mutate(

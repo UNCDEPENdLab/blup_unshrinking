@@ -108,10 +108,17 @@ select_lai_measurement_columns <- function(stage1_components, n_re, prefix = "")
     return(out)
   }
 
-  stage1_components[, c(
+  out <- stage1_components[, c(
     "id", "u0_eb", "u1_eb", "postvar11", "postvar12", "postvar22",
     "lambda11", "lambda12", "lambda21", "lambda22", "theta11", "theta12", "theta22"
   ), drop = FALSE]
+  if (nzchar(prefix)) {
+    names(out)[names(out) != "id"] <- paste0(
+      prefix,
+      names(out)[names(out) != "id"]
+    )
+  }
+  out
 }
 
 #' Compute Lai-style EB measurement-model inputs from a Stage-1 fit.
@@ -677,15 +684,47 @@ fit_lai_2spa <- function(stage2_df, use_average = FALSE) {
 #' `z`.
 #' @param use_average Logical. If `TRUE`, fit the 2S-PAA variant using average
 #' `lambda`/`theta`; otherwise fit the row-specific 2S-PA variant.
+#' @param u0_start Optional starting value for the nuisance latent-intercept
+#'   path to `z`. When omitted, the helper uses a compatible value from
+#'   `fixed_params` when available.
+#' @param reporting_scale Optional fixed scale for the reported slope effect.
+#'   When omitted, the fitted latent slope SD is used.
 #'
 #' @return A one-row tibble from `extract_mx_stats()` for `xstd_u1`.
-fit_lai_2spa_observed_outcome <- function(stage2_df, use_average = FALSE) {
+fit_lai_2spa_observed_outcome <- function(
+    stage2_df,
+    use_average = FALSE,
+    u0_start = NULL,
+    reporting_scale = NULL) {
+  if (is.null(u0_start)) {
+    u0_start <- if (exists("fixed_params", inherits = TRUE) &&
+        !is.null(fixed_params$beta_zu0)) {
+      fixed_params$beta_zu0
+    } else if (exists("fixed_params", inherits = TRUE) &&
+        !is.null(fixed_params$beta1z)) {
+      fixed_params$beta1z
+    } else {
+      0
+    }
+  }
   if (isTRUE(use_average)) {
     loading_arg <- list(values = colMeans(stage2_df[, c("lambda11", "lambda12", "lambda21", "lambda22")], na.rm = TRUE))
     theta_arg <- list(values = colMeans(stage2_df[, c("theta11", "theta12", "theta22")], na.rm = TRUE))
   } else {
     loading_arg <- list(labels = paste0("data.", c("lambda11", "lambda12", "lambda21", "lambda22")))
     theta_arg <- list(labels = paste0("data.", c("theta11", "theta12", "theta22")))
+  }
+  target_algebra <- if (is.null(reporting_scale)) {
+    OpenMx::mxAlgebra(A[3, 5] * sqrt(S[5, 5]), name = "xstd_u1")
+  } else {
+    reporting_scale <- as.numeric(reporting_scale[[1]])
+    if (!is.finite(reporting_scale) || reporting_scale <= 0) {
+      stop("`reporting_scale` must be finite and positive.")
+    }
+    eval(substitute(
+      OpenMx::mxAlgebra(A[3, 5] * SCALE, name = "xstd_u1"),
+      list(SCALE = reporting_scale)
+    ))
   }
 
   mx_mod <- OpenMx::mxModel(
@@ -695,9 +734,13 @@ fit_lai_2spa_observed_outcome <- function(stage2_df, use_average = FALSE) {
     latentVars = c("u0", "u1"),
     OpenMx::mxData(stage2_df[, c("u0_eb", "u1_eb", "z", "lambda11", "lambda12", "lambda21", "lambda22", "theta11", "theta12", "theta22")], type = "raw"),
 
-    # Start the u0 -> z path near the data-generating value used by the Lai
-    # replication designs; the u1 -> z path is the target estimate.
-    OpenMx::mxPath(from = c("u0", "u1"), to = "z", free = TRUE, values = c(fixed_params$beta_zu0, 0)),
+    # The u0 path is a nuisance coefficient; the u1 path is the target.
+    OpenMx::mxPath(
+      from = c("u0", "u1"),
+      to = "z",
+      free = TRUE,
+      values = c(as.numeric(u0_start[[1]]), 0)
+    ),
     OpenMx::mxPath(from = "z", arrows = 2, free = TRUE, values = max(1e-3, stats::var(stage2_df$z, na.rm = TRUE))),
     do.call(OpenMx::mxPath, c(list(
       from = c("u0", "u1"), to = c("u0_eb", "u1_eb"), connect = "unique.bivariate", free = FALSE
@@ -707,7 +750,7 @@ fit_lai_2spa_observed_outcome <- function(stage2_df, use_average = FALSE) {
     ), theta_arg)),
     OpenMx::mxPath(from = c("u0", "u1"), connect = "unique.pairs", arrows = 2, free = TRUE, values = c(0.5, 0.1, 0.5)),
     OpenMx::mxPath(from = "one", to = c("u0", "u1", "z"), free = TRUE, values = c(0, 0, mean(stage2_df$z, na.rm = TRUE))),
-    OpenMx::mxAlgebra(A[3, 5] * sqrt(S[5, 5]), name = "xstd_u1")
+    target_algebra
   )
 
   extract_mx_stats(run_mx_safe(mx_mod))
@@ -766,6 +809,121 @@ fit_lai_2spa_disparate <- function(stage2_df, use_average = FALSE) {
     OpenMx::mxPath(from = c("u0", "u1"), connect = "unique.pairs", arrows = 2, free = TRUE, values = c(0.5, 0.1, 0.5)),
     OpenMx::mxPath(from = "one", to = c("u0", "u1", "z_lat"), free = TRUE, values = c(0, 0, fixed_params$z_intercept)),
     OpenMx::mxAlgebra(A[6, 5] * sqrt(S[5, 5]), name = "xstd_u1")
+  )
+
+  extract_mx_stats(run_mx_safe(mx_mod))
+}
+
+#' Fit Lai 2S-PA/2S-PAA for two random-intercept/random-slope processes.
+#'
+#' The predictor process supplies latent `y_u0` and `y_u1`; the outcome process
+#' supplies latent `q_u0` and `q_u1`. The focal path is `y_u1 -> q_u1`, adjusted
+#' for `y_u0`. Both bivariate EB measurement models retain their full loading and
+#' residual covariance matrices. When `reporting_scale` is supplied, the raw
+#' focal path and its standard error are multiplied by that fixed scale.
+fit_lai_2spa_dual_process <- function(
+    stage2_df,
+    use_average = FALSE,
+    theta0_start = 0,
+    theta1_start = 0,
+    reporting_scale = NULL) {
+  y_loading_cols <- c("lambda11", "lambda12", "lambda21", "lambda22")
+  y_theta_cols <- c("theta11", "theta12", "theta22")
+  q_loading_cols <- paste0("q_", y_loading_cols)
+  q_theta_cols <- paste0("q_", y_theta_cols)
+
+  if (isTRUE(use_average)) {
+    y_loading_arg <- list(values = colMeans(stage2_df[, y_loading_cols], na.rm = TRUE))
+    y_theta_arg <- list(values = colMeans(stage2_df[, y_theta_cols], na.rm = TRUE))
+    q_loading_arg <- list(values = colMeans(stage2_df[, q_loading_cols], na.rm = TRUE))
+    q_theta_arg <- list(values = colMeans(stage2_df[, q_theta_cols], na.rm = TRUE))
+  } else {
+    y_loading_arg <- list(labels = paste0("data.", y_loading_cols))
+    y_theta_arg <- list(labels = paste0("data.", y_theta_cols))
+    q_loading_arg <- list(labels = paste0("data.", q_loading_cols))
+    q_theta_arg <- list(labels = paste0("data.", q_theta_cols))
+  }
+
+  target_algebra <- if (is.null(reporting_scale)) {
+    OpenMx::mxAlgebra(
+      A[8, 6] * sqrt(S[6, 6] / q1_variance),
+      name = "xstd_u1"
+    )
+  } else {
+    reporting_scale <- as.numeric(reporting_scale[[1]])
+    if (!is.finite(reporting_scale) || reporting_scale <= 0) {
+      stop("`reporting_scale` must be finite and positive.")
+    }
+    eval(substitute(
+      OpenMx::mxAlgebra(A[8, 6] * SCALE, name = "xstd_u1"),
+      list(SCALE = reporting_scale)
+    ))
+  }
+
+  mx_mod <- OpenMx::mxModel(
+    if (isTRUE(use_average)) "lai_2spaa_dual_process" else "lai_2spa_dual_process",
+    type = "RAM",
+    manifestVars = c("u0_eb", "u1_eb", "q_u0_eb", "q_u1_eb"),
+    latentVars = c("y_u0", "y_u1", "q_u0", "q_u1"),
+    OpenMx::mxData(stage2_df, type = "raw"),
+    do.call(OpenMx::mxPath, c(list(
+      from = c("y_u0", "y_u1"),
+      to = c("u0_eb", "u1_eb"),
+      connect = "unique.bivariate",
+      free = FALSE
+    ), y_loading_arg)),
+    do.call(OpenMx::mxPath, c(list(
+      from = c("u0_eb", "u1_eb"),
+      connect = "unique.pairs",
+      arrows = 2,
+      free = FALSE
+    ), y_theta_arg)),
+    do.call(OpenMx::mxPath, c(list(
+      from = c("q_u0", "q_u1"),
+      to = c("q_u0_eb", "q_u1_eb"),
+      connect = "unique.bivariate",
+      free = FALSE
+    ), q_loading_arg)),
+    do.call(OpenMx::mxPath, c(list(
+      from = c("q_u0_eb", "q_u1_eb"),
+      connect = "unique.pairs",
+      arrows = 2,
+      free = FALSE
+    ), q_theta_arg)),
+    OpenMx::mxPath(
+      from = c("y_u0", "y_u1"),
+      to = "q_u1",
+      free = TRUE,
+      values = c(theta0_start, theta1_start)
+    ),
+    OpenMx::mxPath(
+      from = c("y_u0", "y_u1"),
+      connect = "unique.pairs",
+      arrows = 2,
+      free = TRUE,
+      values = c(0.5, 0.1, 0.5)
+    ),
+    OpenMx::mxPath(
+      from = c("q_u0", "q_u1"),
+      connect = "unique.pairs",
+      arrows = 2,
+      free = TRUE,
+      values = c(0.5, 0.1, 0.5)
+    ),
+    OpenMx::mxPath(
+      from = "one",
+      to = c("y_u0", "y_u1", "q_u0", "q_u1"),
+      free = TRUE,
+      values = 0
+    ),
+    OpenMx::mxAlgebra(
+      S[8, 8] +
+        A[8, 5]^2 * S[5, 5] +
+        A[8, 6]^2 * S[6, 6] +
+        2 * A[8, 5] * A[8, 6] * S[5, 6],
+      name = "q1_variance"
+    ),
+    target_algebra
   )
 
   extract_mx_stats(run_mx_safe(mx_mod))

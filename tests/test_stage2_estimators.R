@@ -184,11 +184,26 @@ fuller_noerr <- fit_fuller_dual(
 
 ols_dual <- fit_observed_dual(stage2_noerr, outcome = "y_obs", predictor_u0 = "x0_obs", predictor_u1 = "x1_obs")
 ols_naive <- ols_dual[ols_dual$se_type == "naive", , drop = FALSE]
+fixed_scale <- 2.5
+fuller_noerr_fixed <- rescale_fuller_to_population_sd(
+  fuller_noerr,
+  fixed_scale
+)
 
 stopifnot(
   isTRUE(all.equal(as.integer(fuller_noerr$status_code), 0L)),
   isTRUE(all.equal(fuller_noerr$estimate, ols_naive$estimate, tolerance = 1e-10)),
-  isTRUE(all.equal(fuller_noerr$se, ols_naive$se, tolerance = 1e-10))
+  isTRUE(all.equal(fuller_noerr$se, ols_naive$se, tolerance = 1e-10)),
+  isTRUE(all.equal(
+    fuller_noerr_fixed$estimate,
+    fuller_noerr$fuller_raw_estimate * fixed_scale,
+    tolerance = 1e-12
+  )),
+  isTRUE(all.equal(
+    fuller_noerr_fixed$se,
+    fuller_noerr$fuller_raw_se * fixed_scale,
+    tolerance = 1e-12
+  ))
 )
 
 stage2_single_noerr <- data.frame(

@@ -38,7 +38,12 @@ stopifnot(
   nrow(reliability_smoke_design) == 1L,
   nrow(reliability_design) == 720L,
   all(c(0.25, 0.50, 0.80) %in% unique(reliability_design$target_reliability)),
-  all(c(0, 0.04, 0.16, 0.36) %in% unique(reliability_design$structural_r2)),
+  all(c(0, 0.2, 0.4, 0.6) %in%
+    unique(reliability_design$standardized_beta_target)),
+  max(abs(
+    reliability_design$structural_r2 -
+      reliability_design$standardized_beta_target^2
+  )) < 1e-12,
   max(abs(
     reliability_design$target_reliability -
       reliability_design$achieved_reliability
@@ -91,6 +96,10 @@ stopifnot(
   identical(legacy_resolved$sim_params$rho, smoke_design$rho[[1]]),
   calibrated_resolved$calibrated,
   identical(
+    calibrated_resolved$truth,
+    reliability_smoke_design$standardized_beta_target[[1]]
+  ),
+  identical(
     calibrated_resolved$tau1,
     reliability_smoke_design$tau1_residual[[1]]
   ),
@@ -129,8 +138,12 @@ stopifnot(
   all(is.finite(unlist(calibrated_diagnostics))),
   calibrated_diagnostics$empirical_g_error < 0.10,
   abs(
+    calibrated_diagnostics$empirical_standardized_beta -
+      reliability_smoke_design$standardized_beta_target[[1]]
+  ) < 0.08,
+  abs(
     calibrated_diagnostics$empirical_structural_r2 -
-      reliability_smoke_design$structural_r2[[1]]
+      reliability_smoke_design$standardized_beta_target[[1]]^2
   ) < 0.05,
   abs(
     calibrated_diagnostics$empirical_reliability -

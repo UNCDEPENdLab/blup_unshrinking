@@ -54,12 +54,14 @@ empty_lm_variants <- function() {
 #' @param stage2_df Data frame containing the outcome and stage-2 predictor.
 #' @param outcome Character scalar naming the outcome column.
 #' @param predictor Character scalar naming the single predictor column.
+#' @param reporting_scale Optional positive scale applied to the raw
+#'   coefficient and standard error. Defaults to the observed predictor SD.
 #'
 #' @return
 #' A two-row tibble keyed by `se_type`, with scaled `estimate`, `se`,
 #' Wald-normal confidence limits, and `status_code` (`0L` for successfully
 #' estimated rows).
-fit_observed_single <- function(stage2_df, outcome, predictor) {
+fit_observed_single <- function(stage2_df, outcome, predictor, reporting_scale = NULL) {
   empty_out <- empty_lm_variants()
 
   # Restrict to the variables used by this estimator before applying the
@@ -84,9 +86,17 @@ fit_observed_single <- function(stage2_df, outcome, predictor) {
     return(empty_out)
   }
 
-  # Report the effect per observed SD of the stage-2 predictor. This keeps
-  # observed EB, corrected-score, and true-score estimators on the same scale.
-  scale_u1 <- stats::sd(dat[[predictor]])
+  # By default report the effect per observed predictor SD. Simulation callers
+  # can supply a fixed population scale so all proxy methods target the same
+  # standardized latent effect.
+  scale_u1 <- if (is.null(reporting_scale)) {
+    stats::sd(dat[[predictor]])
+  } else {
+    as.numeric(reporting_scale[[1]])
+  }
+  if (!is.finite(scale_u1) || scale_u1 <= 0) {
+    return(empty_out)
+  }
   est <- unname(coef_tab[predictor, "Estimate"]) * scale_u1
   se_naive <- unname(coef_tab[predictor, "Std. Error"]) * scale_u1
 
@@ -135,12 +145,19 @@ fit_observed_single <- function(stage2_df, outcome, predictor) {
 #' @param predictor_u0 Character scalar naming the intercept-like predictor.
 #' @param predictor_u1 Character scalar naming the slope-like predictor whose
 #' coefficient is reported.
+#' @param reporting_scale Optional positive scale applied to the raw slope
+#'   coefficient and standard error. Defaults to the observed slope-proxy SD.
 #'
 #' @return
 #' A two-row tibble keyed by `se_type`, with scaled `estimate`, `se`,
 #' Wald-normal confidence limits, and `status_code` (`0L` for successfully
 #' estimated rows).
-fit_observed_dual <- function(stage2_df, outcome, predictor_u0, predictor_u1) {
+fit_observed_dual <- function(
+    stage2_df,
+    outcome,
+    predictor_u0,
+    predictor_u1,
+    reporting_scale = NULL) {
   empty_out <- empty_lm_variants()
 
   # Complete-case filtering is estimator-specific: rows only need to be
@@ -170,7 +187,14 @@ fit_observed_dual <- function(stage2_df, outcome, predictor_u0, predictor_u1) {
 
   # Only the slope-like predictor is reported; the u0 proxy is an adjustment
   # covariate used to reduce confounding between random intercepts and slopes.
-  scale_u1 <- stats::sd(dat[[predictor_u1]])
+  scale_u1 <- if (is.null(reporting_scale)) {
+    stats::sd(dat[[predictor_u1]])
+  } else {
+    as.numeric(reporting_scale[[1]])
+  }
+  if (!is.finite(scale_u1) || scale_u1 <= 0) {
+    return(empty_out)
+  }
   est <- unname(coef_tab[predictor_u1, "Estimate"]) * scale_u1
   se_naive <- unname(coef_tab[predictor_u1, "Std. Error"]) * scale_u1
 
@@ -709,9 +733,28 @@ fit_eiv_dual <- function(stage2_df,
 fuller_dual_result_columns <- function() {
   c(
     "estimate", "se", "ci_low", "ci_high", "status_code",
+    "fuller_raw_estimate", "fuller_raw_se",
     "mx_issue_class", "mx_issue_detail",
     "fuller_lambda1", "fuller_lambda2", "fuller_sigma2",
     "fuller_weight_min", "fuller_weight_max", "fuller_correction_c"
+  )
+}
+
+rescale_fuller_to_population_sd <- function(result, reporting_scale) {
+  reporting_scale <- as.numeric(reporting_scale[[1]])
+  if (!is.finite(reporting_scale) || reporting_scale <= 0) {
+    stop("`reporting_scale` must be finite and positive.")
+  }
+  if (!all(c("fuller_raw_estimate", "fuller_raw_se") %in% names(result))) {
+    stop("Fuller result is missing raw estimate or standard-error columns.")
+  }
+
+  dplyr::mutate(
+    result,
+    estimate = fuller_raw_estimate * reporting_scale,
+    se = fuller_raw_se * reporting_scale,
+    ci_low = estimate - stats::qnorm(0.975) * se,
+    ci_high = estimate + stats::qnorm(0.975) * se
   )
 }
 
@@ -837,6 +880,8 @@ fit_fuller_dual_core <- function(stage2_df,
     ci_low = NA_real_,
     ci_high = NA_real_,
     status_code = NA_integer_,
+    fuller_raw_estimate = NA_real_,
+    fuller_raw_se = NA_real_,
     mx_issue_class = NA_character_,
     mx_issue_detail = NA_character_,
     fuller_lambda1 = NA_real_,
@@ -1280,6 +1325,8 @@ fit_fuller_dual_core <- function(stage2_df,
     ci_low = est - stats::qnorm(0.975) * se,
     ci_high = est + stats::qnorm(0.975) * se,
     status_code = 0L,
+    fuller_raw_estimate = unname(gamma_hat[target_gamma_idx]),
+    fuller_raw_se = sqrt(var_u1),
     mx_issue_class = "ok",
     mx_issue_detail = "ok",
     fuller_lambda1 = lambda1_hat,

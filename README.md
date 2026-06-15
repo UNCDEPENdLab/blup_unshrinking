@@ -27,8 +27,9 @@ Simulation and analysis scripts include:
 - `R/simulation_runner_helpers.R`: shared chunking, progress-file, and atomic CSV helpers for condition-grid simulations.
 - `R/blup_helpers.R`: EB/BLUP extraction, Vig-style prior unweighting, and closed-form corrected cluster scores.
 - `R/sim_helpers.R`: common simulation data-generation helpers.
-- `R/reliability_calibration.R`: posterior-reliability calibration, structural
-  R-squared decomposition, and deterministic reference cluster-size profiles.
+- `R/reliability_calibration.R`: posterior-reliability calibration,
+  standardized-beta conversion, and deterministic reference cluster-size
+  profiles.
 - `R/sim_diagnostics.R`: first-stage singularity, EB collinearity, and design-condition diagnostics.
 - `R/stats_helpers.R`: extraction of estimates, standard errors, and intervals from `lm` and `lmer` fits.
 - `R/stage2_estimators.R`: observed-score, HC3, ridge, EIV, and stacked-sandwich result-row formatting helpers.
@@ -110,7 +111,7 @@ The BLUP-outcome grids now explicitly test:
 The opt-in `posterior_reliability` grid uses the amended design directly:
 
 - posterior slope reliability: `.25`, `.50`, `.80`;
-- structural R-squared: `0`, `.04`, `.16`, `.36`;
+- standardized beta: `0`, `.20`, `.40`, `.60`;
 - marginal intercept-slope correlation: `-.50`, `0`, `.50`;
 - cluster size: `3`, `5`, `10`, `25`;
 - number of clusters: `30`, `50`, `100`, `150`, `300`.
@@ -119,7 +120,8 @@ These conditions are calibrated once when the manifest is built. Each row
 stores both `marginal_rho`, which defines the target first-stage G matrix, and
 `rho_residual`, which is passed to `simulate_dataset()` when drawing residual
 random effects. The calibrated `gamma_x_on_slope`, `tau1_residual`, and
-`rho_residual` remain fixed across replications.
+`rho_residual` remain fixed across replications. Structural R-squared is stored
+only as the derived square of the standardized-beta target.
 
 Chunked runs mirror the Lai runner model. In `run` mode, the script writes only
 condition-level files under `conditions/` plus a chunk-specific manifest and

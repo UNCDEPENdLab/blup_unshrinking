@@ -5,6 +5,10 @@
 #' writing per-condition artifacts, and rebuilding aggregate summaries from
 #' completed condition files.
 
+vh_pipeline_version <- function() {
+  "standardized_beta_v1_20260615"
+}
+
 #' Parse an optional command-line integer argument.
 #'
 #' @details
@@ -96,7 +100,15 @@ slice_design_chunk <- function(design, chunk_index = NA_integer_, chunk_size = N
   start_idx <- ((chunk_index - 1L) * chunk_size) + 1L
   end_idx <- min(nrow(design), chunk_index * chunk_size)
   if (start_idx > nrow(design)) {
-    stop("Requested chunk starts after the end of the selected design.")
+    out <- design[0, , drop = FALSE]
+    attr(out, "chunk_meta") <- list(
+      chunk_index = chunk_index,
+      chunk_size = chunk_size,
+      condition_start = NA_integer_,
+      condition_end = NA_integer_,
+      n_conditions = 0L
+    )
+    return(out)
   }
 
   out <- design %>%
@@ -177,6 +189,18 @@ get_condition_file_paths <- function(out_dir, condition_id) {
 #'   the mean, bias, coverage, RMSE, successful replications, and status-10
 #'   failure counts.
 summarize_results_df <- function(results) {
+  design_cols <- intersect(
+    c(
+      "condition_id", "study", "method", "method_role", "num_clus", "mean_clus_size",
+      "target_reliability", "achieved_reliability", "marginal_rho",
+      "standardized_beta_target", "structural_target", "structural_r2",
+      "focal_unique_r2", "mean_clus_size_y", "mean_clus_size_q",
+      "target_reliability_y", "target_reliability_q",
+      "achieved_reliability_y", "achieved_reliability_q",
+      "balance_mode", "r_structure", "r_rho", "sigma", "sigma_y", "sigma_q"
+    ),
+    names(results)
+  )
   results %>%
     dplyr::mutate(
       # Status 10 is an OpenMx optimizer failure class; keep it visible rather
@@ -187,11 +211,7 @@ summarize_results_df <- function(results) {
       sq_error = (estimate - truth)^2,
       covered = ci_low <= truth & ci_high >= truth
     ) %>%
-    # TODO: update these columns
-    dplyr::group_by(
-      condition_id, study, method, num_clus, clus_size, icc, vr_u1_u0, cor_u0_u1, beta_zu1,
-      design_source, condition_note
-    ) %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(design_cols))) %>%
     dplyr::summarise(
       truth = dplyr::first(truth),
       n_rep = dplyr::n(),
@@ -228,6 +248,20 @@ summarize_stage1_problem_df <- function(results) {
     return(tibble::tibble())
   }
 
+  design_cols <- intersect(
+    c(
+      "condition_id", "study", "method", "method_role", "stage1_singular_problem",
+      "num_clus", "mean_clus_size", "target_reliability",
+      "achieved_reliability", "marginal_rho", "standardized_beta_target",
+      "structural_target", "structural_r2", "focal_unique_r2",
+      "mean_clus_size_y", "mean_clus_size_q",
+      "target_reliability_y", "target_reliability_q",
+      "achieved_reliability_y", "achieved_reliability_q",
+      "balance_mode", "r_structure", "r_rho", "sigma", "sigma_y", "sigma_q"
+    ),
+    names(results)
+  )
+
   results %>%
     dplyr::mutate(
       status10_failure = !is.na(status_code) & status_code == 10L,
@@ -236,11 +270,7 @@ summarize_stage1_problem_df <- function(results) {
       sq_error = (estimate - truth)^2,
       covered = ci_low <= truth & ci_high >= truth
     ) %>%
-    # TODO: update these columns
-    dplyr::group_by(
-      condition_id, study, method, stage1_singular_problem, num_clus, clus_size, icc, vr_u1_u0, cor_u0_u1, beta_zu1,
-      design_source, condition_note
-    ) %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(design_cols))) %>%
     dplyr::summarise(
       truth = dplyr::first(truth),
       n_rep = dplyr::n(),
@@ -277,16 +307,29 @@ summarize_issue_df <- function(results) {
     return(tibble::tibble())
   }
 
+  design_cols <- intersect(
+    c(
+      "condition_id", "study", "method", "method_role", "mx_issue_class", "num_clus",
+      "mean_clus_size", "target_reliability", "achieved_reliability",
+      "marginal_rho", "standardized_beta_target", "structural_target",
+      "structural_r2", "focal_unique_r2", "balance_mode", "r_structure",
+      "r_rho", "sigma", "mean_clus_size_y", "mean_clus_size_q",
+      "target_reliability_y", "target_reliability_q",
+      "achieved_reliability_y", "achieved_reliability_q", "sigma_y", "sigma_q"
+    ),
+    names(results)
+  )
+
   results %>%
     dplyr::group_by(condition_id, study, method) %>%
     dplyr::mutate(n_rep_total = dplyr::n()) %>%
     dplyr::ungroup() %>%
-    dplyr::filter(!is.na(mx_issue_class), mx_issue_class != "ok") %>%
-    # TODO: update these columns
-    dplyr::group_by(
-      condition_id, study, method, mx_issue_class, num_clus, clus_size, icc, vr_u1_u0, cor_u0_u1, beta_zu1,
-      design_source, condition_note
+    dplyr::filter(
+      !is.na(mx_issue_class),
+      nzchar(mx_issue_class),
+      mx_issue_class != "ok"
     ) %>%
+    dplyr::group_by(dplyr::across(dplyr::all_of(design_cols))) %>%
     dplyr::summarise(
       n_rep = dplyr::n(),
       n_rep_total = dplyr::first(n_rep_total),
@@ -345,7 +388,17 @@ read_replication_results_file <- function(path) {
       "estimate", "se", "ci_low", "ci_high", "truth",
       "mx_condition_number",
       "stage1_re_corr", "stage1_eb_corr", "stage1_design_kappa",
-      "icc", "vr_u1_u0", "cor_u0_u1", "beta_zu1",
+      "stage1_y_re_corr", "stage1_y_eb_corr", "stage1_y_design_kappa",
+      "stage1_q_re_corr", "stage1_q_eb_corr", "stage1_q_design_kappa",
+      "target_reliability", "achieved_reliability", "marginal_rho",
+      "standardized_beta_target", "structural_r2", "focal_unique_r2",
+      "tau1", "beta1z", "beta2z", "outcome_residual_variance",
+      "target_reliability_y", "target_reliability_q",
+      "achieved_reliability_y", "achieved_reliability_q",
+      "tau1_y", "tau1_q", "theta0", "theta1",
+      "standardized_theta0", "slope_variance_marginal_y",
+      "slope_variance_marginal_q", "slope_variance_residual_q",
+      "tau1_residual_q", "rho_residual_q", "sigma_y", "sigma_q",
       "sigma2", "var_u1", "sigma_z", "fuller_lambda1", "fuller_lambda2",
       "fuller_sigma2", "fuller_weight_min", "fuller_weight_max",
       "fuller_correction_c"
@@ -353,11 +406,18 @@ read_replication_results_file <- function(path) {
     names(out)
   )
   integer_cols <- intersect(
-    c("condition_id", "rep", "num_clus", "clus_size", "status_code"),
+    c(
+      "condition_id", "rep", "num_clus", "mean_clus_size",
+      "mean_clus_size_y", "mean_clus_size_q", "status_code"
+    ),
     names(out)
   )
   logical_cols <- intersect(
-    c("stage1_singular_problem", "stage1_lmer_singular"),
+    c(
+      "stage1_singular_problem", "stage1_lmer_singular",
+      "stage1_y_singular_problem", "stage1_y_lmer_singular",
+      "stage1_q_singular_problem", "stage1_q_lmer_singular"
+    ),
     names(out)
   )
 
@@ -408,15 +468,70 @@ load_completed_condition_results <- function(design, out_dir) {
   purrr::map_dfr(existing, read_replication_results_file)
 }
 
-condition_output_has_methods <- function(path, expected_methods) {
+load_completed_condition_csv <- function(design, out_dir, artifact) {
+  if (!(artifact %in% c("summary", "issue_summary", "stage1_summary"))) {
+    stop("Unsupported condition artifact: ", artifact)
+  }
+  files <- purrr::map_chr(design$condition_id, function(condition_id) {
+    path <- get_condition_file_paths(out_dir, condition_id)[[artifact]]
+    if (file.exists(path)) path else NA_character_
+  })
+  existing <- stats::na.omit(files)
+  if (length(existing) == 0L) {
+    return(tibble::tibble())
+  }
+
+  purrr::map_dfr(existing, function(path) {
+    tryCatch(
+      tibble::as_tibble(utils::read.csv(path, check.names = FALSE)),
+      error = function(e) tibble::tibble()
+    )
+  })
+}
+
+make_condition_replication_index <- function(design, out_dir) {
+  purrr::map_dfr(design$condition_id, function(condition_id) {
+    path <- get_condition_file_paths(out_dir, condition_id)$replications
+    tibble::tibble(
+      condition_id = condition_id,
+      replication_file = path,
+      file_exists = file.exists(path),
+      file_size_bytes = if (file.exists(path)) file.info(path)$size else NA_real_
+    )
+  })
+}
+
+estimate_replication_result_rows <- function(design, n_sim) {
+  method_counts <- vapply(
+    seq_len(nrow(design)),
+    function(i) length(study_methods_for_condition(design[i, , drop = FALSE])),
+    integer(1)
+  )
+  as.double(n_sim) * sum(method_counts)
+}
+
+condition_output_is_complete <- function(
+    path,
+    expected_methods,
+    expected_n_sim,
+    expected_pipeline_version = vh_pipeline_version()) {
   if (!file.exists(path)) {
     return(FALSE)
   }
   out <- tryCatch(read_replication_results_file(path), error = function(e) NULL)
-  if (is.null(out) || !("method" %in% names(out))) {
+  required <- c("method", "rep", "pipeline_version")
+  if (is.null(out) || !all(required %in% names(out))) {
     return(FALSE)
   }
-  all(expected_methods %in% unique(out$method))
+  if (!all(out$pipeline_version == expected_pipeline_version)) {
+    return(FALSE)
+  }
+  if (!setequal(unique(out$method), expected_methods) ||
+      !setequal(unique(out$rep), seq_len(expected_n_sim))) {
+    return(FALSE)
+  }
+  method_counts <- table(factor(out$method, levels = expected_methods))
+  all(method_counts == expected_n_sim)
 }
 
 #' Dispatch one replication to the correct study module.
@@ -448,11 +563,19 @@ run_study_rep <- function(condition) {
 #'
 #' @return A character vector of object names passed to `foreach(..., .export)`.
 vig_hallquist_parallel_exports <- function() {
-  # TODO: update this list
-  c(
+  candidates <- c(
     "run_study_rep", "run_study1_rep", "run_study2_rep", "run_study3_rep", "run_study4_rep",
+    "vh_pipeline_version",
+    "add_study2_method_roles", "rescale_fuller_to_population_sd",
     "simulate_study1", "simulate_study2", "simulate_study3", "simulate_study4",
-    "run_matched_outcome_rep", "make_failed_result", "add_study_result_context",
+    "simulate_data_blup_as_outcome", "simulate_data_blup_as_predictor",
+    "simulate_data_dual_blup",
+    "make_failed_result", "add_study_result_context",
+    "combine_dual_stage1_diagnostics",
+    "fit_stage1", "condition_uses_non_iid_R", "condition_to_r_spec",
+    "condition_to_nlme_correlation", "draw_level1_residuals",
+    "balance_mode_to_sim_arg", "make_reliability_time_design",
+    "draw_random_effects",
     "matched_study_methods", "disparate_study_methods", "study_methods_for_condition", "tempered_eiv_methods",
     "condition_includes_tempered_eiv", "lai_condition_to_r_spec", "lai_condition_uses_non_iid_R",
     "lai_condition_to_nlme_correlation", "add_lai_trial_index", "draw_lai_level1_residuals",
@@ -467,12 +590,16 @@ vig_hallquist_parallel_exports <- function() {
     "compute_eb_measurement_inputs", "compute_bivariate_eb_inputs",
     "compute_univariate_eb_inputs", "compute_lai_2spa_inputs",
     "fit_observed_single", "fit_observed_dual",
-    "finalize_ols_se_variants", "fit_eiv_dual", "fit_ridge_dual", "fit_fuller_dual",
+    "finalize_ols_se_variants", "fit_eiv_dual", "fit_ridge_dual", "fit_fuller",
+    "fit_fuller_dual",
     "fit_fuller_dual_stepdown", "fit_fuller_dual_alpha_stepdown",
     "fit_lai_2spa", "fit_lai_2spa_observed_outcome", "fit_lai_2spa_disparate",
+    "fit_lai_2spa_dual_process",
     "run_mx_safe", "extract_mx_stats", "extract_mx_se_details",
     "classify_mx_issue", "compact_message", "project_to_pd"
   )
+  candidates[vapply(candidates, exists, logical(1), mode = "function", inherits = TRUE) |
+    candidates == "fixed_params"]
 }
 
 #' Run all replications for one design condition.
@@ -504,7 +631,10 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
     dplyr::bind_cols(
       rep_out,
       condition[rep(1L, nrow(rep_out)), , drop = FALSE] %>% dplyr::select(-study),
-      tibble::tibble(rep = rep_id)
+      tibble::tibble(
+        rep = rep_id,
+        pipeline_version = vh_pipeline_version()
+      )
     )
   }
 
@@ -561,6 +691,9 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
 #'   supplied with `chunk_index`.
 #' @param resume_existing Logical. If `TRUE`, skip conditions whose
 #'   per-condition replication and summary files already exist.
+#' @param max_aggregate_replication_rows Maximum expected rows that may be
+#'   loaded to materialize a combined replication table. Larger runs aggregate
+#'   condition summaries and write a replication-file index instead.
 #'
 #' @return Invisibly returns a list with aggregate `results`, `summary`,
 #'   `issue_summary`, and `stage1_summary` tibbles.
@@ -571,20 +704,46 @@ run_simulation <- function(n_sim = 100L,
                            max_conditions = NA_integer_,
                            chunk_index = NA_integer_,
                            chunk_size = NA_integer_,
-                           resume_existing = TRUE) {
+                           resume_existing = TRUE,
+                           max_aggregate_replication_rows = 2e6) {
   if (is.na(n_sim) || n_sim < 1L) {
     stop("`n_sim` must be a positive integer.")
   }
   if (is.na(n_cores) || n_cores < 1L) {
     stop("`n_cores` must be a positive integer.")
   }
+  if (is.na(max_aggregate_replication_rows) ||
+      max_aggregate_replication_rows <= 0) {
+    stop("`max_aggregate_replication_rows` must be positive or `Inf`.")
+  }
 
   dir.create(out_dir, recursive = TRUE, showWarnings = FALSE)
   design <- select_design(study_arg = study_arg, max_conditions = max_conditions)
   design <- slice_design_chunk(design, chunk_index = chunk_index, chunk_size = chunk_size)
+  if (nrow(design) == 0L) {
+    message(
+      "No conditions in requested chunk ", chunk_index,
+      " for study selection `", study_arg, "`; exiting successfully."
+    )
+    return(invisible(list(
+      results = tibble::tibble(),
+      summary = tibble::tibble(),
+      issue_summary = tibble::tibble(),
+      stage1_summary = tibble::tibble()
+    )))
+  }
   chunk_meta <- attr(design, "chunk_meta")
   chunk_label <- make_chunk_label(chunk_meta)
-  file_prefix <- sprintf("vig_hallquist_%s", chunk_label)
+  selection_label <- gsub(
+    "[^a-z0-9]+",
+    "_",
+    tolower(as.character(study_arg[[1]]))
+  )
+  file_prefix <- sprintf(
+    "vig_hallquist_%s_%s",
+    selection_label,
+    chunk_label
+  )
 
   # Chunk labels keep concurrently run jobs from overwriting each other's
   # aggregate files while preserving condition-level paths shared by resume.
@@ -594,6 +753,10 @@ run_simulation <- function(n_sim = 100L,
   aggregate_summary_path <- file.path(out_dir, sprintf("%s_summary.csv", file_prefix))
   aggregate_issue_summary_path <- file.path(out_dir, sprintf("%s_issue_summary.csv", file_prefix))
   aggregate_stage1_summary_path <- file.path(out_dir, sprintf("%s_stage1_problem_summary.csv", file_prefix))
+  replication_index_path <- file.path(
+    out_dir,
+    sprintf("%s_condition_replication_index.csv", file_prefix)
+  )
 
   utils::write.csv(design, file = manifest_path, row.names = FALSE)
 
@@ -612,7 +775,10 @@ run_simulation <- function(n_sim = 100L,
     # summary exist; partial artifacts are overwritten by rerunning the condition.
     if (isTRUE(resume_existing) && file.exists(paths$replications) && file.exists(paths$summary)) {
       expected_methods <- study_methods_for_condition(condition)
-      if (condition_output_has_methods(paths$replications, expected_methods)) {
+      if (condition_output_is_complete(
+          paths$replications,
+          expected_methods = expected_methods,
+          expected_n_sim = n_sim)) {
         write_progress_row(
           progress_path,
           tibble::tibble(
@@ -661,28 +827,67 @@ run_simulation <- function(n_sim = 100L,
     )
   }
 
-  # Rebuild aggregates from disk so skipped and newly completed conditions are
-  # treated identically, and so a resumed run repairs missing aggregate files.
-  results <- load_completed_condition_results(design, out_dir)
-  summary_df <- if (nrow(results) > 0L) summarize_results_df(results) else tibble::tibble()
-  issue_summary_df <- if (nrow(results) > 0L) summarize_issue_df(results) else tibble::tibble()
-  stage1_summary_df <- if (nrow(results) > 0L) summarize_stage1_problem_df(results) else tibble::tibble()
+  expected_result_rows <- estimate_replication_result_rows(design, n_sim)
+  materialize_replications <- is.infinite(max_aggregate_replication_rows) ||
+    expected_result_rows <= max_aggregate_replication_rows
 
-  data.table::fwrite(results, file = aggregate_replications_path)
+  if (materialize_replications) {
+    results <- load_completed_condition_results(design, out_dir)
+    summary_df <- if (nrow(results) > 0L) summarize_results_df(results) else tibble::tibble()
+    issue_summary_df <- if (nrow(results) > 0L) summarize_issue_df(results) else tibble::tibble()
+    stage1_summary_df <- if (nrow(results) > 0L) summarize_stage1_problem_df(results) else tibble::tibble()
+    data.table::fwrite(results, file = aggregate_replications_path)
+  } else {
+    results <- tibble::tibble()
+    summary_df <- load_completed_condition_csv(design, out_dir, "summary")
+    issue_summary_df <- load_completed_condition_csv(design, out_dir, "issue_summary")
+    stage1_summary_df <- load_completed_condition_csv(design, out_dir, "stage1_summary")
+    replication_index <- make_condition_replication_index(design, out_dir)
+    utils::write.csv(replication_index, replication_index_path, row.names = FALSE)
+    if (file.exists(aggregate_replications_path)) {
+      unlink(aggregate_replications_path)
+    }
+    message(
+      "Skipped in-memory replication aggregation for approximately ",
+      format(expected_result_rows, big.mark = ",", scientific = FALSE),
+      " rows. Condition-level replication files remain authoritative."
+    )
+  }
+
   utils::write.csv(summary_df, file = aggregate_summary_path, row.names = FALSE)
   utils::write.csv(issue_summary_df, file = aggregate_issue_summary_path, row.names = FALSE)
   utils::write.csv(stage1_summary_df, file = aggregate_stage1_summary_path, row.names = FALSE)
   # Preserve the original aggregate filenames for downstream scripts that do
   # not know about chunk-specific output naming.
-  if (identical(chunk_label, "full_selection")) {
-    data.table::fwrite(results, file = file.path(out_dir, "vig_hallquist_replication_results.csv.gz"))
+  if (identical(chunk_label, "full_selection") &&
+      identical(tolower(as.character(study_arg[[1]])), "all")) {
+    if (materialize_replications) {
+      data.table::fwrite(results, file = file.path(out_dir, "vig_hallquist_replication_results.csv.gz"))
+    } else {
+      legacy_replication_path <- file.path(
+        out_dir,
+        "vig_hallquist_replication_results.csv.gz"
+      )
+      if (file.exists(legacy_replication_path)) {
+        unlink(legacy_replication_path)
+      }
+      utils::write.csv(
+        replication_index,
+        file = file.path(out_dir, "vig_hallquist_condition_replication_index.csv"),
+        row.names = FALSE
+      )
+    }
     utils::write.csv(summary_df, file = file.path(out_dir, "vig_hallquist_summary.csv"), row.names = FALSE)
     utils::write.csv(issue_summary_df, file = file.path(out_dir, "vig_hallquist_issue_summary.csv"), row.names = FALSE)
     utils::write.csv(stage1_summary_df, file = file.path(out_dir, "vig_hallquist_stage1_problem_summary.csv"), row.names = FALSE)
   }
 
   message("Saved outputs to: ", normalizePath(out_dir))
-  message("Aggregate replication results: ", aggregate_replications_path)
+  if (materialize_replications) {
+    message("Aggregate replication results: ", aggregate_replications_path)
+  } else {
+    message("Condition replication index: ", replication_index_path)
+  }
   message("Aggregate summary results: ", aggregate_summary_path)
   message("Aggregate issue summary results: ", aggregate_issue_summary_path)
   message("Aggregate stage1 problem summary results: ", aggregate_stage1_summary_path)

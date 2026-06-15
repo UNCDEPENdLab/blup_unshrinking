@@ -73,8 +73,12 @@ source(file.path(vig_hallquist_dir, "vh_study_common.R"), local = TRUE)
 source(file.path(vig_hallquist_dir, "vh_designs.R"), local = TRUE)
 source(file.path(vig_hallquist_dir, "vh_study1.R"), local = TRUE)
 source(file.path(vig_hallquist_dir, "vh_study2.R"), local = TRUE)
-source(file.path(vig_hallquist_dir, "vh_study3.R"), local = TRUE)
-source(file.path(vig_hallquist_dir, "vh_study4.R"), local = TRUE)
+for (study_file in c("vh_study3.R", "vh_study4.R")) {
+  study_path <- file.path(vig_hallquist_dir, study_file)
+  if (file.exists(study_path)) {
+    source(study_path, local = TRUE)
+  }
+}
 source(file.path(vig_hallquist_dir, "vh_runner.R"), local = TRUE)
 
 Sys.setenv(OMP_NUM_THREADS = "1", OPENBLAS_NUM_THREADS = "1", MKL_NUM_THREADS = "1")
@@ -91,6 +95,10 @@ if (sys.nframe() == 0L) {
   chunk_index <- if (length(args) >= 6L) parse_optional_integer_arg(args[[6]]) else NA_integer_
   chunk_size <- if (length(args) >= 7L) parse_optional_integer_arg(args[[7]]) else NA_integer_
   resume_existing <- if (length(args) >= 8L) parse_logical_arg(args[[8]], default = TRUE) else TRUE
+  max_aggregate_replication_rows <- as.numeric(Sys.getenv(
+    "VIG_HALLQUIST_MAX_AGGREGATE_ROWS",
+    "2000000"
+  ))
 
   run_simulation(
     n_sim = n_sim,
@@ -100,6 +108,7 @@ if (sys.nframe() == 0L) {
     max_conditions = max_conditions,
     chunk_index = chunk_index,
     chunk_size = chunk_size,
-    resume_existing = resume_existing
+    resume_existing = resume_existing,
+    max_aggregate_replication_rows = max_aggregate_replication_rows
   )
 }

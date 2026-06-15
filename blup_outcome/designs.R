@@ -108,7 +108,7 @@ calibrate_blup_outcome_reliability_design <- function(
     tau0 = 0.9,
     calibration_reference_n = 1001L) {
   required <- c(
-    "target_reliability", "structural_r2", "marginal_rho",
+    "target_reliability", "standardized_beta_target", "marginal_rho",
     "mean_n_trial", "sigma", "balance_mode", "min_n_trial",
     "highly_unbalanced_min_n_trial", "highly_unbalanced_power",
     "r_structure", "r_rho"
@@ -128,7 +128,7 @@ calibrate_blup_outcome_reliability_design <- function(
     condition <- design[i, , drop = FALSE]
     calibrated <- calibrate_random_slope_condition(
       target_reliability = condition$target_reliability[[1]],
-      structural_r_squared = condition$structural_r2[[1]],
+      standardized_beta = condition$standardized_beta_target[[1]],
       marginal_rho = condition$marginal_rho[[1]],
       tau0 = tau0,
       mean_n_trial = condition$mean_n_trial[[1]],
@@ -145,6 +145,7 @@ calibrate_blup_outcome_reliability_design <- function(
       calibration_tau0 = tau0,
       achieved_reliability = calibrated$achieved_reliability,
       standardized_beta = calibrated$standardized_beta,
+      structural_r2 = calibrated$structural_r_squared,
       gamma_x_on_slope = calibrated$gamma_x_on_slope,
       slope_variance_marginal = calibrated$slope_variance_marginal,
       slope_variance_residual = calibrated$slope_variance_residual,
@@ -181,7 +182,7 @@ make_blup_outcome_design <- function(
       n_id = 40L,
       mean_n_trial = 8L,
       target_reliability = 0.50,
-      structural_r2 = 0.16,
+      standardized_beta_target = 0.4,
       marginal_rho = 0.50,
       balance_mode = "balanced",
       min_n_trial = 2L,
@@ -195,7 +196,7 @@ make_blup_outcome_design <- function(
       n_id = c(30L, 50L, 100L, 150L, 300L),
       mean_n_trial = c(3L, 5L, 10L, 25L),
       target_reliability = c(0.25, 0.50, 0.80),
-      structural_r2 = c(0, 0.04, 0.16, 0.36),
+      standardized_beta_target = c(0, 0.2, 0.4, 0.6),
       marginal_rho = c(-0.50, 0, 0.50),
       balance_mode = "balanced",
       min_n_trial = 2L,

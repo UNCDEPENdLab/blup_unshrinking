@@ -1,4 +1,4 @@
-# Demonstrate calibration from posterior slope reliability and structural R-squared
+# Demonstrate calibration from posterior slope reliability and standardized beta
 # to the residual random-effects parameters expected by simulate_dataset().
 
 repo_root <- dirname(rstudioapi::getActiveDocumentContext()$path)
@@ -21,7 +21,7 @@ run_examples <- function() {
   grid <- expand.grid(
     cluster_size = c(3L, 5L, 10L, 25L),
     target_reliability = c(0.25, 0.50, 0.80),
-    structural_r2 = c(0, 0.04, 0.16, 0.36),
+    standardized_beta_target = c(0, 0.2, 0.4, 0.6),
     marginal_rho = c(-0.50, 0, 0.50)
   )
 
@@ -29,7 +29,7 @@ run_examples <- function() {
     cell <- grid[i, , drop = FALSE]
     calibrated <- calibrate_random_slope_condition(
       target_reliability = cell$target_reliability,
-      structural_r_squared = cell$structural_r2,
+      standardized_beta = cell$standardized_beta_target,
       marginal_rho = cell$marginal_rho,
       tau0 = 0.9,
       mean_n_trial = cell$cluster_size,
@@ -41,7 +41,7 @@ run_examples <- function() {
 
   print(
     calibrated_grid[
-      calibrated_grid$structural_r2 == 0.16 &
+      calibrated_grid$standardized_beta_target == 0.4 &
         calibrated_grid$marginal_rho == 0.50,
     ],
     row.names = FALSE,
@@ -51,7 +51,7 @@ run_examples <- function() {
   cat("\nExample 2: deterministic unbalanced AR(1) calibration\n")
   unbalanced <- calibrate_random_slope_condition(
     target_reliability = 0.50,
-    structural_r_squared = 0.16,
+    standardized_beta = 0.4,
     marginal_rho = 0.30,
     tau0 = 0.9,
     mean_n_trial = 8L,
@@ -64,7 +64,7 @@ run_examples <- function() {
   print(
     cbind(
       target_reliability = 0.50,
-      structural_r2 = 0.16,
+      standardized_beta_target = 0.4,
       marginal_rho = 0.30,
       calibration_row(unbalanced)
     ),
@@ -97,4 +97,3 @@ run_examples <- function() {
 }
 
 run_examples()
-

@@ -99,7 +99,8 @@ summarize_blup_outcome_results <- function(results) {
       "closed_form_variance_ratio", "blup_true_cor", "matrix_corrected_true_cor",
       "closed_form_true_cor", "diag_corrected_failure_rate", "matrix_corrected_failure_rate",
       "closed_form_failure_rate", "cluster_size_x_cor",
-      "empirical_g_error", "empirical_structural_r2",
+      "empirical_g_error", "empirical_standardized_beta",
+      "empirical_structural_r2",
       "empirical_reliability", "residual_g_min_eigenvalue",
       "stage1_re_corr", "stage1_eb_corr", "stage1_design_kappa"
     ),
@@ -109,7 +110,8 @@ summarize_blup_outcome_results <- function(results) {
   grouping_cols <- intersect(
     c(
       "condition_id", "method", "n_id", "mean_n_trial",
-      "target_reliability", "achieved_reliability", "structural_r2",
+      "target_reliability", "achieved_reliability", "standardized_beta_target",
+      "structural_r2",
       "standardized_beta", "marginal_rho", "rho_residual",
       "slope_variance_marginal", "slope_variance_residual",
       "gamma_x_on_slope", "rho", "balance_mode", "tau1", "tau1_residual",
@@ -181,7 +183,8 @@ summarize_blup_outcome_issues <- function(results) {
   grouping_cols <- intersect(
     c(
       "condition_id", "method", "mx_issue_class", "n_id", "mean_n_trial",
-      "target_reliability", "structural_r2", "standardized_beta",
+      "target_reliability", "standardized_beta_target", "structural_r2",
+      "standardized_beta",
       "marginal_rho", "rho_residual", "gamma_x_on_slope", "rho",
       "balance_mode", "tau1", "tau1_residual", "sigma",
       "r_structure", "r_rho"

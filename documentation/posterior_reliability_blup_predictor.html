@@ -11,7 +11,7 @@
 
 
 
-<title>Calibrating the Structural Outcome Model</title>
+<title>Calibrating the BLUP-as-Predictor Structural Model</title>
 
 <script>// Pandoc 2.9 adds attributes on both header and div. We remove the former (to
 // be compatible with the behavior of Pandoc < 2.8).
@@ -348,14 +348,34 @@ display: none;
 
 
 
-<h1 class="title toc-ignore">Calibrating the Structural Outcome
-Model</h1>
+<h1 class="title toc-ignore">Calibrating the BLUP-as-Predictor
+Structural Model</h1>
 
 </div>
 
 
-<div id="from-posterior-reliability-to-a-structural-outcome-model" class="section level1">
-<h1>From Posterior Reliability to a Structural Outcome Model</h1>
+<div id="recommendation" class="section level1">
+<h1>Recommendation</h1>
+<p>For the primary BLUP-as-predictor study, calibrate the focal effect
+as a <strong>standardized regression coefficient</strong>, not as total
+structural <span class="math inline">\(R^2\)</span>.</p>
+<p>The planned effect-size factor is the effect of the random slope on
+the external outcome: <span class="math inline">\(0\)</span>, <span class="math inline">\(.2\)</span>, <span class="math inline">\(.4\)</span>, and <span class="math inline">\(.6\)</span>. When the random intercept is also
+included with a fixed nonzero coefficient, total <span class="math inline">\(R^2\)</span> no longer isolates that focal effect.
+It combines:</p>
+<ol style="list-style-type: decimal">
+<li>variance explained by the random intercept;</li>
+<li>variance explained by the random slope; and</li>
+<li>their covariance contribution.</li>
+</ol>
+<p>Consequently, the fixed intercept effect imposes a positive floor on
+total <span class="math inline">\(R^2\)</span>, making some null and
+small slope-effect cells impossible. The standardized-beta
+parameterization avoids that problem and permits all planned effect-size
+conditions.</p>
+</div>
+<div id="primary-calibration-standardized-focal-beta" class="section level1">
+<h1>Primary Calibration: Standardized Focal Beta</h1>
 <p>Consider the two-stage model in which first-stage random effects
 serve as predictors of a cluster-level outcome <span class="math inline">\(z_i\)</span>.</p>
 <div id="the-structural-model" class="section level2">
@@ -381,29 +401,80 @@ and <span class="math inline">\(\beta_2\)</span> is the calibrated
 coefficient of interest.</p>
 <p>The total variance of <span class="math inline">\(z_i\)</span> is
 fixed to <span class="math inline">\(\sigma_z^2\)</span> across all
-conditions:</p>
+conditions. Let <span class="math inline">\(\beta_{2,\mathrm{std}}\)</span> denote the planned
+standardized slope coefficient:</p>
 <p><span class="math display">\[
-\text{Var}(z_i) = V_{\text{pred}} + \sigma_u^2 = \sigma_z^2.
+\beta_{2,\mathrm{std}}
+= \beta_2 \frac{\sqrt{G_{22}}}{\sigma_z}.
 \]</span></p>
-</div>
-<div id="the-variance-of-the-linear-predictor" class="section level2">
-<h2>2. The Variance of the Linear Predictor</h2>
-<p><span class="math inline">\(V_{\text{pred}}\)</span> is the variance
-of the predicted part of <span class="math inline">\(z_i\)</span>:</p>
+<p>Therefore:</p>
 <p><span class="math display">\[
-V_{\text{pred}} = \text{Var}(\beta_1 b_{0i} + \beta_2 b_{1i}).
+\beta_2
+= \beta_{2,\mathrm{std}}\frac{\sigma_z}{\sqrt{G_{22}}}.
 \]</span></p>
-<p>Since <span class="math inline">\((b_{0i}, b_{1i})^\top \sim
-N(\mathbf{0}, \mathbf{G}_{\text{marginal}})\)</span>, this is a
-quadratic form:</p>
+<p>For the slope-only target, set <span class="math inline">\(\beta_1=0\)</span>. For the intercept-plus-slope
+target, set <span class="math inline">\(\beta_1\)</span> to its fixed
+nuisance value. Then compute:</p>
 <p><span class="math display">\[
 V_{\text{pred}}
-= \boldsymbol{\beta}^\top \mathbf{G}_{\text{marginal}}\,
-\boldsymbol{\beta}
-= \beta_1^2 G_{11} + 2\beta_1\beta_2 G_{12} + \beta_2^2 G_{22}.
+= \beta_1^2 G_{11} + 2\beta_1\beta_2 G_{12} + \beta_2^2 G_{22},
 \]</span></p>
-<p>The structural <span class="math inline">\(R^2\)</span> is the
-proportion of total variance explained by the predictors:</p>
+<p>and:</p>
+<p><span class="math display">\[
+\sigma_u^2 = \sigma_z^2 - V_{\text{pred}}.
+\]</span></p>
+<p>The condition is feasible whenever <span class="math inline">\(\sigma_u^2&gt;0\)</span>. With the current
+nuisance coefficient and planned standardized slope effects, all
+combinations of <span class="math inline">\(\beta_{2,\mathrm{std}}\in\{0,.2,.4,.6\}\)</span>
+and <span class="math inline">\(\rho\in\{-.5,0,.5\}\)</span> are
+feasible.</p>
+<p>The total structural <span class="math inline">\(R^2\)</span> is
+retained as a derived diagnostic:</p>
+<p><span class="math display">\[
+R^2_{\text{total}} = \frac{V_{\text{pred}}}{\sigma_z^2}.
+\]</span></p>
+<p>It should not be treated as the manipulated focal effect in the
+dual-predictor conditions.</p>
+<p>For estimation, the primary second-stage model always includes both
+latent random effects, even when the data-generating intercept
+coefficient is zero:</p>
+<p><span class="math display">\[
+z_i = \beta_0 + \beta_1 b_{0i} + \beta_2 b_{1i} + u_i.
+\]</span></p>
+<p>Only the standardized slope coefficient is reported. Slope-only
+regressions are retained as diagnostics for the contamination produced
+by omitting the random intercept when <span class="math inline">\(b_{0i}\)</span> and <span class="math inline">\(b_{1i}\)</span> are correlated.</p>
+<p>For Monte Carlo comparison, every estimator is converted to this
+standardized scale using the same calibrated population SD of <span class="math inline">\(b_{1i}\)</span>. This prevents method-specific
+estimates of the latent slope variance from changing the estimand being
+compared.</p>
+</div>
+<div id="calibration-workflow" class="section level2">
+<h2>Calibration Workflow</h2>
+<p>For each first-stage condition:</p>
+<ol style="list-style-type: decimal">
+<li>Calibrate <span class="math inline">\(\mathbf{G}_{\text{marginal}}\)</span> from the
+posterior-reliability target.</li>
+<li>Select the structural target.</li>
+<li>Set <span class="math inline">\(\beta_1=0\)</span> for
+<code>slope_only</code>, or to the fixed nuisance coefficient for
+<code>intercept_slope</code>.</li>
+<li>Convert the target standardized slope coefficient to raw <span class="math inline">\(\beta_2\)</span>.</li>
+<li>Compute <span class="math inline">\(V_{\text{pred}}\)</span>, total
+<span class="math inline">\(R^2\)</span>, and <span class="math inline">\(\sigma_u^2\)</span>.</li>
+<li>Verify that <span class="math inline">\(\sigma_u^2&gt;0\)</span>.</li>
+<li>Draw the random effects from <span class="math inline">\(\mathbf{G}_{\text{marginal}}\)</span> and generate
+the external outcome.</li>
+</ol>
+</div>
+</div>
+<div id="optional-alternative-targeting-total-structural-r2" class="section level1">
+<h1>Optional Alternative: Targeting Total Structural <span class="math inline">\(R^2\)</span></h1>
+<p>The quadratic calibration below is mathematically valid when the
+scientific design explicitly targets <strong>total model <span class="math inline">\(R^2\)</span></strong>. It is not recommended for
+the primary focal-effect grid.</p>
+<div id="the-variance-of-the-linear-predictor" class="section level2">
+<h2>The Variance of the Linear Predictor</h2>
 <p><span class="math display">\[
 R^2_{\text{struct}} = \frac{V_{\text{pred}}}{\sigma_z^2}.
 \]</span></p>
@@ -414,8 +485,9 @@ general, the target variance explained by the predictors is:</p>
 V_{\text{pred}} = R^2_{\text{target}} \cdot \sigma_z^2.
 \]</span></p>
 </div>
-<div id="calibrating-beta_2" class="section level2">
-<h2>3. Calibrating <span class="math inline">\(\beta_2\)</span></h2>
+<div id="calibrating-beta_2-from-total-r2" class="section level2">
+<h2>Calibrating <span class="math inline">\(\beta_2\)</span> From Total
+<span class="math inline">\(R^2\)</span></h2>
 <p>After first-stage reliability calibration, <span class="math inline">\(\mathbf{G}_{\text{marginal}}\)</span> is known.
 With <span class="math inline">\(\beta_1\)</span> and <span class="math inline">\(\sigma_z^2\)</span> fixed, setting <span class="math inline">\(V_{\text{pred}} =
 R^2_{\text{target}} \cdot \sigma_z^2\)</span> gives a quadratic in <span class="math inline">\(\beta_2\)</span>:</p>
@@ -443,7 +515,7 @@ G_{22}\beta_2^2 + 2\beta_1 G_{12}\beta_2
 depend on <span class="math inline">\(\mathbf{G}_{\text{marginal}}\)</span>.</p>
 </div>
 <div id="feasibility" class="section level2">
-<h2>4. Feasibility</h2>
+<h2>Feasibility</h2>
 <p>The discriminant must be non-negative. The minimum attainable <span class="math inline">\(V_{\text{pred}}\)</span> over all choices of <span class="math inline">\(\beta_2\)</span> is achieved at <span class="math inline">\(\beta_2^* = -\beta_1 G_{12} / G_{22}\)</span>:</p>
 <p><span class="math display">\[
 V_{\text{pred,min}} = \beta_1^2 \left(G_{11} -
@@ -462,7 +534,7 @@ R^2_{\min}\)</span>, no real <span class="math inline">\(\beta_2\)</span> exists
 flagged and reported rather than silently modified.</p>
 </div>
 <div id="relationship-between-mathbfg_textresidual-and-mathbfg_textmarginal" class="section level2">
-<h2>5. Relationship Between <span class="math inline">\(\mathbf{G}_{\text{residual}}\)</span> and <span class="math inline">\(\mathbf{G}_{\text{marginal}}\)</span></h2>
+<h2>Relationship Between <span class="math inline">\(\mathbf{G}_{\text{residual}}\)</span> and <span class="math inline">\(\mathbf{G}_{\text{marginal}}\)</span></h2>
 <p>In the original workflow, the random slope was the
 <strong>outcome</strong> of a structural model <span class="math inline">\(b_{1i} = \gamma x_i + u_{1i}\)</span>. The random
 effects were drawn from a reduced <span class="math inline">\(\mathbf{G}_{\text{residual}}\)</span> and the
@@ -478,33 +550,8 @@ There is nothing to partial out, so:</p>
 <p>The distinction between the two matrices disappears entirely in this
 design.</p>
 </div>
-<div id="calibration-workflow" class="section level2">
-<h2>6. Calibration Workflow</h2>
-<p>For each first-stage condition (cluster size, time design, residual
-structure, reliability, and correlation):</p>
-<ol style="list-style-type: decimal">
-<li>Calibrate <span class="math inline">\(\mathbf{G}_{\text{marginal}}\)</span> from the
-reliability target following the first-stage workflow.</li>
-<li>Fix <span class="math inline">\(\beta_1\)</span>, <span class="math inline">\(\sigma_z^2\)</span>, and <span class="math inline">\(R^2_{\text{target}}\)</span>.</li>
-<li>Compute <span class="math inline">\(R^2_{\min}\)</span> and check
-feasibility.</li>
-<li>Solve for <span class="math inline">\(\beta_2\)</span> using the
-quadratic formula above.</li>
-<li>Set <span class="math inline">\(\sigma_u^2 = \sigma_z^2(1 -
-R^2_{\text{target}})\)</span>.</li>
-<li>Draw <span class="math inline">\((b_{0i}, b_{1i})^\top \sim
-N(\mathbf{0}, \mathbf{G}_{\text{marginal}})\)</span> and generate:</li>
-</ol>
-<p><span class="math display">\[
-z_i = \beta_0 + \beta_1 b_{0i} + \beta_2 b_{1i} + u_i,
-\qquad u_i \sim N(0, \sigma_u^2).
-\]</span></p>
-<p>As in the first-stage calibration, these parameters are calibrated
-once when the condition manifest is constructed and held fixed across
-all Monte Carlo replications of that condition.</p>
-</div>
 <div id="verification" class="section level2">
-<h2>7. Verification</h2>
+<h2>Verification</h2>
 <p>For every calibrated cell:</p>
 <ol style="list-style-type: decimal">
 <li>Recompute <span class="math inline">\(V_{\text{pred}} = \beta_1^2
@@ -519,8 +566,8 @@ its empirical variance approaches <span class="math inline">\(\sigma_z^2\)</span
 definite.</li>
 </ol>
 </div>
-<div id="implementation" class="section level2">
-<h2>8. Implementation</h2>
+<div id="total-r2-implementation" class="section level2">
+<h2>Total-<span class="math inline">\(R^2\)</span> Implementation</h2>
 <pre class="r"><code>calibrate_beta2 &lt;- function(beta1, G_marginal, r2_target, var_z = 1) {
 
   # Extract G matrix elements
