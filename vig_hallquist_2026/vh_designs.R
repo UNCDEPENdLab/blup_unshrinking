@@ -12,6 +12,8 @@ fixed_params <- list(
   gamma1_outcome = 0.6,
   gamma0_predictor = 0.0,
   gamma1_predictor = 0.5,
+  gamma0_process_y = 0.0,
+  gamma1_process_y = 0.5,
   gamma0_process_q = 0.5,
   gamma1_process_q = 0.4
 )
