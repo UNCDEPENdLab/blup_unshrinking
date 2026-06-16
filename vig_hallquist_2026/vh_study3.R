@@ -231,7 +231,9 @@ run_study3_rep <- function(condition) {
       time_index_var = "trial_index",
       time_value_var = "x",
       reporting_scale = reporting_scale
-    )
+    )  %>%
+      dplyr::mutate(method = "sem") %>%
+      dplyr::select(method, dplyr::everything())
   )
 
   dplyr::bind_cols(

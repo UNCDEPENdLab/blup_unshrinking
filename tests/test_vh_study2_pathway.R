@@ -23,7 +23,7 @@ source(file.path(
 
 design <- select_design("2")
 stopifnot(
-  nrow(design) == 1440L,
+  nrow(design) == 720L,
   all(design$outcome_residual_variance > 0),
   all(abs(design$achieved_reliability - design$target_reliability) < 1e-8),
   all(design$beta1z[design$structural_target == "slope_only"] == 0),
@@ -53,7 +53,7 @@ primary_dual_methods <- c(
   "fuller_closed_form",
   "fuller_alpha_stepdown_closed_form",
   "lai_2spa",
-  "lai_2spaa"
+  "msem"
 )
 
 stopifnot(
