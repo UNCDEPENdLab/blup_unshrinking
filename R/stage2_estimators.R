@@ -740,7 +740,6 @@ fuller_dual_result_columns <- function() {
   )
 }
 
-# TODO: fuller already does some type of scaling which should probably only be done if reporting_scale is NULL (?)
 rescale_fuller_to_population_sd <- function(result, reporting_scale) {
   reporting_scale <- as.numeric(reporting_scale[[1]])
   if (!is.finite(reporting_scale) || reporting_scale <= 0) {
@@ -866,6 +865,7 @@ fit_fuller_dual_core <- function(stage2_df,
                                  measurement_weight = 1,
                                  alpha_step1 = NULL,
                                  alpha_step3 = NULL,
+                                 skip_internal_scaling = TRUE,
                                  alpha_scaling = NULL,
                                  auto_tempered = FALSE) {
   if (!requireNamespace("geigen", quietly = TRUE)) {
@@ -976,29 +976,48 @@ fit_fuller_dual_core <- function(stage2_df,
 
   alpha_step1 <- if (is.null(alpha_step1)) p + 1 else alpha_step1
   alpha_step3 <- if (is.null(alpha_step3)) p + 1 else alpha_step3
-  alpha_scaling <- if (is.null(alpha_scaling)) p + 1 else alpha_scaling
+  
   out_fail <- dplyr::mutate(
     out_fail,
     fuller_alpha_step1_requested = alpha_step1,
-    fuller_alpha_step3_requested = alpha_step3,
-    fuller_alpha_scaling_requested = alpha_scaling
+    fuller_alpha_step3_requested = alpha_step3
   )
-  if (!is.finite(alpha_step1) || !is.finite(alpha_step3) || !is.finite(alpha_scaling) ||
-    alpha_step1 <= 0 || alpha_step3 <= 0 || alpha_scaling <= 0) {
+  if (!is.finite(alpha_step1) || !is.finite(alpha_step3) ||
+    alpha_step1 <= 0 || alpha_step3 <= 0) {
     return(fuller_fail(
       3L,
       "fuller_invalid_alpha",
       sprintf(
-        "alpha_step1=%s; alpha_step3=%s; alpha_scaling=%s",
+        "alpha_step1=%s; alpha_step3=%s",
         alpha_step1,
-        alpha_step3,
-        alpha_scaling
+        alpha_step3
       )
     ))
   }
+  
+  if (!skip_internal_scaling) {
+    alpha_scaling <- if (is.null(alpha_scaling)) p + 1 else alpha_scaling
+    out_fail <- dplyr::mutate(
+      out_fail,
+      fuller_alpha_scaling_requested = alpha_scaling
+    )
+    if (!is.finite(alpha_scaling) || alpha_scaling <= 0) {
+      return(fuller_fail(
+        3L,
+        "fuller_invalid_alpha",
+        sprintf(
+          "alpha_scaling=%s",
+          alpha_scaling
+        )
+      ))
+    }
+    alpha_scaling <- max(alpha_scaling, p + 1)
+  } else {
+    alpha_scaling <- NA
+  }
+  
   alpha_step1 <- max(alpha_step1, p + 1)
   alpha_step3 <- max(alpha_step3, p + 1)
-  alpha_scaling <- max(alpha_scaling, p + 1)
   out_fail <- dplyr::mutate(
     out_fail,
     fuller_alpha_step1_used = alpha_step1,
@@ -1253,71 +1272,82 @@ fit_fuller_dual_core <- function(stage2_df,
     return(fuller_fail(2L, "fuller_negative_or_nonfinite_variance"))
   }
 
-  # Scale to the one-latent-SD target used elsewhere in stage-2 summaries.
-  # The Fuller estimating equations use the step-3 weights w_j, which downweight
-  # observations with large composite measurement variance. Using the same
-  # weights for the latent-SD scaling tends to be more stable than the raw
-  # unweighted corrected covariance when the supplied measurement-error
-  # variances are large.
-  # https://en.wikipedia.org/wiki/Weighted_arithmetic_mean#
-  pred_mat <- if (has_u0) cbind(u0_vec, u1_vec) else matrix(u1_vec, ncol = 1L)
-  w_sum <- sum(w_inv)
-  w_sq_sum <- sum(w_inv^2)
-  denom_eff <- w_sum - w_sq_sum / w_sum
-  pred_mean <- colSums(pred_mat * w_inv) / w_sum
-  pred_centered <- sweep(pred_mat, 2L, pred_mean, FUN = "-")
-  pred_centered_w <- pred_centered * sqrt(w_inv)
-
-  if (has_u0) {
-    omega_x_sum_pred_w <- matrix(
-      c(sum(w_inv * s11), sum(w_inv * s12), sum(w_inv * s12), sum(w_inv * s22)),
-      nrow = 2L,
-      byrow = TRUE
-    )
-  } else {
-    omega_x_sum_pred_w <- matrix(sum(w_inv * s22), nrow = 1L)
-  }
-
-  # we have to choose a third alpha since we're now working with centered x
-  lambda_scaling_hat <- smallest_det_root(crossprod(pred_centered_w), omega_x_sum_pred_w)
-  c_correction_scaling <- if (!is.na(lambda_scaling_hat) && is.finite(lambda_scaling_hat) && lambda_scaling_hat <= 1 + 1 / m) {
-    lambda_scaling_hat - 1 / m - alpha_scaling / m
-  } else {
-    1 - alpha_scaling / m
-  }
-
-  # Use the standard effective-denominator for a weighted sample covariance so
-  # that constant weights reduce exactly to the unweighted (m - 1) denominator.
-  sigma_x_observed <- crossprod(pred_centered_w) / denom_eff
-  sigma_x_observed <- (sigma_x_observed + t(sigma_x_observed)) / 2
-  scaling_observed_diag <- fuller_matrix_diagnostics(sigma_x_observed)
-  # Apply the Step-3 correction to the centered predictor covariance.
-  sigma_x_hat <- (crossprod(pred_centered_w) - c_correction_scaling * omega_x_sum_pred_w) / denom_eff
-  sigma_x_hat <- (sigma_x_hat + t(sigma_x_hat)) / 2
-  scaling_diag <- fuller_matrix_diagnostics(sigma_x_hat)
-  scaling_relative_min_eigen <- fuller_relative_min_eigen(scaling_diag, scaling_observed_diag)
-
-  out_fail <- dplyr::mutate(
-    out_fail,
-    fuller_lambda_scaling = lambda_scaling_hat,
-    fuller_correction_scaling = c_correction_scaling,
-    fuller_scaling_condition = scaling_diag$condition_number,
-    fuller_scaling_min_eigen = scaling_diag$min_eigen,
-    fuller_scaling_observed_max_eigen = scaling_observed_diag$max_eigen,
-    fuller_scaling_relative_min_eigen = scaling_relative_min_eigen
-  )
   
-  target_pred_idx <- ncol(pred_mat)
-  if (!is.finite(sigma_x_hat[target_pred_idx, target_pred_idx]) ||
-    sigma_x_hat[target_pred_idx, target_pred_idx] <= sqrt(.Machine$double.eps)) {
-    return(fuller_fail(2L, "fuller_latent_predictor_var_not_positive"))
-  }
-  scale_u1 <- sqrt(sigma_x_hat[target_pred_idx, target_pred_idx])
-
-  est <- unname(gamma_hat[target_gamma_idx]) * scale_u1
-  se <- sqrt(var_u1) * scale_u1
-  if (!is.finite(est) || !is.finite(se)) {
-    return(fuller_fail(2L, "fuller_nonfinite_estimate_or_se"))
+  if (!skip_internal_scaling) {
+    # Scale to the one-latent-SD target used elsewhere in stage-2 summaries.
+    # The Fuller estimating equations use the step-3 weights w_j, which downweight
+    # observations with large composite measurement variance. Using the same
+    # weights for the latent-SD scaling tends to be more stable than the raw
+    # unweighted corrected covariance when the supplied measurement-error
+    # variances are large.
+    # https://en.wikipedia.org/wiki/Weighted_arithmetic_mean#
+    pred_mat <- if (has_u0) cbind(u0_vec, u1_vec) else matrix(u1_vec, ncol = 1L)
+    w_sum <- sum(w_inv)
+    w_sq_sum <- sum(w_inv^2)
+    denom_eff <- w_sum - w_sq_sum / w_sum
+    pred_mean <- colSums(pred_mat * w_inv) / w_sum
+    pred_centered <- sweep(pred_mat, 2L, pred_mean, FUN = "-")
+    pred_centered_w <- pred_centered * sqrt(w_inv)
+  
+    if (has_u0) {
+      omega_x_sum_pred_w <- matrix(
+        c(sum(w_inv * s11), sum(w_inv * s12), sum(w_inv * s12), sum(w_inv * s22)),
+        nrow = 2L,
+        byrow = TRUE
+      )
+    } else {
+      omega_x_sum_pred_w <- matrix(sum(w_inv * s22), nrow = 1L)
+    }
+  
+    # we have to choose a third alpha since we're now working with centered x
+    lambda_scaling_hat <- smallest_det_root(crossprod(pred_centered_w), omega_x_sum_pred_w)
+    c_correction_scaling <- if (!is.na(lambda_scaling_hat) && is.finite(lambda_scaling_hat) && lambda_scaling_hat <= 1 + 1 / m) {
+      lambda_scaling_hat - 1 / m - alpha_scaling / m
+    } else {
+      1 - alpha_scaling / m
+    }
+  
+    # Use the standard effective-denominator for a weighted sample covariance so
+    # that constant weights reduce exactly to the unweighted (m - 1) denominator.
+    sigma_x_observed <- crossprod(pred_centered_w) / denom_eff
+    sigma_x_observed <- (sigma_x_observed + t(sigma_x_observed)) / 2
+    scaling_observed_diag <- fuller_matrix_diagnostics(sigma_x_observed)
+    # Apply the Step-3 correction to the centered predictor covariance.
+    sigma_x_hat <- (crossprod(pred_centered_w) - c_correction_scaling * omega_x_sum_pred_w) / denom_eff
+    sigma_x_hat <- (sigma_x_hat + t(sigma_x_hat)) / 2
+    scaling_diag <- fuller_matrix_diagnostics(sigma_x_hat)
+    scaling_relative_min_eigen <- fuller_relative_min_eigen(scaling_diag, scaling_observed_diag)
+  
+    out_fail <- dplyr::mutate(
+      out_fail,
+      fuller_lambda_scaling = lambda_scaling_hat,
+      fuller_correction_scaling = c_correction_scaling,
+      fuller_scaling_condition = scaling_diag$condition_number,
+      fuller_scaling_min_eigen = scaling_diag$min_eigen,
+      fuller_scaling_observed_max_eigen = scaling_observed_diag$max_eigen,
+      fuller_scaling_relative_min_eigen = scaling_relative_min_eigen
+    )
+    
+    target_pred_idx <- ncol(pred_mat)
+    if (!is.finite(sigma_x_hat[target_pred_idx, target_pred_idx]) ||
+      sigma_x_hat[target_pred_idx, target_pred_idx] <= sqrt(.Machine$double.eps)) {
+      return(fuller_fail(2L, "fuller_latent_predictor_var_not_positive"))
+    }
+    scale_u1 <- sqrt(sigma_x_hat[target_pred_idx, target_pred_idx])
+  
+    est <- unname(gamma_hat[target_gamma_idx]) * scale_u1
+    se <- sqrt(var_u1) * scale_u1
+    if (!is.finite(est) || !is.finite(se)) {
+      return(fuller_fail(2L, "fuller_nonfinite_estimate_or_se"))
+    }
+  } else {
+    est <- unname(gamma_hat[target_gamma_idx])
+    se <- sqrt(var_u1)
+    lambda_scaling_hat <- NA
+    c_correction_scaling <- NA
+    scaling_diag <- data.frame(condition_number = NA, min_eigen = NA)
+    scaling_observed_diag <- data.frame(max_eigen = NA)
+    scaling_relative_min_eigen <- NA
   }
 
   tibble::tibble(
@@ -1485,7 +1515,8 @@ fit_fuller_dual <- function(stage2_df,
                             meas11 = NULL,
                             meas12 = NULL,
                             meas22,
-                            outcome_meas_var = NULL) {
+                            outcome_meas_var = NULL,
+                            skip_internal_scaling = TRUE) {
   out <- fit_fuller_dual_core(
     stage2_df,
     outcome = outcome,
@@ -1496,7 +1527,8 @@ fit_fuller_dual <- function(stage2_df,
     meas22 = meas22,
     outcome_meas_var = outcome_meas_var,
     measurement_weight = 1,
-    auto_tempered = FALSE
+    auto_tempered = FALSE,
+    skip_internal_scaling = skip_internal_scaling
   )
   dplyr::select(out, dplyr::any_of(fuller_dual_result_columns()))
 }
@@ -1551,7 +1583,8 @@ fit_fuller_dual_stepdown <- function(stage2_df,
                                      min_sx_uncorr_eigen = sqrt(.Machine$double.eps),
                                      min_scaling_eigen = sqrt(.Machine$double.eps),
                                      min_sx_uncorr_relative_eigen = 5e-2,
-                                     min_scaling_relative_eigen = 5e-2) {
+                                     min_scaling_relative_eigen = 5e-2,
+                                     skip_internal_scaling = TRUE) {
   if (is.null(candidate_weights)) {
     coarse_grid_size <- max(3L, as.integer(coarse_grid_size))
     candidate_weights <- seq(1, 0, length.out = coarse_grid_size)
@@ -1580,7 +1613,8 @@ fit_fuller_dual_stepdown <- function(stage2_df,
         meas22 = meas22,
         outcome_meas_var = outcome_meas_var,
         measurement_weight = weight,
-        auto_tempered = TRUE
+        auto_tempered = TRUE, 
+        skip_internal_scaling = skip_internal_scaling
       )
     })
     score_fuller_auto_candidates(
@@ -1686,7 +1720,8 @@ fit_fuller_dual_stepdown <- function(stage2_df,
     meas22 = meas22,
     outcome_meas_var = outcome_meas_var,
     measurement_weight = chosen_weight,
-    auto_tempered = TRUE
+    auto_tempered = TRUE, 
+    skip_internal_scaling = skip_internal_scaling
   )
   actual_se_ratio <- if (is.finite(reference_se) && reference_se > sqrt(.Machine$double.eps) &&
     nrow(out) > 0L && is.finite(out$se[[1]])) {
@@ -1772,7 +1807,8 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
                                            min_sx1_star_eigen = sqrt(.Machine$double.eps),
                                            min_sx_star_eigen = sqrt(.Machine$double.eps),
                                            min_scaling_eigen = sqrt(.Machine$double.eps),
-                                           target_condition_number = 1e5) {
+                                           target_condition_number = 1e5,
+                                           skip_internal_scaling = TRUE) {
   if (is.null(candidate_alphas)) {
     coarse_grid_size <- max(3L, as.integer(coarse_grid_size))
   }
@@ -1931,7 +1967,8 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
         measurement_weight = 1,
         alpha_step1 = alpha,
         alpha_step3 = alpha_lower,
-        auto_tempered = TRUE
+        auto_tempered = TRUE,
+        skip_internal_scaling = skip_internal_scaling
       )
     })
     score_alpha_step1(dplyr::bind_rows(candidate_results))
@@ -1949,7 +1986,8 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
     measurement_weight = 1,
     alpha_step1 = alpha_lower,
     alpha_step3 = alpha_lower,
-    auto_tempered = TRUE
+    auto_tempered = TRUE,
+    skip_internal_scaling = skip_internal_scaling
   )
   lambda1_hat <- if (nrow(base_step1) > 0L) base_step1$fuller_lambda1[[1]] else NA_real_
   alpha_step1_upper <- alpha_upper_from_lambda(lambda1_hat)
@@ -2025,7 +2063,8 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
         measurement_weight = 1,
         alpha_step1 = chosen_alpha_step1,
         alpha_step3 = alpha,
-        auto_tempered = TRUE
+        auto_tempered = TRUE,
+        skip_internal_scaling = skip_internal_scaling
       )
     })
     score_alpha_step3(dplyr::bind_rows(candidate_results))
@@ -2043,7 +2082,8 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
     measurement_weight = 1,
     alpha_step1 = chosen_alpha_step1,
     alpha_step3 = alpha_lower,
-    auto_tempered = TRUE
+    auto_tempered = TRUE,
+    skip_internal_scaling = skip_internal_scaling
   )
   lambda2_hat <- if (nrow(base_step3) > 0L) base_step3$fuller_lambda2[[1]] else NA_real_
   alpha_step3_upper <- alpha_upper_from_lambda(lambda2_hat)
@@ -2061,106 +2101,112 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
     )
     chosen_alpha_step3 <- step3_choice$alpha
   }
-
-  score_alpha_scaling <- function(tbl) {
-    status_ok <- as.integer(tbl$status_code) == 0L
-    scaling_ok <- is.finite(tbl$fuller_scaling_min_eigen) &
-      tbl$fuller_scaling_min_eigen >= min_scaling_eigen
-    scaling_relative_ok <- is.finite(tbl$fuller_scaling_relative_min_eigen) &
-      tbl$fuller_scaling_relative_min_eigen >= min_scaling_relative_eigen
-    reason <- dplyr::case_when(
-      !status_ok ~ paste0("status_", tbl$status_code),
-      !scaling_ok ~ "scaling_eigen_floor",
-      !scaling_relative_ok ~ "scaling_relative_eigen_floor",
-      TRUE ~ "ok"
-    )
-    eig_penalty <- fuller_guard_penalty(tbl$fuller_scaling_min_eigen, min_scaling_eigen) +
-      fuller_guard_penalty(tbl$fuller_scaling_relative_min_eigen, min_scaling_relative_eigen)
-    condition_penalty <- ifelse(
-      is.finite(tbl$fuller_scaling_condition) &
-        is.finite(target_condition_number) &
-        target_condition_number > 0,
-      pmax(0, log(tbl$fuller_scaling_condition / target_condition_number)),
-      Inf
-    )
-    status_penalty <- ifelse(status_ok, 0, Inf)
-    dplyr::mutate(
-      tbl,
-      alpha_scaling_guard_pass = status_ok & scaling_ok & scaling_relative_ok,
-      alpha_scaling_guard_reason = reason,
-      alpha_scaling_guard_score = status_penalty + eig_penalty + condition_penalty
-    )
-  }
-
-  deduplicate_alpha_scaling <- function(tbl) {
-    tbl <- dplyr::mutate(tbl, .alpha_key = round(fuller_alpha_scaling_used, 10L))
-    tbl <- dplyr::arrange(tbl, fuller_alpha_scaling_used, dplyr::desc(alpha_scaling_guard_pass))
-    tbl <- dplyr::group_by(tbl, .alpha_key)
-    tbl <- dplyr::slice(tbl, 1L)
-    tbl <- dplyr::ungroup(tbl)
-    dplyr::select(tbl, -.alpha_key)
-  }
-
-  evaluate_alpha_scaling <- function(alphas) {
-    alphas <- sort(unique(alphas), decreasing = FALSE)
-    candidate_results <- lapply(alphas, function(alpha_scaling) {
-      fit_fuller_dual_core(
-        stage2_df,
-        outcome = outcome,
-        predictor_u0 = predictor_u0,
-        predictor_u1 = predictor_u1,
-        meas11 = meas11,
-        meas12 = meas12,
-        meas22 = meas22,
-        outcome_meas_var = outcome_meas_var,
-        measurement_weight = 1,
-        alpha_step1 = chosen_alpha_step1,
-        alpha_step3 = chosen_alpha_step3,
-        alpha_scaling = alpha_scaling,
-        auto_tempered = TRUE
+  
+  if (!skip_internal_scaling) {
+    score_alpha_scaling <- function(tbl) {
+      status_ok <- as.integer(tbl$status_code) == 0L
+      scaling_ok <- is.finite(tbl$fuller_scaling_min_eigen) &
+        tbl$fuller_scaling_min_eigen >= min_scaling_eigen
+      scaling_relative_ok <- is.finite(tbl$fuller_scaling_relative_min_eigen) &
+        tbl$fuller_scaling_relative_min_eigen >= min_scaling_relative_eigen
+      reason <- dplyr::case_when(
+        !status_ok ~ paste0("status_", tbl$status_code),
+        !scaling_ok ~ "scaling_eigen_floor",
+        !scaling_relative_ok ~ "scaling_relative_eigen_floor",
+        TRUE ~ "ok"
       )
-    })
-    score_alpha_scaling(dplyr::bind_rows(candidate_results))
-  }
-
-  base_scaling <- fit_fuller_dual_core(
-    stage2_df,
-    outcome = outcome,
-    predictor_u0 = predictor_u0,
-    predictor_u1 = predictor_u1,
-    meas11 = meas11,
-    meas12 = meas12,
-    meas22 = meas22,
-    outcome_meas_var = outcome_meas_var,
-    measurement_weight = 1,
-    alpha_step1 = chosen_alpha_step1,
-    alpha_step3 = chosen_alpha_step3,
-    alpha_scaling = alpha_lower,
-    auto_tempered = TRUE
-  )
-  # The scaling-alpha upper bound should come from the centered-covariance
-  # determinant root, not from `fuller_scaling_relative_min_eigen`. The latter
-  # is only an admissibility diagnostic, so using it as lambda can arbitrarily
-  # cap the search before a valid scaling alpha is reachable.
-  scaling_lambda_hat <- if (nrow(base_scaling) > 0L && "fuller_lambda_scaling" %in% names(base_scaling)) {
-    base_scaling$fuller_lambda_scaling[[1]]
-  } else {
-    NA_real_
-  }
-  alpha_scaling_upper <- alpha_upper_from_lambda(scaling_lambda_hat)
-  if (!is.finite(alpha_scaling_upper)) {
-    alpha_scaling_upper <- alpha_lower
-  }
-  chosen_alpha_scaling <- alpha_lower
-  if (alpha_scaling_upper > alpha_lower) {
-    scaling_choice <- refine_alpha_choice(
-      evaluate_alpha_scaling(alpha_candidates(alpha_scaling_upper)),
-      alpha_col = "fuller_alpha_scaling_used",
-      pass_col = "alpha_scaling_guard_pass",
-      evaluate_fn = evaluate_alpha_scaling,
-      deduplicate_fn = deduplicate_alpha_scaling
+      eig_penalty <- fuller_guard_penalty(tbl$fuller_scaling_min_eigen, min_scaling_eigen) +
+        fuller_guard_penalty(tbl$fuller_scaling_relative_min_eigen, min_scaling_relative_eigen)
+      condition_penalty <- ifelse(
+        is.finite(tbl$fuller_scaling_condition) &
+          is.finite(target_condition_number) &
+          target_condition_number > 0,
+        pmax(0, log(tbl$fuller_scaling_condition / target_condition_number)),
+        Inf
+      )
+      status_penalty <- ifelse(status_ok, 0, Inf)
+      dplyr::mutate(
+        tbl,
+        alpha_scaling_guard_pass = status_ok & scaling_ok & scaling_relative_ok,
+        alpha_scaling_guard_reason = reason,
+        alpha_scaling_guard_score = status_penalty + eig_penalty + condition_penalty
+      )
+    }
+  
+    deduplicate_alpha_scaling <- function(tbl) {
+      tbl <- dplyr::mutate(tbl, .alpha_key = round(fuller_alpha_scaling_used, 10L))
+      tbl <- dplyr::arrange(tbl, fuller_alpha_scaling_used, dplyr::desc(alpha_scaling_guard_pass))
+      tbl <- dplyr::group_by(tbl, .alpha_key)
+      tbl <- dplyr::slice(tbl, 1L)
+      tbl <- dplyr::ungroup(tbl)
+      dplyr::select(tbl, -.alpha_key)
+    }
+  
+    evaluate_alpha_scaling <- function(alphas) {
+      alphas <- sort(unique(alphas), decreasing = FALSE)
+      candidate_results <- lapply(alphas, function(alpha_scaling) {
+        fit_fuller_dual_core(
+          stage2_df,
+          outcome = outcome,
+          predictor_u0 = predictor_u0,
+          predictor_u1 = predictor_u1,
+          meas11 = meas11,
+          meas12 = meas12,
+          meas22 = meas22,
+          outcome_meas_var = outcome_meas_var,
+          measurement_weight = 1,
+          alpha_step1 = chosen_alpha_step1,
+          alpha_step3 = chosen_alpha_step3,
+          alpha_scaling = alpha_scaling,
+          auto_tempered = TRUE,
+          skip_internal_scaling = skip_internal_scaling
+        )
+      })
+      score_alpha_scaling(dplyr::bind_rows(candidate_results))
+    }
+  
+    base_scaling <- fit_fuller_dual_core(
+      stage2_df,
+      outcome = outcome,
+      predictor_u0 = predictor_u0,
+      predictor_u1 = predictor_u1,
+      meas11 = meas11,
+      meas12 = meas12,
+      meas22 = meas22,
+      outcome_meas_var = outcome_meas_var,
+      measurement_weight = 1,
+      alpha_step1 = chosen_alpha_step1,
+      alpha_step3 = chosen_alpha_step3,
+      alpha_scaling = alpha_lower,
+      auto_tempered = TRUE,
+      skip_internal_scaling = skip_internal_scaling
     )
-    chosen_alpha_scaling <- scaling_choice$alpha
+    # The scaling-alpha upper bound should come from the centered-covariance
+    # determinant root, not from `fuller_scaling_relative_min_eigen`. The latter
+    # is only an admissibility diagnostic, so using it as lambda can arbitrarily
+    # cap the search before a valid scaling alpha is reachable.
+    scaling_lambda_hat <- if (nrow(base_scaling) > 0L && "fuller_lambda_scaling" %in% names(base_scaling)) {
+      base_scaling$fuller_lambda_scaling[[1]]
+    } else {
+      NA_real_
+    }
+    alpha_scaling_upper <- alpha_upper_from_lambda(scaling_lambda_hat)
+    if (!is.finite(alpha_scaling_upper)) {
+      alpha_scaling_upper <- alpha_lower
+    }
+    chosen_alpha_scaling <- alpha_lower
+    if (alpha_scaling_upper > alpha_lower) {
+      scaling_choice <- refine_alpha_choice(
+        evaluate_alpha_scaling(alpha_candidates(alpha_scaling_upper)),
+        alpha_col = "fuller_alpha_scaling_used",
+        pass_col = "alpha_scaling_guard_pass",
+        evaluate_fn = evaluate_alpha_scaling,
+        deduplicate_fn = deduplicate_alpha_scaling
+      )
+      chosen_alpha_scaling <- scaling_choice$alpha
+    }
+  } else {
+    chosen_alpha_scaling <- NA
   }
 
   fit_fuller_dual_core(
@@ -2176,7 +2222,8 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
     alpha_step1 = chosen_alpha_step1,
     alpha_step3 = chosen_alpha_step3,
     alpha_scaling = chosen_alpha_scaling,
-    auto_tempered = TRUE
+    auto_tempered = TRUE,
+    skip_internal_scaling = skip_internal_scaling
   )
 }
 
