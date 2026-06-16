@@ -9,7 +9,7 @@ study3_methods <- function() {
     "closed_form_on_closed_form",
     "fuller_closed_form",
     "fuller_alpha_stepdown_closed_form",
-    "lai_2spa", "lai_2spaa",
+    "lai_2spa",
     "sem"
   )
 }
@@ -139,46 +139,54 @@ run_study3_rep <- function(condition) {
         method = "oracle_dual",
         estimate, se, ci_low, ci_high, status_code
       ),
-    finalize_ols_se_variants(
-      fit_observed_dual(
-        stage2_df,
-        outcome = "q_u1_eb",
-        predictor_u0 = "u0_eb",
-        predictor_u1 = "u1_eb",
-        reporting_scale = reporting_scale
+    fit_observed_dual(
+      stage2_df,
+      outcome = "q_u1_eb",
+      predictor_u0 = "u0_eb",
+      predictor_u1 = "u1_eb",
+      reporting_scale = reporting_scale
+    ) %>%
+      dplyr::filter(se_type == "naive") %>%
+      dplyr::transmute(
+        method = "naive_blup_on_blup",
+        estimate, se, ci_low, ci_high, status_code
       ),
-      "naive_blup_on_blup"
-    ),
-    finalize_ols_se_variants(
-      fit_observed_dual(
-        stage2_df,
-        outcome = "q_corrected_slope",
-        predictor_u0 = "u0_eb",
-        predictor_u1 = "u1_eb",
-        reporting_scale = reporting_scale
+    fit_observed_dual(
+      stage2_df,
+      outcome = "q_corrected_slope",
+      predictor_u0 = "u0_eb",
+      predictor_u1 = "u1_eb",
+      reporting_scale = reporting_scale
+    ) %>%
+      dplyr::filter(se_type == "naive") %>%
+      dplyr::transmute(
+        method = "closed_form_on_blup",
+        estimate, se, ci_low, ci_high, status_code
       ),
-      "closed_form_on_blup"
-    ),
-    finalize_ols_se_variants(
-      fit_observed_dual(
-        stage2_df,
-        outcome = "q_u1_eb",
-        predictor_u0 = "corrected_intercept_full",
-        predictor_u1 = "corrected_slope_full",
-        reporting_scale = reporting_scale
+    fit_observed_dual(
+      stage2_df,
+      outcome = "q_u1_eb",
+      predictor_u0 = "corrected_intercept_full",
+      predictor_u1 = "corrected_slope_full",
+      reporting_scale = reporting_scale
+    ) %>%
+      dplyr::filter(se_type == "naive") %>%
+      dplyr::transmute(
+        method = "blup_on_closed_form",
+        estimate, se, ci_low, ci_high, status_code
       ),
-      "blup_on_closed_form"
-    ),
-    finalize_ols_se_variants(
-      fit_observed_dual(
-        stage2_df,
-        outcome = "q_corrected_slope",
-        predictor_u0 = "corrected_intercept_full",
-        predictor_u1 = "corrected_slope_full",
-        reporting_scale = reporting_scale
+    fit_observed_dual(
+      stage2_df,
+      outcome = "q_corrected_slope",
+      predictor_u0 = "corrected_intercept_full",
+      predictor_u1 = "corrected_slope_full",
+      reporting_scale = reporting_scale
+    ) %>%
+      dplyr::filter(se_type == "naive") %>%
+      dplyr::transmute(
+        method = "closed_form_on_closed_form",
+        estimate, se, ci_low, ci_high, status_code
       ),
-      "closed_form_on_closed_form"
-    ),
     fit_fuller_dual(
       stage2_df,
       outcome = "q_corrected_slope",
@@ -214,15 +222,16 @@ run_study3_rep <- function(condition) {
     ) %>%
       dplyr::mutate(method = "lai_2spa") %>%
       dplyr::select(method, dplyr::everything()),
-    fit_lai_2spa_dual_process(
-      stage2_df,
-      use_average = TRUE,
-      theta0_start = condition$theta0[[1]],
-      theta1_start = condition$theta1[[1]],
+    fit_mplus_dual_process(
+      proc1_data = sim$lv1_y,
+      proc2_data = sim$lv1_q,
+      outcome1_var = "y", 
+      outcome2_var = "q",
+      cluster_id = "cid",
+      time_index_var = "trial_index",
+      time_value_var = "x",
       reporting_scale = reporting_scale
-    ) %>%
-      dplyr::mutate(method = "lai_2spaa") %>%
-      dplyr::select(method, dplyr::everything())
+    )
   )
 
   dplyr::bind_cols(

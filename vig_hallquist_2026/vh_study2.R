@@ -8,9 +8,6 @@ study2_methods <- function() {
     "fuller_closed_form",
     "fuller_alpha_stepdown_closed_form",
     "lai_2spa",
-    "naive_slope_blup",
-    "centered_slope_blup",
-    "closed_form_slope",
     "msem"
   )
 }
@@ -177,36 +174,6 @@ run_study2_rep <- function(condition) {
     ) %>%
       dplyr::mutate(method = "lai_2spa") %>%
       dplyr::select(method, dplyr::everything()),
-    fit_observed_single(
-      stage2_df,
-      outcome = "z",
-      predictor = "u1_eb",
-      reporting_scale = latent_slope_sd
-    ) %>%
-      dplyr::filter(se_type == "naive") %>%
-      dplyr::transmute(
-        method = "naive_slope_blup", estimate, se, ci_low, ci_high, status_code
-      ),
-    fit_observed_single(
-      stage2_df,
-      outcome = "z",
-      predictor = "centered_u1_eb",
-      reporting_scale = latent_slope_sd
-    ) %>%
-      dplyr::filter(se_type == "naive") %>%
-      dplyr::transmute(
-        method = "centered_slope_blup", estimate, se, ci_low, ci_high, status_code
-      ),
-    fit_observed_single(
-      stage2_df,
-      outcome = "z",
-      predictor = "corrected_slope_full",
-      reporting_scale = latent_slope_sd
-    ) %>%
-      dplyr::filter(se_type == "naive") %>%
-      dplyr::transmute(
-        method = "closed_form_slope", estimate, se, ci_low, ci_high, status_code
-      ),
     fit_mplus_blup_predictor(
       level1_data = sim$lv1,
       level2_data = sim$lv2_true,

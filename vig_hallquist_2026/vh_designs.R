@@ -198,7 +198,7 @@ make_study2_design <- function() {
     study = "study2",
     num_clus = c(30L, 50L, 100L, 150L, 300L),
     standardized_beta_target = c(0, 0.2, 0.4, 0.6),
-    structural_target = c("slope_only", "intercept_slope"),
+    structural_target = "intercept_slope", # only one structural target for now
     study_label = "BLUP as Predictor",
     study_structure = "z"
   )
@@ -289,7 +289,7 @@ make_study3_design <- function() {
     target_reliability_q = c(0.25, 0.8),
     marginal_rho = c(0, 0.5),
     standardized_beta_target = c(0, 0.2, 0.5),
-    structural_target = c("slope_only", "intercept_slope"),
+    structural_target = "intercept_slope", # only one structural target for now
     study_label = "BLUP as Predictor and Outcome",
     study_structure = "dual_process"
   )
@@ -381,8 +381,8 @@ make_study4_design <- function() {
 study_condition_counts <- function() {
   c(
     study1 = 5L * 4L * 3L * 3L * 4L,
-    study2 = 4L * 3L * 3L * 5L * 4L * 2L,
-    study3 = 4L * 3L * 3L * 2L * 2L * 2L * 3L * 2L,
+    study2 = 4L * 3L * 3L * 5L * 4L,
+    study3 = 4L * 3L * 3L * 2L * 2L * 2L * 3L,
     study4 = 0L
   )
 }
