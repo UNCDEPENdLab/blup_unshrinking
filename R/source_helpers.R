@@ -17,7 +17,8 @@ project_helper_source_order <- function() {
     "stage2_estimators.R",
     "blup_helpers.R",
     "sim_diagnostics.R",
-    "lai_openmx_helpers.R"
+    "lai_openmx_helpers.R",
+    "mplus_helpers.R"
   )
 }
 

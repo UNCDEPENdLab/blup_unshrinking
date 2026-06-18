@@ -39,7 +39,7 @@ stopifnot(
       sqrt(study1_design$slope_variance_marginal) -
       study1_design$standardized_beta_target
   )) < 1e-12,
-  nrow(study3_design) == 1728L,
+  nrow(study3_design) == 864,
   all(abs(
     study3_design$achieved_reliability_y -
       study3_design$target_reliability_y

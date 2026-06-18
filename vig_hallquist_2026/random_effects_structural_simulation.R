@@ -22,6 +22,8 @@ suppressPackageStartupMessages({
   library(glmnet)
   library(sandwich)
   library(geigen)
+  library(MplusAutomation)
+  library(glue)
 })
 
 current_script_path <- function() {

@@ -189,8 +189,8 @@ simulate_data_dual_blup <- function(condition) {
     condition$theta1[[1]] * y_effects[, 2L] +
     q_residual_effects[, 2L]
 
-  y <- fixed_params$gamma0_predictor +
-    fixed_params$gamma1_predictor * x_y +
+  y <- fixed_params$gamma0_process_y +
+    fixed_params$gamma1_process_y * x_y +
     y_effects[cid_y, 1L] +
     y_effects[cid_y, 2L] * x_y +
     draw_level1_residuals(

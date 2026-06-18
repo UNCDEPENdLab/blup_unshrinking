@@ -596,7 +596,8 @@ vig_hallquist_parallel_exports <- function() {
     "fit_lai_2spa", "fit_lai_2spa_observed_outcome", "fit_lai_2spa_disparate",
     "fit_lai_2spa_dual_process",
     "run_mx_safe", "extract_mx_stats", "extract_mx_se_details",
-    "classify_mx_issue", "compact_message", "project_to_pd"
+    "classify_mx_issue", "compact_message", "project_to_pd", "fit_mplus_blup_predictor",
+    "extract_mplus_stats"
   )
   candidates[vapply(candidates, exists, logical(1), mode = "function", inherits = TRUE) |
     candidates == "fixed_params"]
@@ -643,7 +644,8 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
       rep_id = rep_ids,
       .combine = dplyr::bind_rows,
       # TODO: check these exports
-      .packages = c("data.table", "lme4", "MASS", "dplyr", "tidyr", "purrr", "tibble", "OpenMx", "glmnet", "sandwich", "geigen"),
+      .packages = c("data.table", "lme4", "MASS", "dplyr", "tidyr", "purrr", "tibble", "OpenMx", 
+                    "glmnet", "sandwich", "geigen", "MplusAutomation", "glue"),
       .export = vig_hallquist_parallel_exports()
     ) %dopar% {
       run_single_rep(rep_id)
