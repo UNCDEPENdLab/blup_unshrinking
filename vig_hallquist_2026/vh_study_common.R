@@ -418,6 +418,7 @@ study_methods_for_condition <- function(condition) {
   study_key <- as.character(condition$study[[1]])
   switch(
     study_key,
+    study0 = study1_methods(),
     study1 = study1_methods(),
     study2 = study2_methods(),
     study3 = study3_methods(),
