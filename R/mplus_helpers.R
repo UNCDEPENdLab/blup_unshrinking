@@ -126,8 +126,8 @@ fit_mplus_blup_predictor <- function(level1_data, level2_data, join_by = dplyr::
   } else {
     out <- extract_mplus_stats(
       output_file,
-      xvar = between_component,
-      yvar = random_slope_label,
+      xvar = random_slope_label,
+      yvar = between_component,
       reporting_scale = reporting_scale
     )
   }
