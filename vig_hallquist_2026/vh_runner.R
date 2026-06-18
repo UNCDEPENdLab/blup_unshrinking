@@ -537,7 +537,7 @@ condition_output_is_complete <- function(
 #' Dispatch one replication to the correct study module.
 #'
 #' @param condition One-row condition tibble with a `study` column equal to
-#'   `"study1"`, `"study2"`, `"study3"`, or `"study4"`.
+#'  `"study0"`, `"study1"`, `"study2"`, `"study3"`, or `"study4"`.
 #'
 #' @return A replication-level result tibble from the corresponding
 #'   `run_study*_rep()` function.
@@ -545,6 +545,7 @@ run_study_rep <- function(condition) {
   study_key <- as.character(condition$study[[1]])
   switch(
     study_key,
+    study0 = run_study1_rep(condition),
     study1 = run_study1_rep(condition),
     study2 = run_study2_rep(condition),
     study3 = run_study3_rep(condition),
@@ -680,7 +681,7 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
 #'
 #' @param n_sim Positive integer number of replications per condition.
 #' @param study_arg Study selector passed to `select_design()`, typically
-#'   `"all"`, `"study1"`, `"study2"`, `"study3"`, or `"study4"`.
+#'   `"all"`, `"study0"`, `"study1"`, `"study2"`, `"study3"`, or `"study4"`.
 #' @param out_dir Root output directory. Defaults to
 #'   `file.path(vig_hallquist_dir, "outputs", "vig_hallquist")`.
 #' @param n_cores Positive integer number of worker cores. Values greater than

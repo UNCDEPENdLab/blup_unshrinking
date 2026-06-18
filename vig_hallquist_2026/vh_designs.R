@@ -114,6 +114,34 @@ calibrate_reliability_design <- function(
     )
 }
 
+# this is a smoke version of study 1 for testing
+make_study0_design <- function() {
+  tidyr::tibble(
+    study = "study0",
+    num_clus = 30L,
+    mean_clus_size = 5L,
+    target_reliability = 0.5,
+    marginal_rho = 0.0,
+    standardized_beta_target = 0.6,
+    balance_mode = "balanced",
+    min_clus_size = 2L,
+    highly_unbalanced_min_clus_size = 2L,
+    highly_unbalanced_power = 3,
+    r_structure = "iid",
+    r_rho = NA_real_,
+    sigma = 1.0,
+    study_label = "BLUP as Outcome (Smoke)",
+    study_structure = "w"
+  ) %>%
+    calibrate_reliability_design(
+      tau0 = fixed_params$tau0,
+      calibration_reference_n = 1001L
+    ) %>%
+    rename(
+      beta1w = gamma_x_on_slope # level 2 structural slope is now "w"
+    )
+}
+
 make_study1_design <- function() {
   tidyr::crossing(
     study = "study1",
@@ -383,7 +411,8 @@ study_condition_counts <- function() {
     study1 = 5L * 4L * 3L * 3L * 4L,
     study2 = 4L * 3L * 3L * 5L * 4L,
     study3 = 4L * 3L * 3L * 2L * 2L * 2L * 3L,
-    study4 = 0L
+    study4 = 0L,
+    study0 = 1L
   )
 }
 
@@ -394,11 +423,12 @@ select_design <- function(study_arg = "all", max_conditions = NA_integer_) {
   } else {
     as.integer(unlist(strsplit(gsub("study", "", study_arg, fixed = TRUE), ",")))
   }
-  if (anyNA(requested) || any(!(requested %in% 1:4))) {
-    stop("No study conditions selected. Use `all`, `1`, `2`, `3`, `4`, or a comma-separated combination like `1,2`.")
+  if (anyNA(requested) || any(!(requested %in% 0:4))) {
+    stop("No study conditions selected. Use `all`, `0`, `1`, `2`, `3`, `4`, or a comma-separated combination like `1,2`.")
   }
 
   builders <- list(
+    make_study0_design,
     make_study1_design,
     make_study2_design,
     make_study3_design,
@@ -409,7 +439,7 @@ select_design <- function(study_arg = "all", max_conditions = NA_integer_) {
   names(offsets) <- names(counts)
   built <- lapply(requested, function(i) {
     study_name <- paste0("study", i)
-    study_design <- builders[[i]]()
+    study_design <- builders[[i + 1]]()
     if (is.null(study_design) || nrow(study_design) == 0L) {
       return(tibble::tibble())
     }
@@ -432,7 +462,7 @@ select_design <- function(study_arg = "all", max_conditions = NA_integer_) {
   }
 
   if (nrow(design) == 0L) {
-    stop("No study conditions selected. Use `all`, `1`, `2`, `3`, `4`, or a comma-separated combination like `1,2`.")
+    stop("No study conditions selected. Use `all`, `0`, `1`, `2`, `3`, `4`, or a comma-separated combination like `1,2`.")
   }
 
   design
