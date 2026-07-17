@@ -1533,6 +1533,161 @@ fit_fuller_dual <- function(stage2_df,
   dplyr::select(out, dplyr::any_of(fuller_dual_result_columns()))
 }
 
+#' Convert an average BLUP measurement model to Fuller's additive-error form.
+#'
+#' @details
+#' Lai's 2S-PAA replaces the row-specific BLUP measurement models
+#'
+#' `m_i = Lambda_i b_i + delta_i`, `Var(delta_i) = Theta_i`
+#'
+#' by a common model using the elementwise sample averages `Lambda_bar` and
+#' `Theta_bar`. This helper applies the same averaging operation before
+#' converting that common model to the identity-loading form required by the
+#' Fuller estimator:
+#'
+#' `c_i = solve(Lambda_bar) m_i`
+#'
+#' `S_bar = solve(Lambda_bar) Theta_bar solve(Lambda_bar)'`.
+#'
+#' This operation is deliberately different from first applying each
+#' row-specific inverse loading and then averaging the resulting score-error
+#' covariance matrices.
+#'
+#' @param stage2_df Data frame containing the two BLUPs and the row-specific
+#'   `lambda` and `theta` entries.
+#' @param blup_u0,blup_u1 Column names for the intercept and slope BLUPs.
+#'
+#' @return A list containing `data`, the input data frame augmented with
+#'   `fuller_average_u0`, `fuller_average_u1`, and the three common
+#'   `fuller_average_meas*` columns, as well as `lambda_bar`, `theta_bar`, and
+#'   `measurement_covariance_bar`.
+prepare_fuller_average_measurement <- function(
+    stage2_df,
+    blup_u0 = "u0_eb",
+    blup_u1 = "u1_eb") {
+  lambda_cols <- c("lambda11", "lambda12", "lambda21", "lambda22")
+  theta_cols <- c("theta11", "theta12", "theta22")
+  required_cols <- c(blup_u0, blup_u1, lambda_cols, theta_cols)
+  missing_cols <- setdiff(required_cols, names(stage2_df))
+  if (length(missing_cols) > 0L) {
+    stop(
+      "Average-measurement Fuller inputs are missing columns: ",
+      paste(missing_cols, collapse = ", ")
+    )
+  }
+
+  lambda_means <- colMeans(stage2_df[, lambda_cols, drop = FALSE], na.rm = TRUE)
+  theta_means <- colMeans(stage2_df[, theta_cols, drop = FALSE], na.rm = TRUE)
+  if (any(!is.finite(lambda_means)) || any(!is.finite(theta_means))) {
+    stop("Average-measurement Fuller requires finite mean lambda and theta entries.")
+  }
+
+  lambda_bar <- matrix(
+    lambda_means[c("lambda11", "lambda12", "lambda21", "lambda22")],
+    nrow = 2L,
+    byrow = TRUE,
+    dimnames = list(c("u0_eb", "u1_eb"), c("u0", "u1"))
+  )
+  theta_bar <- matrix(
+    c(
+      theta_means[["theta11"]], theta_means[["theta12"]],
+      theta_means[["theta12"]], theta_means[["theta22"]]
+    ),
+    nrow = 2L,
+    byrow = TRUE,
+    dimnames = list(c("u0_eb", "u1_eb"), c("u0_eb", "u1_eb"))
+  )
+  lambda_bar_inv <- tryCatch(
+    solve(lambda_bar),
+    error = function(e) {
+      stop("Mean BLUP loading matrix is not invertible: ", conditionMessage(e))
+    }
+  )
+
+  blup_matrix <- as.matrix(stage2_df[, c(blup_u0, blup_u1), drop = FALSE])
+  storage.mode(blup_matrix) <- "double"
+  transformed_scores <- blup_matrix %*% t(lambda_bar_inv)
+  measurement_covariance_bar <-
+    lambda_bar_inv %*% theta_bar %*% t(lambda_bar_inv)
+  measurement_covariance_bar <-
+    (measurement_covariance_bar + t(measurement_covariance_bar)) / 2
+  if (any(!is.finite(measurement_covariance_bar))) {
+    stop("Average-measurement Fuller produced a nonfinite error covariance matrix.")
+  }
+
+  out <- stage2_df
+  out$fuller_average_u0 <- transformed_scores[, 1L]
+  out$fuller_average_u1 <- transformed_scores[, 2L]
+  out$fuller_average_meas11 <- measurement_covariance_bar[1L, 1L]
+  out$fuller_average_meas12 <- measurement_covariance_bar[1L, 2L]
+  out$fuller_average_meas22 <- measurement_covariance_bar[2L, 2L]
+
+  list(
+    data = out,
+    lambda_bar = lambda_bar,
+    theta_bar = theta_bar,
+    measurement_covariance_bar = measurement_covariance_bar
+  )
+}
+
+#' Fit the Fuller analogue of Lai's average-measurement 2S-PAA estimator.
+#'
+#' @inheritParams prepare_fuller_average_measurement
+#' @param outcome Column name for the observed Stage-2 outcome.
+#' @param skip_internal_scaling Passed to [fit_fuller_dual()].
+#'
+#' @return A one-row tibble using the traditional Fuller result schema.
+fit_fuller_average_measurement <- function(
+    stage2_df,
+    outcome,
+    blup_u0 = "u0_eb",
+    blup_u1 = "u1_eb",
+    skip_internal_scaling = TRUE) {
+  tryCatch(
+    {
+      prepared <- prepare_fuller_average_measurement(
+        stage2_df,
+        blup_u0 = blup_u0,
+        blup_u1 = blup_u1
+      )
+      fit_fuller_dual(
+        prepared$data,
+        outcome = outcome,
+        predictor_u0 = "fuller_average_u0",
+        predictor_u1 = "fuller_average_u1",
+        meas11 = "fuller_average_meas11",
+        meas12 = "fuller_average_meas12",
+        meas22 = "fuller_average_meas22",
+        skip_internal_scaling = skip_internal_scaling
+      )
+    },
+    error = function(e) {
+      fallback <- stage2_df
+      fallback$fuller_average_u0 <- NA_real_
+      fallback$fuller_average_u1 <- NA_real_
+      fallback$fuller_average_meas11 <- NA_real_
+      fallback$fuller_average_meas12 <- NA_real_
+      fallback$fuller_average_meas22 <- NA_real_
+      failed_fit <- fit_fuller_dual(
+        fallback,
+        outcome = outcome,
+        predictor_u0 = "fuller_average_u0",
+        predictor_u1 = "fuller_average_u1",
+        meas11 = "fuller_average_meas11",
+        meas12 = "fuller_average_meas12",
+        meas22 = "fuller_average_meas22",
+        skip_internal_scaling = skip_internal_scaling
+      )
+      dplyr::mutate(
+        failed_fit,
+        status_code = 3L,
+        mx_issue_class = "fuller_average_measurement_transform_failed",
+        mx_issue_detail = substr(conditionMessage(e), 1L, 500L)
+      )
+    }
+  )
+}
+
 #' Fit a Fuller EIV estimator with internal stepdown tempering.
 #'
 #' @details

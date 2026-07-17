@@ -1,5 +1,9 @@
 # Overview
 
+Date: 4Jun2026
+
+Michael Hallquist
+
 ## Four studies
 
 1. BLUP as outcome
@@ -57,22 +61,15 @@ Should the direct MLE (GLS) scores be included as a separate estimator? Or just 
 
 ## Hypotheses
 
-H1. Naive BLUP-as-outcome regressions should be attenuated, especially when
-cluster size is small, slope reliability is low, and shrinkage is strong.
+H1. Naive BLUP-as-outcome regressions should be attenuated, especially when cluster size is small, slope reliability is low, and shrinkage is strong.
 
-H2. Full-matrix unshrinking (and closed-form scores) should reduce or remove
-point-estimate bias under correct first-stage specification.
+H2. Full-matrix unshrinking (and closed-form scores) should reduce or remove point-estimate bias under correct first-stage specification.
 
-H3. The direct MLM should be the best benchmark and
-should agree with the oracle target asymptotically.
+H3. The direct MLM should be the best benchmark and should agree with the oracle target asymptotically.
 
-H4. The benefit of the full-matrix correction over diagonal correction should be
-largest when random intercepts and slopes are correlated.
+H4. The benefit of the full-matrix correction over diagonal correction should be largest when random intercepts and slopes are correlated.
 
-H5. Single-subject OLS slopes should be unbiased in principle but inefficient
-and unstable when cluster sizes are low. Unshrinking should recover similar
-likelihood-only information while using the first-stage model structure more
-systematically.
+H5. Single-subject OLS slopes should be unbiased in principle but inefficient and unstable when cluster sizes are low. Unshrinking should recover similar likelihood-only information while using the first-stage model structure more systematically.
 
 # Study 2: BLUP as predictor
 
@@ -123,9 +120,7 @@ H1. Naive BLUPs as  predictors will have minimally biased point estimates  (esp.
 
 ​	H1a. Unshrunk scores used as predictors require Fuller or Lai 2S-PA to obtain 95% coverage.
 
-H2. Full-vector methods should outperform slope-only methods when random
-intercepts and slopes are correlated or when EB slope scores have cross-loadings
-on the true intercept.
+H2. Full-vector methods should outperform slope-only methods when random intercepts and slopes are correlated or when EB slope scores have cross-loadings on the true intercept.
 
 H3. The largest differences among methods will appear in low-reliability, small-cluster, and dual-predictor conditions.
 
@@ -250,13 +245,8 @@ H1. Naive BLUP-on-BLUP regressions should be unreliable because outcome-side
 shrinkage, predictor-side measurement error, and heterogeneous reliability act
 together.
 
-H2. Correcting only one side should help only for the component of the problem it
-targets. For example, unshrinking the outcome addresses outcome attenuation but
-does not fix predictor measurement error.
+H2. Correcting only one side should help only for the component of the problem it targets. For example, unshrinking the outcome addresses outcome attenuation but does not fix predictor measurement error.
 
-H3. Full two-sided measurement correction, either through Lai 2S-PA or an
-unshrunk-score Fuller moment correction, should best recover point estimates and coverage.
+H3. Full two-sided measurement correction, either through Lai 2S-PA or an unshrunk-score Fuller moment correction, should best recover point estimates and coverage.
 
-H4. The method differences should be largest when one first-stage process has
-many observations and the other has few, because this creates asymmetric score
-reliability.
+H4. The method differences should be largest when one first-stage process has many observations and the other has few, because this creates asymmetric score reliability.

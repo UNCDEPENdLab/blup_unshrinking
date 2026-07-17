@@ -4,7 +4,7 @@
 #' title: "Vig & Hallquist 2026 Random Effects Simulation"
 #' description: "Four simulation studies including: (1) RE as outcome, 
 #'               (2) RE as predictor, (3) RE as predictor and outcome,
-#'               (4) TBD"
+#'               (4) heterogeneous cluster information and reliability"
 #' ---
 
 # TODO: check these exports
