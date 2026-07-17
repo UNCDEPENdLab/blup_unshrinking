@@ -65,9 +65,15 @@ L1-Q: q = gamma0_q + bq0 + gamma1_q * s + bq1 * s + r_q
 L2: bq1 = theta0 * by0 + theta1 * by1 + v
                                ^ focal effect
 
-All three studies manipulate `standardized_beta_target`. Study 1 uses
+simulate_data_study4()
+L1: same random-intercept/random-slope model as Study 2
+L2: same observed outcome model as Study 2
+Cluster information: homogeneous, moderate, severe, or information-matched
+heterogeneity, with slope variance calibrated to mean posterior reliability
+
+All four studies manipulate `standardized_beta_target`. Study 1 uses
 `structural_r2 = standardized_beta_target^2` internally to partition the
-marginal slope variance. Studies 2 and 3 retain total structural R-squared and
+marginal slope variance. Studies 2--4 retain total structural R-squared and
 focal unique R-squared only as derived diagnostics.
 
 # Production execution
@@ -75,13 +81,14 @@ focal unique R-squared only as derived diagnostics.
 The current condition counts are:
 
 - Study 1: 720 conditions
-- Study 2: 1,440 conditions
-- Study 3: 1,728 conditions
-- Studies 1-3 combined: 3,888 conditions
+- Study 2: 720 conditions
+- Study 3: 864 conditions
+- Study 4: 111 conditions
+- Studies 1-4 combined: 2,415 conditions
 
 With the default SLURM chunk size of five conditions, the corresponding array
-sizes are 144, 288, 346, and 778 tasks. The bundled SLURM script defaults to
-the combined `1-778%50` array. For a study-specific run, override the array at
+sizes are 144, 144, 173, 23, and 483 tasks. The bundled SLURM script defaults
+to the combined `1-483%50` array. For a study-specific run, override the array at
 submission to avoid launching no-op tasks, for example:
 
 ```bash
@@ -107,7 +114,7 @@ Rscript vig_hallquist_2026/random_effects_structural_simulation.R \
 The aggregation pass must use the same `n_sim`, study selector, and output
 directory as the array run.
 
-At 1,000 replications, the combined design produces approximately 50 million
+At 1,000 replications, the combined design produces approximately 19.5 million
 method rows. The runner therefore does not load or materialize one monolithic
 replication table when the expected result exceeds two million rows. It instead
 combines the condition-level summary files and writes a

@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=vig-hallquist-condition-array
-# The default all-study grid has 3,888 conditions. At five conditions per
-# task, 778 array elements are required. Tasks beyond a study-specific grid
+# The default all-study grid has 2,415 conditions. At five conditions per
+# task, 483 array elements are required. Tasks beyond a study-specific grid
 # exit successfully; override --array at submission for a smaller selector.
-#SBATCH --array=1-778%50
+#SBATCH --array=1-483%50
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
 #SBATCH --time=20:00:00

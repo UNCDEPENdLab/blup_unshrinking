@@ -6,7 +6,7 @@
 #' completed condition files.
 
 vh_pipeline_version <- function() {
-  "standardized_beta_v1_20260615"
+  "fuller_study4_diagnostics_v2_20260717"
 }
 
 #' Parse an optional command-line integer argument.
@@ -186,8 +186,8 @@ get_condition_file_paths <- function(out_dir, condition_id) {
 #'
 #' @return A tibble with one row per condition-study-method combination and
 #'   Monte Carlo summary columns including convergence, mean estimate, MC SE of
-#'   the mean, bias, coverage, RMSE, successful replications, and status-10
-#'   failure counts.
+#'   the mean, bias, coverage, RMSE, median and 95th-percentile absolute error,
+#'   successful replications, and status-10 failure counts.
 summarize_results_df <- function(results) {
   design_cols <- intersect(
     c(
@@ -197,7 +197,55 @@ summarize_results_df <- function(results) {
       "focal_unique_r2", "mean_clus_size_y", "mean_clus_size_q",
       "target_reliability_y", "target_reliability_q",
       "achieved_reliability_y", "achieved_reliability_q",
-      "balance_mode", "r_structure", "r_rho", "sigma", "sigma_y", "sigma_q"
+      "balance_mode", "r_structure", "r_rho", "sigma", "sigma_y", "sigma_q",
+      "information_profile", "is_falsification_control", "information_matched",
+      "profile_min_clus_size", "profile_max_clus_size",
+      "reliability_sd", "reliability_iqr", "reliability_min",
+      "reliability_max", "reliability_small", "reliability_large",
+      "population_lambda22_mean", "population_lambda22_min",
+      "population_lambda22_max",
+      "population_lambda_matrix_frobenius_rms_dispersion",
+      "population_theta22_mean", "population_theta22_min",
+      "population_theta22_max",
+      "population_theta_matrix_frobenius_rms_dispersion",
+      "population_ols_var22_mean", "population_ols_var22_min",
+      "population_ols_var22_max",
+      "population_ols_cov_matrix_frobenius_rms_dispersion"
+    ),
+    names(results)
+  )
+  replication_diagnostic_cols <- intersect(
+    c(
+      "realized_reliability_mean", "realized_reliability_sd",
+      "realized_reliability_iqr", "realized_reliability_min",
+      "realized_reliability_max",
+      "lambda22_mean", "lambda22_sd", "lambda22_min", "lambda22_max",
+      "lambda_matrix_frobenius_rms_dispersion",
+      "theta22_mean", "theta22_sd", "theta22_min", "theta22_max",
+      "theta_matrix_frobenius_rms_dispersion",
+      "ols_var22_mean", "ols_var22_sd", "ols_var22_min", "ols_var22_max",
+      "ols_cov_matrix_frobenius_rms_dispersion",
+      "blup_slope_bias_small", "blup_slope_rmse_small",
+      "blup_slope_bias_large", "blup_slope_rmse_large",
+      "corrected_slope_bias_small", "corrected_slope_rmse_small",
+      "corrected_slope_bias_large", "corrected_slope_rmse_large",
+      "average_measurement_slope_bias_small",
+      "average_measurement_slope_rmse_small",
+      "average_measurement_slope_bias_large",
+      "average_measurement_slope_rmse_large",
+      "fuller_measurement_weight_used",
+      "fuller_alpha_step1_used", "fuller_alpha_step3_used",
+      "fuller_alpha_scaling_used",
+      "fuller_correction1", "fuller_correction_c",
+      "fuller_correction_scaling",
+      "fuller_sx1_star_condition", "fuller_sx1_star_min_eigen",
+      "fuller_sx1_star_relative_min_eigen",
+      "fuller_sx_star_condition", "fuller_sx_star_min_eigen",
+      "fuller_sx_star_relative_min_eigen",
+      "fuller_scaling_condition", "fuller_scaling_min_eigen",
+      "fuller_scaling_relative_min_eigen",
+      "fuller_auto_guard_pass", "fuller_auto_full_weight_guard_pass",
+      "fuller_auto_search_evaluations"
     ),
     names(results)
   )
@@ -208,6 +256,7 @@ summarize_results_df <- function(results) {
       status10_failure = !is.na(status_code) & status_code == 10L,
       converged = !status10_failure & !is.na(estimate),
       bias = estimate - truth,
+      abs_error = abs(estimate - truth),
       sq_error = (estimate - truth)^2,
       covered = ci_low <= truth & ci_high >= truth
     ) %>%
@@ -221,9 +270,24 @@ summarize_results_df <- function(results) {
       bias = safe_mean(bias),
       coverage = safe_mean(covered),
       rmse = if (all(is.na(sq_error))) NA_real_ else sqrt(mean(sq_error, na.rm = TRUE)),
+      median_absolute_error = if (all(is.na(abs_error))) {
+        NA_real_
+      } else {
+        stats::median(abs_error, na.rm = TRUE)
+      },
+      p95_absolute_error = if (all(is.na(abs_error))) {
+        NA_real_
+      } else {
+        unname(stats::quantile(abs_error, probs = 0.95, na.rm = TRUE))
+      },
       n_success = sum(converged, na.rm = TRUE),
       n_status10_fail = sum(status10_failure, na.rm = TRUE),
       prop_status10_fail = safe_mean(status10_failure),
+      dplyr::across(
+        dplyr::all_of(replication_diagnostic_cols),
+        safe_mean,
+        .names = "mean_{.col}"
+      ),
       .groups = "drop"
     )
 }
@@ -257,7 +321,10 @@ summarize_stage1_problem_df <- function(results) {
       "mean_clus_size_y", "mean_clus_size_q",
       "target_reliability_y", "target_reliability_q",
       "achieved_reliability_y", "achieved_reliability_q",
-      "balance_mode", "r_structure", "r_rho", "sigma", "sigma_y", "sigma_q"
+      "balance_mode", "r_structure", "r_rho", "sigma", "sigma_y", "sigma_q",
+      "information_profile", "is_falsification_control", "information_matched",
+      "profile_min_clus_size", "profile_max_clus_size",
+      "reliability_sd", "reliability_min", "reliability_max"
     ),
     names(results)
   )
@@ -315,7 +382,10 @@ summarize_issue_df <- function(results) {
       "structural_r2", "focal_unique_r2", "balance_mode", "r_structure",
       "r_rho", "sigma", "mean_clus_size_y", "mean_clus_size_q",
       "target_reliability_y", "target_reliability_q",
-      "achieved_reliability_y", "achieved_reliability_q", "sigma_y", "sigma_q"
+      "achieved_reliability_y", "achieved_reliability_q", "sigma_y", "sigma_q",
+      "information_profile", "is_falsification_control", "information_matched",
+      "profile_min_clus_size", "profile_max_clus_size",
+      "reliability_sd", "reliability_min", "reliability_max"
     ),
     names(results)
   )
@@ -379,10 +449,22 @@ write_progress_row <- function(progress_path, row_df) {
 #' @return A tibble containing the replication-level rows from `path`.
 read_replication_results_file <- function(path) {
   out <- tibble::as_tibble(data.table::fread(path))
+  fuller_logical_cols <- c(
+    "fuller_auto_tempered", "fuller_auto_guard_pass",
+    "fuller_auto_full_weight_guard_pass", "fuller_auto_search_nonmonotone"
+  )
+  fuller_integer_cols <- "fuller_auto_search_evaluations"
+  fuller_character_cols <- c(
+    "fuller_auto_guard_reason", "fuller_auto_full_weight_guard_reason"
+  )
+  fuller_numeric_cols <- setdiff(
+    grep("^fuller_", names(out), value = TRUE),
+    c(fuller_logical_cols, fuller_integer_cols, fuller_character_cols)
+  )
 
   # Keep these casts centralized so aggregate rebuilds do not depend on the
   # exact type inference chosen by fread for any single condition file.
-  numeric_cols <- intersect(
+  numeric_cols <- unique(c(intersect(
     # TODO: update these columns
     c(
       "estimate", "se", "ci_low", "ci_high", "truth",
@@ -401,14 +483,48 @@ read_replication_results_file <- function(path) {
       "tau1_residual_q", "rho_residual_q", "sigma_y", "sigma_q",
       "sigma2", "var_u1", "sigma_z", "fuller_lambda1", "fuller_lambda2",
       "fuller_sigma2", "fuller_weight_min", "fuller_weight_max",
-      "fuller_correction_c"
+      "fuller_correction_c", "profile_small_weight", "profile_large_weight",
+      "reliability_sd", "reliability_iqr", "reliability_min", "reliability_max",
+      "reliability_small", "reliability_large",
+      "population_lambda22_mean", "population_lambda22_min",
+      "population_lambda22_max",
+      "population_lambda_matrix_frobenius_rms_dispersion",
+      "population_theta22_mean", "population_theta22_min",
+      "population_theta22_max",
+      "population_theta_matrix_frobenius_rms_dispersion",
+      "population_ols_var22_mean", "population_ols_var22_min",
+      "population_ols_var22_max",
+      "population_ols_cov_matrix_frobenius_rms_dispersion",
+      "realized_reliability_mean", "realized_reliability_sd",
+      "realized_reliability_iqr", "realized_reliability_min",
+      "realized_reliability_max",
+      "mean_realized_trials", "min_realized_trials", "max_realized_trials",
+      "prop_ids_leq_3_trials",
+      "lambda22_mean", "lambda22_sd", "lambda22_min", "lambda22_max",
+      "lambda_matrix_frobenius_rms_dispersion",
+      "theta22_mean", "theta22_sd", "theta22_min", "theta22_max",
+      "theta_matrix_frobenius_rms_dispersion",
+      "ols_var22_mean", "ols_var22_sd", "ols_var22_min", "ols_var22_max",
+      "ols_cov_matrix_frobenius_rms_dispersion",
+      "blup_slope_bias_small", "blup_slope_rmse_small",
+      "blup_slope_bias_large", "blup_slope_rmse_large",
+      "corrected_slope_bias_small", "corrected_slope_rmse_small",
+      "corrected_slope_bias_large", "corrected_slope_rmse_large",
+      "average_measurement_slope_bias_small",
+      "average_measurement_slope_rmse_small",
+      "average_measurement_slope_bias_large",
+      "average_measurement_slope_rmse_large"
     ),
     names(out)
-  )
+  ), fuller_numeric_cols))
   integer_cols <- intersect(
     c(
       "condition_id", "rep", "num_clus", "mean_clus_size",
-      "mean_clus_size_y", "mean_clus_size_q", "status_code"
+      "mean_clus_size_y", "mean_clus_size_q", "status_code",
+      "profile_min_clus_size", "profile_max_clus_size",
+      "profile_small_clus_size", "profile_large_clus_size",
+      "score_small_cluster_size", "score_large_cluster_size",
+      fuller_integer_cols
     ),
     names(out)
   )
@@ -416,7 +532,9 @@ read_replication_results_file <- function(path) {
     c(
       "stage1_singular_problem", "stage1_lmer_singular",
       "stage1_y_singular_problem", "stage1_y_lmer_singular",
-      "stage1_q_singular_problem", "stage1_q_lmer_singular"
+      "stage1_q_singular_problem", "stage1_q_lmer_singular",
+      "is_falsification_control", "information_matched",
+      fuller_logical_cols
     ),
     names(out)
   )
@@ -567,23 +685,30 @@ vig_hallquist_parallel_exports <- function() {
   candidates <- c(
     "run_study_rep", "run_study1_rep", "run_study2_rep", "run_study3_rep", "run_study4_rep",
     "vh_pipeline_version",
-    "add_study2_method_roles", "rescale_fuller_to_population_sd",
+    "add_study2_method_roles", "add_study4_method_roles",
+    "rescale_fuller_to_population_sd",
+    "prepare_fuller_average_measurement", "fit_fuller_average_measurement",
     "simulate_study1", "simulate_study2", "simulate_study3", "simulate_study4",
     "simulate_data_blup_as_outcome", "simulate_data_blup_as_predictor",
-    "simulate_data_dual_blup",
+    "simulate_data_dual_blup", "simulate_data_study4",
     "make_failed_result", "add_study_result_context",
     "combine_dual_stage1_diagnostics",
     "fit_stage1", "condition_uses_non_iid_R", "condition_to_r_spec",
     "condition_to_nlme_correlation", "draw_level1_residuals",
     "balance_mode_to_sim_arg", "make_reliability_time_design",
+    "study4_profile_spec", "study4_time_design", "make_study4_cluster_sizes",
+    "study4_weighted_quantile", "study4_matrix_rms_dispersion",
+    "study4_measurement_matrix_summary", "study4_measurement_diagnostics",
     "draw_random_effects",
     "matched_study_methods", "disparate_study_methods", "study_methods_for_condition", "tempered_eiv_methods",
     "condition_includes_tempered_eiv", "lai_condition_to_r_spec", "lai_condition_uses_non_iid_R",
     "lai_condition_to_nlme_correlation", "add_lai_trial_index", "draw_lai_level1_residuals",
     "fit_lai_stage1", "extract_centered_slope_eb", "fit_tempered_eiv_dual_set", "lai_truth", "make_covu",
     "make_study2_cluster_sizes", "make_study3_cluster_sizes", "fixed_params",
+    "study1_methods", "study2_methods", "study3_methods", "study4_methods",
     "safe_lmer", "safe_lme", "empty_stage1_diagnostics", "get_stage1_diagnostics",
     "normalize_r_spec", "make_R_matrix", "draw_residuals_from_R",
+    "make_random_effect_covariance", "posterior_random_effect_covariance",
     "get_closed_form_corrected_scores", "get_stage1_eb_components",
     "extract_stage1_components", "extract_stage1_components.merMod", "extract_stage1_components.lme",
     "extract_stage1_components.default", "normalize_R_list", "as_plain_vcov_matrix", "stage1_fixef",
@@ -645,7 +770,7 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
       rep_id = rep_ids,
       .combine = dplyr::bind_rows,
       # TODO: check these exports
-      .packages = c("data.table", "lme4", "MASS", "dplyr", "tidyr", "purrr", "tibble", "OpenMx", 
+      .packages = c("data.table", "lme4", "MASS", "dplyr", "tidyr", "purrr", "tibble", "OpenMx",
                     "glmnet", "sandwich", "geigen", "MplusAutomation", "glue"),
       .export = vig_hallquist_parallel_exports()
     ) %dopar% {

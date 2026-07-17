@@ -402,8 +402,313 @@ make_study3_design <- function() {
     )
 }
 
+#' Return the cluster-information specification for one Study 4 profile.
+#'
+#' Primary profiles all have mean cluster size 10. The information-matched
+#' profile is a focused falsification control: its cluster sizes vary, but its
+#' slope columns are rescaled during calibration and generation so that
+#' `sum(x^2) = 9` for every cluster.
+study4_profile_spec <- function(information_profile) {
+  information_profile <- as.character(information_profile[[1]])
+  switch(
+    information_profile,
+    homogeneous = list(
+      sizes = 10L,
+      weights = 1,
+      information_matched = FALSE
+    ),
+    moderate = list(
+      sizes = c(5L, 15L),
+      weights = c(0.5, 0.5),
+      information_matched = FALSE
+    ),
+    severe = list(
+      sizes = c(3L, 17L),
+      weights = c(0.5, 0.5),
+      information_matched = FALSE
+    ),
+    severe_information_matched = list(
+      sizes = c(3L, 17L),
+      weights = c(0.5, 0.5),
+      information_matched = TRUE
+    ),
+    stop("Unsupported Study 4 information profile: ", information_profile)
+  )
+}
+
+#' Construct the random-effect design for one Study 4 cluster type.
+study4_time_design <- function(cluster_size, information_matched = FALSE) {
+  Z <- make_reliability_time_design(cluster_size)
+  if (isTRUE(information_matched)) {
+    Z[, "slope"] <- Z[, "slope"] * sqrt(9 / (cluster_size - 1))
+  }
+  Z
+}
+
+#' Compute weighted quantiles for a discrete Study 4 profile.
+study4_weighted_quantile <- function(x, weights, probs) {
+  keep <- is.finite(x) & is.finite(weights) & weights > 0
+  x <- as.numeric(x[keep])
+  weights <- as.numeric(weights[keep])
+  if (length(x) == 0L) {
+    return(rep(NA_real_, length(probs)))
+  }
+  ord <- order(x)
+  x <- x[ord]
+  cumulative_weight <- cumsum(weights[ord] / sum(weights))
+  vapply(
+    probs,
+    function(prob) {
+      x[[which(cumulative_weight >= min(1, max(0, prob)))[[1L]]]]
+    },
+    numeric(1L)
+  )
+}
+
+#' Weighted RMS Frobenius distance of matrices from their elementwise mean.
+study4_matrix_rms_dispersion <- function(matrices, weights = NULL) {
+  if (is.null(weights)) {
+    weights <- rep(1, length(matrices))
+  }
+  valid <- vapply(
+    matrices,
+    function(mat) is.matrix(mat) && all(dim(mat) == c(2L, 2L)) && all(is.finite(mat)),
+    logical(1L)
+  ) & is.finite(weights) & weights > 0
+  if (!any(valid)) {
+    return(NA_real_)
+  }
+  matrices <- matrices[valid]
+  weights <- weights[valid] / sum(weights[valid])
+  mean_matrix <- Reduce(
+    `+`,
+    Map(function(mat, weight) mat * weight, matrices, weights)
+  )
+  sqrt(sum(vapply(
+    seq_along(matrices),
+    function(i) weights[[i]] * sum((matrices[[i]] - mean_matrix)^2),
+    numeric(1L)
+  )))
+}
+
+#' Summarize population or fitted Study 4 measurement matrices.
+study4_measurement_matrix_summary <- function(
+    lambda_matrices,
+    theta_matrices,
+    score_error_covariances,
+    weights = NULL) {
+  if (is.null(weights)) {
+    weights <- rep(1, length(lambda_matrices))
+  }
+  weights <- weights / sum(weights)
+  lambda22 <- vapply(lambda_matrices, function(mat) mat[2L, 2L], numeric(1L))
+  theta22 <- vapply(theta_matrices, function(mat) mat[2L, 2L], numeric(1L))
+  ols_var22 <- vapply(
+    score_error_covariances,
+    function(mat) mat[2L, 2L],
+    numeric(1L)
+  )
+
+  list(
+    lambda22_mean = stats::weighted.mean(lambda22, weights),
+    lambda22_min = min(lambda22),
+    lambda22_max = max(lambda22),
+    lambda_matrix_frobenius_rms_dispersion =
+      study4_matrix_rms_dispersion(lambda_matrices, weights),
+    theta22_mean = stats::weighted.mean(theta22, weights),
+    theta22_min = min(theta22),
+    theta22_max = max(theta22),
+    theta_matrix_frobenius_rms_dispersion =
+      study4_matrix_rms_dispersion(theta_matrices, weights),
+    ols_var22_mean = stats::weighted.mean(ols_var22, weights),
+    ols_var22_min = min(ols_var22),
+    ols_var22_max = max(ols_var22),
+    ols_cov_matrix_frobenius_rms_dispersion =
+      study4_matrix_rms_dispersion(score_error_covariances, weights)
+  )
+}
+
+#' Calibrate a Study 4 first-stage information profile.
+calibrate_study4_profile <- function(
+    information_profile,
+    target_reliability,
+    marginal_rho,
+    sigma = 1.0) {
+  spec <- study4_profile_spec(information_profile)
+  Z_list <- lapply(
+    spec$sizes,
+    study4_time_design,
+    information_matched = spec$information_matched
+  )
+  R_list <- lapply(
+    spec$sizes,
+    make_reliability_residual_covariance,
+    sigma = sigma,
+    r_spec = list(structure = "iid")
+  )
+  calibration <- calibrate_slope_variance(
+    target_reliability = target_reliability,
+    Z_list = Z_list,
+    R_list = R_list,
+    weights = spec$weights,
+    intercept_variance = fixed_params$tau0^2,
+    intercept_slope_correlation = marginal_rho
+  )
+  type_reliability <- vapply(
+    calibration$posterior_covariances,
+    function(V_i) {
+      1 - V_i[2L, 2L] / calibration$G_marginal[2L, 2L]
+    },
+    numeric(1L)
+  )
+  weighted_mean <- stats::weighted.mean(type_reliability, spec$weights)
+  weighted_variance <- stats::weighted.mean(
+    (type_reliability - weighted_mean)^2,
+    spec$weights
+  )
+  reliability_quartiles <- study4_weighted_quantile(
+    type_reliability,
+    spec$weights,
+    c(0.25, 0.75)
+  )
+  population_measurement <- Map(function(Z_i, R_i) {
+    sigma_i <- Z_i %*% calibration$G_marginal %*% t(Z_i) + R_i
+    A_i <- t(solve(sigma_i, Z_i %*% calibration$G_marginal))
+    R_inv_Z <- solve(R_i, Z_i)
+    list(
+      lambda = A_i %*% Z_i,
+      theta = A_i %*% R_i %*% t(A_i),
+      score_error_covariance = solve(crossprod(Z_i, R_inv_Z))
+    )
+  }, Z_list, R_list)
+  measurement_diagnostics <- study4_measurement_matrix_summary(
+    lambda_matrices = lapply(population_measurement, `[[`, "lambda"),
+    theta_matrices = lapply(population_measurement, `[[`, "theta"),
+    score_error_covariances = lapply(
+      population_measurement,
+      `[[`,
+      "score_error_covariance"
+    ),
+    weights = spec$weights
+  )
+
+  list(
+    calibration = calibration,
+    profile = spec,
+    type_reliability = type_reliability,
+    reliability_mean = weighted_mean,
+    reliability_sd = sqrt(weighted_variance),
+    reliability_iqr = diff(reliability_quartiles),
+    reliability_min = min(type_reliability),
+    reliability_max = max(type_reliability),
+    measurement_diagnostics = measurement_diagnostics
+  )
+}
+
 make_study4_design <- function() {
-  # ...
+  primary <- tidyr::crossing(
+    study = "study4",
+    num_clus = c(50L, 150L, 300L),
+    target_reliability = c(0.25, 0.5, 0.8),
+    information_profile = c("homogeneous", "moderate", "severe"),
+    marginal_rho = c(0, 0.5),
+    standardized_beta_target = c(0, 0.4),
+    structural_target = "intercept_slope",
+    is_falsification_control = FALSE
+  )
+  information_matched_control <- tidyr::crossing(
+    study = "study4",
+    num_clus = c(50L, 150L, 300L),
+    target_reliability = 0.5,
+    information_profile = "severe_information_matched",
+    marginal_rho = 0,
+    standardized_beta_target = 0.4,
+    structural_target = "intercept_slope",
+    is_falsification_control = TRUE
+  )
+  design <- dplyr::bind_rows(primary, information_matched_control)
+
+  calibration_rows <- lapply(seq_len(nrow(design)), function(i) {
+    condition <- design[i, , drop = FALSE]
+    calibrated <- calibrate_study4_profile(
+      information_profile = condition$information_profile[[1]],
+      target_reliability = condition$target_reliability[[1]],
+      marginal_rho = condition$marginal_rho[[1]],
+      sigma = 1.0
+    )
+    cal <- calibrated$calibration
+    spec <- calibrated$profile
+    reliability <- calibrated$type_reliability
+    measurement <- calibrated$measurement_diagnostics
+    structural <- calibrate_blup_predictor_effect(
+      G_marginal = cal$G_marginal,
+      standardized_slope_beta = condition$standardized_beta_target[[1]],
+      structural_target = condition$structural_target[[1]],
+      nuisance_intercept_beta = fixed_params$beta1z,
+      outcome_variance = fixed_params$z_variance
+    )
+
+    tibble::tibble(
+      mean_clus_size = stats::weighted.mean(spec$sizes, spec$weights),
+      profile_min_clus_size = min(spec$sizes),
+      profile_max_clus_size = max(spec$sizes),
+      profile_small_clus_size = min(spec$sizes),
+      profile_large_clus_size = max(spec$sizes),
+      profile_small_weight = spec$weights[[1L]],
+      profile_large_weight = if (length(spec$weights) > 1L) {
+        spec$weights[[length(spec$weights)]]
+      } else {
+        0
+      },
+      information_matched = spec$information_matched,
+      calibration_tau0 = fixed_params$tau0,
+      achieved_reliability = cal$achieved_reliability,
+      reliability_sd = calibrated$reliability_sd,
+      reliability_iqr = calibrated$reliability_iqr,
+      reliability_min = calibrated$reliability_min,
+      reliability_max = calibrated$reliability_max,
+      reliability_small = reliability[[1L]],
+      reliability_large = reliability[[length(reliability)]],
+      population_lambda22_mean = measurement$lambda22_mean,
+      population_lambda22_min = measurement$lambda22_min,
+      population_lambda22_max = measurement$lambda22_max,
+      population_lambda_matrix_frobenius_rms_dispersion =
+        measurement$lambda_matrix_frobenius_rms_dispersion,
+      population_theta22_mean = measurement$theta22_mean,
+      population_theta22_min = measurement$theta22_min,
+      population_theta22_max = measurement$theta22_max,
+      population_theta_matrix_frobenius_rms_dispersion =
+        measurement$theta_matrix_frobenius_rms_dispersion,
+      population_ols_var22_mean = measurement$ols_var22_mean,
+      population_ols_var22_min = measurement$ols_var22_min,
+      population_ols_var22_max = measurement$ols_var22_max,
+      population_ols_cov_matrix_frobenius_rms_dispersion =
+        measurement$ols_cov_matrix_frobenius_rms_dispersion,
+      slope_variance_marginal = cal$slope_variance_marginal,
+      tau1 = sqrt(cal$slope_variance_marginal),
+      rho = condition$marginal_rho[[1]],
+      standardized_beta = structural$standardized_slope_beta,
+      beta1z = structural$beta1_intercept,
+      beta2z = structural$beta2_slope,
+      structural_r2 = structural$total_structural_r_squared,
+      focal_unique_r2 = structural$focal_unique_r_squared,
+      outcome_residual_variance = structural$outcome_residual_variance
+    )
+  }) %>%
+    dplyr::bind_rows()
+
+  dplyr::bind_cols(design, calibration_rows) %>%
+    dplyr::mutate(
+      balance_mode = "heterogeneous_profile",
+      min_clus_size = .data$profile_min_clus_size,
+      highly_unbalanced_min_clus_size = .data$profile_min_clus_size,
+      highly_unbalanced_power = NA_real_,
+      r_structure = "iid",
+      r_rho = NA_real_,
+      sigma = 1.0,
+      study_label = "Heterogeneous Cluster Information",
+      study_structure = "z"
+    )
 }
 
 study_condition_counts <- function() {
@@ -411,7 +716,7 @@ study_condition_counts <- function() {
     study1 = 5L * 4L * 3L * 3L * 4L,
     study2 = 4L * 3L * 3L * 5L * 4L,
     study3 = 4L * 3L * 3L * 2L * 2L * 2L * 3L,
-    study4 = 0L,
+    study4 = (3L * 3L * 3L * 2L * 2L) + 3L,
     study0 = 1L
   )
 }
