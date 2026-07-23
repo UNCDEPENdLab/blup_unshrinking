@@ -23,6 +23,95 @@ add_study2_method_roles <- function(results) {
   )
 }
 
+#' Classify Study-2 rows for primary performance summaries.
+#'
+#' The raw estimate is never altered here. `analysis_eligible` records whether
+#' prespecified method-specific diagnostics support including the row in bias,
+#' variance, RMSE, or coverage summaries, while `analysis_exclusion_reason`
+#' retains the first applicable reason for exclusion.
+add_study2_analysis_eligibility <- function(results) {
+  get_column <- function(name, default) {
+    if (name %in% names(results)) results[[name]] else rep(default, nrow(results))
+  }
+  set_reason <- function(reason, when, value) {
+    index <- is.na(reason) & !is.na(when) & when
+    if (length(value) == 1L) {
+      reason[index] <- value
+    } else {
+      reason[index] <- value[index]
+    }
+    reason
+  }
+
+  method <- as.character(get_column("method", NA_character_))
+  status_code <- suppressWarnings(as.integer(get_column("status_code", NA_integer_)))
+  estimate <- suppressWarnings(as.numeric(get_column("estimate", NA_real_)))
+  se <- suppressWarnings(as.numeric(get_column("se", NA_real_)))
+  dual_eligible <- as.logical(get_column("analysis_eligible", NA))
+  dual_reason <- as.character(get_column("analysis_exclusion_reason", NA_character_))
+  fuller_guard_pass <- as.logical(get_column("fuller_auto_guard_pass", NA))
+  fuller_guard_reason <- as.character(get_column("fuller_auto_guard_reason", NA_character_))
+  mx_issue_class <- as.character(get_column("mx_issue_class", NA_character_))
+  mx_info_definite <- as.logical(get_column("mx_info_definite", NA))
+  mx_condition_number <- suppressWarnings(as.numeric(get_column("mx_condition_number", NA_real_)))
+  mplus_critical_warning <- as.logical(get_column("mplus_critical_warning", NA))
+  mplus_target_parameter_count <- suppressWarnings(as.integer(get_column("mplus_target_parameter_count", NA_integer_)))
+
+  reason <- rep(NA_character_, nrow(results))
+  reason <- set_reason(reason, is.na(status_code) | is.na(estimate), "estimation_unavailable")
+  reason <- set_reason(reason, !is.na(status_code) & status_code != 0L, "estimation_status_nonzero")
+  reason <- set_reason(reason, !is.finite(estimate), "nonfinite_estimate")
+  reason <- set_reason(reason, !is.finite(se) | se <= 0, "invalid_standard_error")
+
+  dual_ols_methods <- c("oracle_dual", "naive_dual_blup", "closed_form_dual")
+  dual_bad <- method %in% dual_ols_methods & !is.na(dual_eligible) & !dual_eligible
+  reason <- set_reason(
+    reason,
+    dual_bad,
+    ifelse(is.na(dual_reason), "stage2_design_ineligible", dual_reason)
+  )
+
+  alpha_fuller <- method == "fuller_alpha_stepdown_closed_form"
+  reason <- set_reason(
+    reason,
+    alpha_fuller & (is.na(fuller_guard_pass) | !fuller_guard_pass),
+    ifelse(
+      is.na(fuller_guard_reason) | fuller_guard_reason == "",
+      "fuller_guard_failed",
+      paste0("fuller_guard_", fuller_guard_reason)
+    )
+  )
+
+  lai <- method == "lai_2spa"
+  reason <- set_reason(reason, lai & !is.na(mx_issue_class) & mx_issue_class != "ok", "openmx_issue")
+  reason <- set_reason(reason, lai & !is.na(mx_info_definite) & !mx_info_definite, "openmx_information_not_definite")
+  # OpenMx reports this diagnostic only for some fits; when available, 1e12 is
+  # a deliberately conservative predeclared condition-number cap.
+  reason <- set_reason(
+    reason,
+    lai & is.finite(mx_condition_number) & mx_condition_number > 1e12,
+    "openmx_condition_number_excessive"
+  )
+
+  msem <- method == "msem"
+  reason <- set_reason(
+    reason,
+    msem & !is.na(mplus_critical_warning) & mplus_critical_warning,
+    "mplus_critical_warning"
+  )
+  reason <- set_reason(
+    reason,
+    msem & !is.na(mplus_target_parameter_count) & mplus_target_parameter_count != 1L,
+    "mplus_target_parameter_not_unique"
+  )
+
+  dplyr::mutate(
+    results,
+    analysis_eligible = is.na(reason),
+    analysis_exclusion_reason = reason
+  )
+}
+
 simulate_study2 <- function(condition) {
   simulate_data_blup_as_predictor(condition)
 }
@@ -41,6 +130,10 @@ run_study2_rep <- function(condition) {
   if (is.null(fit_y)) {
     return(
       make_failed_result(condition, study2_methods(), truth) %>%
+        dplyr::mutate(
+          analysis_eligible = FALSE,
+          analysis_exclusion_reason = "estimation_unavailable"
+        ) %>%
         add_study2_method_roles()
     )
   }
@@ -69,6 +162,10 @@ run_study2_rep <- function(condition) {
   if (is.null(stage1_y) || is.null(corrected_y)) {
     return(
       make_failed_result(condition, study2_methods(), truth) %>%
+        dplyr::mutate(
+          analysis_eligible = FALSE,
+          analysis_exclusion_reason = "estimation_unavailable"
+        ) %>%
         add_study2_method_roles()
     )
   }
@@ -116,10 +213,8 @@ run_study2_rep <- function(condition) {
       reporting_scale = latent_slope_sd
     ) %>%
       dplyr::filter(se_type == "naive") %>%
-      dplyr::transmute(
-        method = "oracle_dual",
-        estimate, se, ci_low, ci_high, status_code
-      ),
+      dplyr::mutate(method = "oracle_dual") %>%
+      dplyr::select(method, -se_type),
     fit_observed_dual(
       stage2_df,
       outcome = "z",
@@ -128,9 +223,8 @@ run_study2_rep <- function(condition) {
       reporting_scale = latent_slope_sd
     ) %>%
       dplyr::filter(se_type == "naive") %>%
-      dplyr::transmute(
-        method = "naive_dual_blup", estimate, se, ci_low, ci_high, status_code
-      ),
+      dplyr::mutate(method = "naive_dual_blup") %>%
+      dplyr::select(method, -se_type),
     fit_observed_dual(
       stage2_df,
       outcome = "z",
@@ -139,9 +233,8 @@ run_study2_rep <- function(condition) {
       reporting_scale = latent_slope_sd
     ) %>%
       dplyr::filter(se_type == "naive") %>%
-      dplyr::transmute(
-        method = "closed_form_dual", estimate, se, ci_low, ci_high, status_code
-      ),
+      dplyr::mutate(method = "closed_form_dual") %>%
+      dplyr::select(method, -se_type),
     fit_fuller_dual(
       stage2_df,
       outcome = "z",
@@ -186,7 +279,9 @@ run_study2_rep <- function(condition) {
       dplyr::mutate(method = "msem") %>%
       dplyr::select(method, dplyr::everything())
   )
-  results <- add_study2_method_roles(results)
+  results <- results %>%
+    add_study2_analysis_eligibility() %>%
+    add_study2_method_roles()
 
   dplyr::bind_cols(
     results,

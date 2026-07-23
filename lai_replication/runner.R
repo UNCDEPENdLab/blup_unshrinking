@@ -177,16 +177,46 @@ get_condition_file_paths <- function(out_dir, condition_id) {
 #'   Monte Carlo summary columns including convergence, mean estimate, MC SE of
 #'   the mean, bias, coverage, RMSE, successful replications, and status-10
 #'   failure counts.
+add_summary_analysis_flags <- function(results) {
+  status_code <- suppressWarnings(as.integer(results$status_code))
+  estimate <- suppressWarnings(as.numeric(results$estimate))
+  se <- suppressWarnings(as.numeric(results$se))
+  ci_low <- suppressWarnings(as.numeric(results$ci_low))
+  ci_high <- suppressWarnings(as.numeric(results$ci_high))
+  status10_failure <- !is.na(status_code) & status_code == 10L
+  converged <- !status10_failure & is.finite(estimate)
+
+  stored_analysis <- if ("analysis_eligible" %in% names(results)) {
+    as.logical(results$analysis_eligible)
+  } else {
+    rep(NA, nrow(results))
+  }
+  stored_interval <- if ("interval_eligible" %in% names(results)) {
+    as.logical(results$interval_eligible)
+  } else {
+    rep(NA, nrow(results))
+  }
+  analysis_eligible <- dplyr::coalesce(stored_analysis, converged)
+  interval_default <- analysis_eligible & is.finite(se) & se > 0 &
+    is.finite(ci_low) & is.finite(ci_high) & ci_low <= ci_high
+  interval_eligible <- dplyr::coalesce(stored_interval, interval_default)
+
+  dplyr::mutate(
+    results,
+    status10_failure = status10_failure,
+    converged = converged,
+    analysis_ready = converged & analysis_eligible,
+    interval_ready = converged & analysis_eligible & interval_eligible
+  )
+}
+
 summarize_results_df <- function(results) {
-  results %>%
+  add_summary_analysis_flags(results) %>%
     dplyr::mutate(
-      # Status 10 is an OpenMx optimizer failure class; keep it visible rather
-      # than folding it into generic missing-estimate behavior.
-      status10_failure = !is.na(status_code) & status_code == 10L,
-      converged = !status10_failure & !is.na(estimate),
-      bias = estimate - truth,
-      sq_error = (estimate - truth)^2,
-      covered = ci_low <= truth & ci_high >= truth
+      analysis_estimate = dplyr::if_else(analysis_ready, estimate, NA_real_),
+      bias = analysis_estimate - truth,
+      sq_error = bias^2,
+      covered = dplyr::if_else(interval_ready, ci_low <= truth & ci_high >= truth, NA)
     ) %>%
     dplyr::group_by(
       condition_id, study, method, num_clus, clus_size, icc, vr_u1_u0, cor_u0_u1, beta_zu1,
@@ -196,12 +226,14 @@ summarize_results_df <- function(results) {
       truth = dplyr::first(truth),
       n_rep = dplyr::n(),
       convergence = safe_mean(converged),
-      mean_estimate = safe_mean(estimate),
-      mc_se_mean = if (sum(!is.na(estimate)) > 1L) stats::sd(estimate, na.rm = TRUE) / sqrt(sum(!is.na(estimate))) else NA_real_,
+      mean_estimate = safe_mean(analysis_estimate),
+      mc_se_mean = if (sum(!is.na(analysis_estimate)) > 1L) stats::sd(analysis_estimate, na.rm = TRUE) / sqrt(sum(!is.na(analysis_estimate))) else NA_real_,
       bias = safe_mean(bias),
       coverage = safe_mean(covered),
       rmse = if (all(is.na(sq_error))) NA_real_ else sqrt(mean(sq_error, na.rm = TRUE)),
       n_success = sum(converged, na.rm = TRUE),
+      n_analysis_eligible = sum(analysis_ready, na.rm = TRUE),
+      n_interval_eligible = sum(interval_ready, na.rm = TRUE),
       n_status10_fail = sum(status10_failure, na.rm = TRUE),
       prop_status10_fail = safe_mean(status10_failure),
       .groups = "drop"
@@ -228,13 +260,12 @@ summarize_stage1_problem_df <- function(results) {
     return(tibble::tibble())
   }
 
-  results %>%
+  add_summary_analysis_flags(results) %>%
     dplyr::mutate(
-      status10_failure = !is.na(status_code) & status_code == 10L,
-      converged = !status10_failure & !is.na(estimate),
-      bias = estimate - truth,
-      sq_error = (estimate - truth)^2,
-      covered = ci_low <= truth & ci_high >= truth
+      analysis_estimate = dplyr::if_else(analysis_ready, estimate, NA_real_),
+      bias = analysis_estimate - truth,
+      sq_error = bias^2,
+      covered = dplyr::if_else(interval_ready, ci_low <= truth & ci_high >= truth, NA)
     ) %>%
     dplyr::group_by(
       condition_id, study, method, stage1_singular_problem, num_clus, clus_size, icc, vr_u1_u0, cor_u0_u1, beta_zu1,
@@ -244,11 +275,13 @@ summarize_stage1_problem_df <- function(results) {
       truth = dplyr::first(truth),
       n_rep = dplyr::n(),
       convergence = safe_mean(converged),
-      mean_estimate = safe_mean(estimate),
+      mean_estimate = safe_mean(analysis_estimate),
       bias = safe_mean(bias),
       coverage = safe_mean(covered),
       rmse = if (all(is.na(sq_error))) NA_real_ else sqrt(mean(sq_error, na.rm = TRUE)),
       n_success = sum(converged, na.rm = TRUE),
+      n_analysis_eligible = sum(analysis_ready, na.rm = TRUE),
+      n_interval_eligible = sum(interval_ready, na.rm = TRUE),
       prop_status10_fail = safe_mean(status10_failure),
       prop_stage1_lmer_singular = safe_mean(stage1_lmer_singular),
       mean_stage1_re_corr = safe_mean(stage1_re_corr),
@@ -450,7 +483,8 @@ lai_parallel_exports <- function() {
   c(
     "run_one_rep", "run_study1_rep", "run_study2_rep", "run_study3_rep", "run_study4_rep",
     "simulate_study1", "simulate_study2", "simulate_study3", "simulate_study4",
-    "run_matched_outcome_rep", "make_failed_result", "add_study_result_context",
+    "run_matched_outcome_rep", "add_matched_outcome_analysis_eligibility",
+    "make_failed_result", "add_study_result_context",
     "matched_study_methods", "disparate_study_methods", "study_methods_for_condition", "tempered_eiv_methods",
     "condition_includes_tempered_eiv", "lai_condition_to_r_spec", "lai_condition_uses_non_iid_R",
     "lai_condition_to_nlme_correlation", "add_lai_trial_index", "draw_lai_level1_residuals",
@@ -464,7 +498,7 @@ lai_parallel_exports <- function() {
     "format_stage1_eb_row", "default_re_design", "make_eb_output_row", "select_lai_measurement_columns",
     "compute_eb_measurement_inputs", "compute_bivariate_eb_inputs",
     "compute_univariate_eb_inputs", "compute_lai_2spa_inputs",
-    "fit_observed_single", "fit_observed_dual",
+    "assess_dual_ols_design", "fit_observed_single", "fit_observed_dual",
     "finalize_ols_se_variants", "fit_eiv_dual", "fit_ridge_dual", "fit_fuller_dual",
     "fit_fuller_dual_stepdown", "fit_fuller_dual_alpha_stepdown",
     "fit_lai_2spa", "fit_lai_2spa_observed_outcome", "fit_lai_2spa_disparate",

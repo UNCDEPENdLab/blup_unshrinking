@@ -1,3 +1,50 @@
+mplus_diagnostics_template <- function() {
+  tibble::tibble(
+    mplus_warning_count = NA_integer_,
+    mplus_critical_warning = NA,
+    mplus_critical_warning_detail = NA_character_,
+    mplus_target_parameter_count = NA_integer_
+  )
+}
+
+mplus_message_lines <- function(messages) {
+  if (is.null(messages) || length(messages) == 0L) {
+    return(character())
+  }
+  lines <- unlist(lapply(messages, paste, collapse = " "), use.names = FALSE)
+  lines <- trimws(as.character(lines))
+  unique(lines[nzchar(lines) & !is.na(lines)])
+}
+
+#' Identify Mplus warnings that make a returned estimate unsuitable for analysis.
+#'
+#' Mplus can write a parameter table even when it warns about a nonconverged or
+#' inadmissible solution. These prespecified patterns are treated as critical;
+#' other warnings are retained for audit but do not automatically exclude a
+#' result from performance summaries.
+mplus_warning_diagnostics <- function(warnings) {
+  warning_lines <- mplus_message_lines(warnings)
+  critical_pattern <- paste(
+    c(
+      "did not converge", "not converge", "did not terminate normally",
+      "not positive definite", "non-positive definite", "negative residual variance",
+      "singular", "ill-conditioned", "hessian", "standard errors?.*(could not|not)"
+    ),
+    collapse = "|"
+  )
+  critical <- grepl(critical_pattern, warning_lines, ignore.case = TRUE, perl = TRUE)
+  tibble::tibble(
+    mplus_warning_count = as.integer(length(warning_lines)),
+    mplus_critical_warning = any(critical),
+    mplus_critical_warning_detail = if (any(critical)) {
+      paste(warning_lines[critical], collapse = "\n")
+    } else {
+      NA_character_
+    },
+    mplus_target_parameter_count = NA_integer_
+  )
+}
+
 extract_mplus_stats <- function(output_file, yvar, xvar, ci_multiplier = stats::qnorm(0.975),
                                 reporting_scale = NULL, type = "reg") {
   if (type != "reg") {
@@ -9,7 +56,7 @@ extract_mplus_stats <- function(output_file, yvar, xvar, ci_multiplier = stats::
     error = function(e) return(NULL)
   )
   if (is.null(results)) {
-    return(tibble::tibble(
+    return(dplyr::bind_cols(tibble::tibble(
       estimate = NA_real_,
       se = NA_real_,
       ci_low = NA_real_,
@@ -17,13 +64,13 @@ extract_mplus_stats <- function(output_file, yvar, xvar, ci_multiplier = stats::
       status_code = 2L,
       mx_issue_class = "mplus_null_output_file",
       mx_issue_detail = NA_character_
-    ))
+    ), mplus_diagnostics_template()))
   }
   
   errors <- results$errors
   if (length(errors)) {
     parsed_errors <- unlist(lapply(errors, paste, collapse = " "))
-    return(tibble::tibble(
+    return(dplyr::bind_cols(tibble::tibble(
       estimate = NA_real_,
       se = NA_real_,
       ci_low = NA_real_,
@@ -31,8 +78,9 @@ extract_mplus_stats <- function(output_file, yvar, xvar, ci_multiplier = stats::
       status_code = 1L,
       mx_issue_class = "mplus_error_thrown",
       mx_issue_detail = paste(parsed_errors, collapse = "\n")
-    ))
+    ), mplus_diagnostics_template()))
   } else {
+    warning_diagnostics <- mplus_warning_diagnostics(results$warnings)
     
     pars <- results$parameters$unstandardized
     yvar <- toupper(yvar)
@@ -55,10 +103,33 @@ extract_mplus_stats <- function(output_file, yvar, xvar, ci_multiplier = stats::
       var = ".WITH"
     )
     rows <- which(pars$paramHeader == paste0(yvar, operator) & pars$param == xvar)
+    warning_diagnostics$mplus_target_parameter_count <- as.integer(length(rows))
+    if (length(rows) != 1L) {
+      return(dplyr::bind_cols(tibble::tibble(
+        estimate = NA_real_,
+        se = NA_real_,
+        ci_low = NA_real_,
+        ci_high = NA_real_,
+        status_code = 3L,
+        mx_issue_class = "mplus_target_parameter_not_unique",
+        mx_issue_detail = sprintf("Expected one target parameter; found %d.", length(rows))
+      ), warning_diagnostics))
+    }
     est <- pars[rows, "est"] * scale_u1
     se <- pars[rows, "se"] * scale_u1
+    if (!is.finite(est) || !is.finite(se) || se <= 0) {
+      return(dplyr::bind_cols(tibble::tibble(
+        estimate = NA_real_,
+        se = NA_real_,
+        ci_low = NA_real_,
+        ci_high = NA_real_,
+        status_code = 3L,
+        mx_issue_class = "mplus_invalid_target_estimate_or_se",
+        mx_issue_detail = "The target estimate or standard error was non-finite or non-positive."
+      ), warning_diagnostics))
+    }
     
-    return(tibble::tibble(
+    return(dplyr::bind_cols(tibble::tibble(
       estimate = est,
       se = se,
       ci_low = est - ci_multiplier * se,
@@ -66,7 +137,7 @@ extract_mplus_stats <- function(output_file, yvar, xvar, ci_multiplier = stats::
       status_code = 0L,
       mx_issue_class = "ok",
       mx_issue_detail = "ok"
-    ))
+    ), warning_diagnostics))
   }
 }
 
@@ -114,7 +185,7 @@ fit_mplus_blup_predictor <- function(level1_data, level2_data, join_by = dplyr::
   })
   
   if (is.null(fit)) {
-    out <- tibble::tibble(
+    out <- dplyr::bind_cols(tibble::tibble(
       estimate = NA_real_,
       se = NA_real_,
       ci_low = NA_real_,
@@ -122,7 +193,7 @@ fit_mplus_blup_predictor <- function(level1_data, level2_data, join_by = dplyr::
       status_code = 2L,
       mx_issue_class = "mplus_null_fit",
       mx_issue_detail = NA_character_
-    )
+    ), mplus_diagnostics_template())
   } else {
     out <- extract_mplus_stats(
       output_file,
@@ -218,7 +289,7 @@ fit_mplus_dual_process <- function(proc1_data, proc2_data, title = "dual_process
   })
   
   if (is.null(fit)) {
-    out <- tibble::tibble(
+    out <- dplyr::bind_cols(tibble::tibble(
       estimate = NA_real_,
       se = NA_real_,
       ci_low = NA_real_,
@@ -226,7 +297,7 @@ fit_mplus_dual_process <- function(proc1_data, proc2_data, title = "dual_process
       status_code = 2L,
       mx_issue_class = "mplus_null_fit",
       mx_issue_detail = NA_character_
-    )
+    ), mplus_diagnostics_template())
   } else {
     out <- extract_mplus_stats(
       output_file,

@@ -19,23 +19,121 @@
 #' A tibble with one row for each `se_type` (`naive`, `hc3`) and columns
 #' `estimate`, `se`, `ci_low`, `ci_high`, and `status_code`, all filled with
 #' missing values.
-empty_lm_variants <- function() {
+empty_lm_variants <- function(analysis_diagnostics = NULL) {
+  if (is.null(analysis_diagnostics)) {
+    analysis_diagnostics <- tibble::tibble(
+      analysis_eligible = FALSE,
+      analysis_exclusion_reason = "estimation_unavailable",
+      stage2_predictor_correlation = NA_real_,
+      stage2_vif = NA_real_,
+      stage2_design_rank = NA_integer_,
+      stage2_design_rcond = NA_real_
+    )
+  }
   dplyr::bind_rows(
-    naive = tibble::tibble(
+    naive = dplyr::bind_cols(tibble::tibble(
       estimate = NA_real_,
       se = NA_real_,
       ci_low = NA_real_,
       ci_high = NA_real_,
       status_code = NA_integer_
-    ),
-    hc3 = tibble::tibble(
+    ), analysis_diagnostics),
+    hc3 = dplyr::bind_cols(tibble::tibble(
       estimate = NA_real_,
       se = NA_real_,
       ci_low = NA_real_,
       ci_high = NA_real_,
       status_code = NA_integer_
-    ),
+    ), analysis_diagnostics),
     .id = "se_type"
+  )
+}
+
+#' Assess whether a dual-predictor OLS design is suitable for performance summaries.
+#'
+#' @details
+#' A finite OLS coefficient can still be uninformative when its two predictors
+#' are nearly collinear. This helper preserves such estimates for auditability,
+#' but marks them ineligible for primary bias, variance, RMSE, and coverage
+#' summaries. The diagnostic is calculated on the exact complete-case Stage-2
+#' data used by the OLS fit and is invariant to the predictors' units.
+#'
+#' A VIF of 100 is the default near-collinearity threshold. With two
+#' predictors, this is equivalent to an absolute predictor correlation of about
+#' 0.995. Exact rank deficiency is always ineligible regardless of the VIF.
+#'
+#' @param dat Complete-case Stage-2 data containing the two predictors.
+#' @param predictor_u0 Character name of the intercept-like predictor.
+#' @param predictor_u1 Character name of the slope-like predictor.
+#' @param vif_threshold Positive VIF threshold used to flag near collinearity.
+#'
+#' @return A one-row tibble with analysis-eligibility and Stage-2 design
+#' diagnostics.
+assess_dual_ols_design <- function(
+    dat,
+    predictor_u0,
+    predictor_u1,
+    vif_threshold = 100) {
+  unavailable <- function(reason) {
+    tibble::tibble(
+      analysis_eligible = FALSE,
+      analysis_exclusion_reason = reason,
+      stage2_predictor_correlation = NA_real_,
+      stage2_vif = NA_real_,
+      stage2_design_rank = NA_integer_,
+      stage2_design_rcond = NA_real_
+    )
+  }
+
+  if (!is.finite(vif_threshold) || vif_threshold <= 1) {
+    stop("`vif_threshold` must be finite and greater than one.")
+  }
+  if (nrow(dat) < 4L) {
+    return(unavailable("insufficient_complete_cases"))
+  }
+
+  x <- as.matrix(dat[, c(predictor_u0, predictor_u1), drop = FALSE])
+  if (any(!is.finite(x))) {
+    return(unavailable("nonfinite_stage2_predictors"))
+  }
+  x_sd <- apply(x, 2L, stats::sd)
+  if (any(!is.finite(x_sd)) || any(x_sd <= sqrt(.Machine$double.eps))) {
+    return(unavailable("degenerate_stage2_predictor"))
+  }
+
+  # Standardization makes the rank, reciprocal condition number, and VIF
+  # comparable across the very different intercept and slope scales.
+  x_standardized <- scale(x, center = TRUE, scale = TRUE)
+  x_design <- cbind(1, x_standardized)
+  rank <- qr(x_design)$rank
+  correlation <- stats::cor(x_standardized[, 1L], x_standardized[, 2L])
+  vif <- if (is.finite(correlation) && abs(correlation) < 1) {
+    1 / (1 - correlation^2)
+  } else {
+    Inf
+  }
+  design_rcond <- tryCatch(
+    rcond(crossprod(x_design)),
+    error = function(e) NA_real_
+  )
+
+  exclusion_reason <- if (rank < ncol(x_design)) {
+    "stage2_rank_deficient"
+  } else if (!is.finite(correlation) || !is.finite(vif) || !is.finite(design_rcond)) {
+    "stage2_nonfinite_design_diagnostic"
+  } else if (vif >= vif_threshold) {
+    "stage2_near_collinear"
+  } else {
+    NA_character_
+  }
+
+  tibble::tibble(
+    analysis_eligible = is.na(exclusion_reason),
+    analysis_exclusion_reason = exclusion_reason,
+    stage2_predictor_correlation = correlation,
+    stage2_vif = vif,
+    stage2_design_rank = as.integer(rank),
+    stage2_design_rcond = design_rcond
   )
 }
 
@@ -158,12 +256,16 @@ fit_observed_dual <- function(
     predictor_u0,
     predictor_u1,
     reporting_scale = NULL) {
-  empty_out <- empty_lm_variants()
-
   # Complete-case filtering is estimator-specific: rows only need to be
   # observed on the outcome and the two predictors used here.
   dat <- stage2_df[, c(outcome, predictor_u0, predictor_u1), drop = FALSE]
   dat <- dat[stats::complete.cases(dat), , drop = FALSE]
+  analysis_diagnostics <- assess_dual_ols_design(
+    dat = dat,
+    predictor_u0 = predictor_u0,
+    predictor_u1 = predictor_u1
+  )
+  empty_out <- empty_lm_variants(analysis_diagnostics)
 
   # Four rows are the minimum for a two-predictor model with residual degrees
   # of freedom. Degenerate slope predictors cannot be converted to one-SD units.
@@ -208,20 +310,20 @@ fit_observed_dual <- function(
   }
 
   dplyr::bind_rows(
-    naive = tibble::tibble(
+    naive = dplyr::bind_cols(tibble::tibble(
       estimate = est,
       se = se_naive,
       ci_low = est - stats::qnorm(0.975) * se_naive,
       ci_high = est + stats::qnorm(0.975) * se_naive,
       status_code = 0L
-    ),
-    hc3 = tibble::tibble(
+    ), analysis_diagnostics),
+    hc3 = dplyr::bind_cols(tibble::tibble(
       estimate = est,
       se = se_hc3,
       ci_low = est - stats::qnorm(0.975) * se_hc3,
       ci_high = est + stats::qnorm(0.975) * se_hc3,
       status_code = ifelse(is.finite(se_hc3), 0L, NA_integer_)
-    ),
+    ), analysis_diagnostics),
     .id = "se_type"
   )
 }
@@ -246,7 +348,15 @@ finalize_ols_se_variants <- function(fit_tbl, base_method) {
     fit_tbl,
     method = ifelse(se_type == "hc3", paste0(base_method, "_hc3"), base_method)
   )
-  dplyr::select(fit_tbl, method, estimate, se, ci_low, ci_high, status_code)
+  dplyr::select(
+    fit_tbl,
+    method, estimate, se, ci_low, ci_high, status_code,
+    dplyr::any_of(c(
+      "analysis_eligible", "analysis_exclusion_reason",
+      "stage2_predictor_correlation", "stage2_vif",
+      "stage2_design_rank", "stage2_design_rcond"
+    ))
+  )
 }
 
 #' Fit a ridge-regularized dual-predictor stage-2 regression.

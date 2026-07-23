@@ -191,6 +191,94 @@ study_methods_for_condition <- function(condition) {
   )
 }
 
+#' Classify matched-outcome replication results for performance summaries.
+#'
+#' This pathway is used by Lai Studies 1, 2, and 4.  Dual-predictor OLS fits
+#' retain their raw estimates, but a rank-deficient or near-collinear Stage-2
+#' design is not eligible for the primary bias and RMSE summaries.  Interval
+#' eligibility is stricter because coverage additionally needs a valid standard
+#' error and confidence interval.
+add_matched_outcome_analysis_eligibility <- function(results) {
+  get_column <- function(name, default) {
+    if (name %in% names(results)) results[[name]] else rep(default, nrow(results))
+  }
+  set_reason <- function(reason, when, value) {
+    index <- is.na(reason) & !is.na(when) & when
+    if (length(value) == 1L) {
+      reason[index] <- value
+    } else {
+      reason[index] <- value[index]
+    }
+    reason
+  }
+
+  method <- as.character(get_column("method", NA_character_))
+  status_code <- suppressWarnings(as.integer(get_column("status_code", NA_integer_)))
+  estimate <- suppressWarnings(as.numeric(get_column("estimate", NA_real_)))
+  se <- suppressWarnings(as.numeric(get_column("se", NA_real_)))
+  ci_low <- suppressWarnings(as.numeric(get_column("ci_low", NA_real_)))
+  ci_high <- suppressWarnings(as.numeric(get_column("ci_high", NA_real_)))
+  dual_eligible <- as.logical(get_column("analysis_eligible", NA))
+  dual_reason <- as.character(get_column("analysis_exclusion_reason", NA_character_))
+  fuller_guard_pass <- as.logical(get_column("fuller_auto_guard_pass", NA))
+  fuller_guard_reason <- as.character(get_column("fuller_auto_guard_reason", NA_character_))
+  mx_issue_class <- as.character(get_column("mx_issue_class", NA_character_))
+  mx_info_definite <- as.logical(get_column("mx_info_definite", NA))
+  mx_condition_number <- suppressWarnings(as.numeric(get_column("mx_condition_number", NA_real_)))
+
+  point_reason <- rep(NA_character_, nrow(results))
+  point_reason <- set_reason(point_reason, is.na(status_code) | is.na(estimate), "estimation_unavailable")
+  point_reason <- set_reason(point_reason, !is.na(status_code) & status_code != 0L, "estimation_status_nonzero")
+  point_reason <- set_reason(point_reason, !is.finite(estimate), "nonfinite_estimate")
+
+  dual_ols_methods <- c(
+    "oracle_dual", "naive_dual_eb", "naive_dual_eb_hc3",
+    "corrected_dual", "corrected_dual_hc3"
+  )
+  dual_bad <- method %in% dual_ols_methods & !is.na(dual_eligible) & !dual_eligible
+  point_reason <- set_reason(
+    point_reason,
+    dual_bad,
+    ifelse(is.na(dual_reason), "stage2_design_ineligible", dual_reason)
+  )
+
+  alpha_fuller <- method == "fuller_alpha_stepdown"
+  point_reason <- set_reason(
+    point_reason,
+    alpha_fuller & (is.na(fuller_guard_pass) | !fuller_guard_pass),
+    ifelse(
+      is.na(fuller_guard_reason) | fuller_guard_reason == "",
+      "fuller_guard_failed",
+      paste0("fuller_guard_", fuller_guard_reason)
+    )
+  )
+
+  lai <- method %in% c("lai_2spa", "lai_2spaa")
+  point_reason <- set_reason(point_reason, lai & !is.na(mx_issue_class) & mx_issue_class != "ok", "openmx_issue")
+  point_reason <- set_reason(point_reason, lai & !is.na(mx_info_definite) & !mx_info_definite, "openmx_information_not_definite")
+  point_reason <- set_reason(
+    point_reason,
+    lai & is.finite(mx_condition_number) & mx_condition_number > 1e12,
+    "openmx_condition_number_excessive"
+  )
+
+  interval_reason <- point_reason
+  interval_reason <- set_reason(interval_reason, !is.finite(se) | se <= 0, "invalid_standard_error")
+  interval_reason <- set_reason(
+    interval_reason,
+    !is.finite(ci_low) | !is.finite(ci_high) | ci_low > ci_high,
+    "invalid_confidence_interval"
+  )
+
+  dplyr::mutate(
+    results,
+    analysis_eligible = is.na(point_reason),
+    analysis_exclusion_reason = point_reason,
+    interval_eligible = is.na(interval_reason),
+    interval_exclusion_reason = interval_reason
+  )
+}
+
 make_failed_result <- function(condition, methods, truth) {
   dplyr::bind_cols(
     tibble::tibble(
@@ -243,7 +331,10 @@ run_matched_outcome_rep <- function(condition, sim) {
   sim$lv1 <- add_lai_trial_index(sim$lv1, cluster_var = "cid")
   fit_y <- fit_lai_stage1(y ~ x, random = ~x | cid, data = sim$lv1, condition = condition, cluster_var = "cid")
   if (is.null(fit_y)) {
-    return(make_failed_result(condition, matched_study_methods(include_tempered_eiv), truth))
+    return(
+      make_failed_result(condition, matched_study_methods(include_tempered_eiv), truth) %>%
+        add_matched_outcome_analysis_eligibility()
+    )
   }
 
   ordered_ids <- sim$lv2_true$id
@@ -277,7 +368,8 @@ run_matched_outcome_rep <- function(condition, sim) {
   results <- dplyr::bind_rows(
     fit_observed_dual(stage2_df, outcome = "z", predictor_u0 = "true_u0", predictor_u1 = "true_u1") %>%
       dplyr::filter(se_type == "naive") %>%
-      dplyr::transmute(method = "oracle_dual", estimate, se, ci_low, ci_high, status_code),
+      dplyr::mutate(method = "oracle_dual") %>%
+      dplyr::select(method, -se_type),
     finalize_ols_se_variants(fit_observed_single(stage2_df, outcome = "z", predictor = "u1_eb"), "naive_slope_only"),
     finalize_ols_se_variants(fit_observed_single(stage2_df, outcome = "z", predictor = "centered_u1_eb"), "centered_slope_only"),
     finalize_ols_se_variants(fit_observed_dual(stage2_df, outcome = "z", predictor_u0 = "u0_eb", predictor_u1 = "u1_eb"), "naive_dual_eb"),
@@ -333,7 +425,7 @@ run_matched_outcome_rep <- function(condition, sim) {
     },
     fit_ridge_dual(stage2_df, outcome = "z", predictor_u0 = "u0_eb", predictor_u1 = "u1_eb") %>%
       dplyr::mutate(method = "ridge_dual_eb") %>%
-      dplyr::select(method, estimate, se, ci_low, ci_high, status_code),
+      dplyr::select(method, dplyr::everything()),
     finalize_ols_se_variants(fit_observed_single(stage2_df, outcome = "z", predictor = "corrected_slope_full"), "corrected_slope_only"),
     finalize_ols_se_variants(fit_observed_dual(stage2_df, outcome = "z", predictor_u0 = "corrected_intercept_full", predictor_u1 = "corrected_slope_full"), "corrected_dual"),
     fit_lai_2spa_observed_outcome(stage2_df, use_average = FALSE) %>%
@@ -376,6 +468,8 @@ run_matched_outcome_rep <- function(condition, sim) {
       dplyr::mutate(method = "fuller_alpha_stepdown") %>%
       dplyr::select(method, dplyr::everything())
   )
+
+  results <- add_matched_outcome_analysis_eligibility(results)
 
   dplyr::bind_cols(results, stage1_diag[rep(1L, nrow(results)), , drop = FALSE]) %>%
     add_study_result_context(condition, truth)

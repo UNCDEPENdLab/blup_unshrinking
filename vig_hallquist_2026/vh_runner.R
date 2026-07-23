@@ -685,7 +685,8 @@ vig_hallquist_parallel_exports <- function() {
   candidates <- c(
     "run_study_rep", "run_study1_rep", "run_study2_rep", "run_study3_rep", "run_study4_rep",
     "vh_pipeline_version",
-    "add_study2_method_roles", "add_study4_method_roles",
+    "add_study2_method_roles", "add_study2_analysis_eligibility", "add_study3_analysis_eligibility",
+    "add_study4_method_roles",
     "rescale_fuller_to_population_sd",
     "prepare_fuller_average_measurement", "fit_fuller_average_measurement",
     "simulate_study1", "simulate_study2", "simulate_study3", "simulate_study4",
@@ -715,7 +716,7 @@ vig_hallquist_parallel_exports <- function() {
     "format_stage1_eb_row", "default_re_design", "make_eb_output_row", "select_lai_measurement_columns",
     "compute_eb_measurement_inputs", "compute_bivariate_eb_inputs",
     "compute_univariate_eb_inputs", "compute_lai_2spa_inputs",
-    "fit_observed_single", "fit_observed_dual",
+    "assess_dual_ols_design", "fit_observed_single", "fit_observed_dual",
     "finalize_ols_se_variants", "fit_eiv_dual", "fit_ridge_dual", "fit_fuller",
     "fit_fuller_dual",
     "fit_fuller_dual_stepdown", "fit_fuller_dual_alpha_stepdown",
@@ -723,7 +724,8 @@ vig_hallquist_parallel_exports <- function() {
     "fit_lai_2spa_dual_process",
     "run_mx_safe", "extract_mx_stats", "extract_mx_se_details",
     "classify_mx_issue", "compact_message", "project_to_pd", "fit_mplus_blup_predictor",
-    "extract_mplus_stats"
+    "extract_mplus_stats", "mplus_diagnostics_template", "mplus_message_lines",
+    "mplus_warning_diagnostics"
   )
   candidates[vapply(candidates, exists, logical(1), mode = "function", inherits = TRUE) |
     candidates == "fixed_params"]

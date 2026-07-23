@@ -193,6 +193,8 @@ stopifnot(
   isTRUE(all.equal(as.integer(fuller_noerr$status_code), 0L)),
   isTRUE(all.equal(fuller_noerr$estimate, ols_naive$estimate, tolerance = 1e-10)),
   isTRUE(all.equal(fuller_noerr$se, ols_naive$se, tolerance = 1e-10)),
+  all(ols_dual$analysis_eligible),
+  all(is.na(ols_dual$analysis_exclusion_reason)),
   isTRUE(all.equal(
     fuller_noerr_fixed$estimate,
     fuller_noerr$fuller_raw_estimate * fixed_scale,
@@ -203,6 +205,46 @@ stopifnot(
     fuller_noerr$fuller_raw_se * fixed_scale,
     tolerance = 1e-12
   ))
+)
+
+# A finite OLS coefficient can still be unsuitable for primary performance
+# summaries when the two observed predictors are nearly collinear. The raw
+# estimate remains available, while the method-specific analysis flag records
+# why it should be excluded later.
+set.seed(781)
+n_collinear <- 120L
+x0_collinear <- rnorm(n_collinear)
+x1_near_collinear <- x0_collinear + rnorm(n_collinear, sd = 0.001)
+near_collinear_df <- data.frame(
+  y = 0.3 * x0_collinear + 0.7 * x1_near_collinear + rnorm(n_collinear),
+  x0 = x0_collinear,
+  x1 = x1_near_collinear
+)
+near_collinear_out <- fit_observed_dual(
+  near_collinear_df,
+  outcome = "y",
+  predictor_u0 = "x0",
+  predictor_u1 = "x1",
+  reporting_scale = 1
+)
+
+exact_collinear_df <- transform(near_collinear_df, x1 = x0)
+exact_collinear_out <- fit_observed_dual(
+  exact_collinear_df,
+  outcome = "y",
+  predictor_u0 = "x0",
+  predictor_u1 = "x1",
+  reporting_scale = 1
+)
+
+stopifnot(
+  all(!near_collinear_out$analysis_eligible),
+  all(near_collinear_out$analysis_exclusion_reason == "stage2_near_collinear"),
+  all(near_collinear_out$stage2_vif > 100),
+  all(is.finite(near_collinear_out$estimate)),
+  all(!exact_collinear_out$analysis_eligible),
+  all(exact_collinear_out$analysis_exclusion_reason == "stage2_rank_deficient"),
+  all(is.na(exact_collinear_out$estimate))
 )
 
 stage2_single_noerr <- data.frame(
