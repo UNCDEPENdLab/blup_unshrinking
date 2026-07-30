@@ -49,8 +49,8 @@ add_study2_analysis_eligibility <- function(results) {
   se <- suppressWarnings(as.numeric(get_column("se", NA_real_)))
   dual_eligible <- as.logical(get_column("analysis_eligible", NA))
   dual_reason <- as.character(get_column("analysis_exclusion_reason", NA_character_))
-  fuller_guard_pass <- as.logical(get_column("fuller_auto_guard_pass", NA))
-  fuller_guard_reason <- as.character(get_column("fuller_auto_guard_reason", NA_character_))
+  # fuller_guard_pass <- as.logical(get_column("fuller_auto_guard_pass", NA))
+  # fuller_guard_reason <- as.character(get_column("fuller_auto_guard_reason", NA_character_))
   mx_issue_class <- as.character(get_column("mx_issue_class", NA_character_))
   mx_info_definite <- as.logical(get_column("mx_info_definite", NA))
   mx_condition_number <- suppressWarnings(as.numeric(get_column("mx_condition_number", NA_real_)))
@@ -71,16 +71,18 @@ add_study2_analysis_eligibility <- function(results) {
     ifelse(is.na(dual_reason), "stage2_design_ineligible", dual_reason)
   )
 
-  alpha_fuller <- method == "fuller_alpha_stepdown_closed_form"
-  reason <- set_reason(
-    reason,
-    alpha_fuller & (is.na(fuller_guard_pass) | !fuller_guard_pass),
-    ifelse(
-      is.na(fuller_guard_reason) | fuller_guard_reason == "",
-      "fuller_guard_failed",
-      paste0("fuller_guard_", fuller_guard_reason)
-    )
-  )
+  # ZV: the auto guard was from the previous implementation of the stepdown so this incorrectly filters
+  # all rows with alpha_stepdown as the method
+  # alpha_fuller <- method == "fuller_alpha_stepdown_closed_form"
+  # reason <- set_reason(
+  #   reason,
+  #   alpha_fuller & (is.na(fuller_guard_pass) | !fuller_guard_pass),
+  #   ifelse(
+  #     is.na(fuller_guard_reason) | fuller_guard_reason == "",
+  #     "fuller_guard_failed",
+  #     paste0("fuller_guard_", fuller_guard_reason)
+  #   )
+  # )
 
   lai <- method == "lai_2spa"
   reason <- set_reason(reason, lai & !is.na(mx_issue_class) & mx_issue_class != "ok", "openmx_issue")
@@ -213,8 +215,10 @@ run_study2_rep <- function(condition) {
       reporting_scale = latent_slope_sd
     ) %>%
       dplyr::filter(se_type == "naive") %>%
-      dplyr::mutate(method = "oracle_dual") %>%
-      dplyr::select(method, -se_type),
+      dplyr::transmute(
+        method = "oracle_dual",
+        estimate, se, ci_low, ci_high, status_code
+      ),
     fit_observed_dual(
       stage2_df,
       outcome = "z",
@@ -223,8 +227,10 @@ run_study2_rep <- function(condition) {
       reporting_scale = latent_slope_sd
     ) %>%
       dplyr::filter(se_type == "naive") %>%
-      dplyr::mutate(method = "naive_dual_blup") %>%
-      dplyr::select(method, -se_type),
+      dplyr::transmute(
+        method = "naive_dual_blup",
+        estimate, se, ci_low, ci_high, status_code
+      ),
     fit_observed_dual(
       stage2_df,
       outcome = "z",
@@ -233,8 +239,10 @@ run_study2_rep <- function(condition) {
       reporting_scale = latent_slope_sd
     ) %>%
       dplyr::filter(se_type == "naive") %>%
-      dplyr::mutate(method = "closed_form_dual") %>%
-      dplyr::select(method, -se_type),
+      dplyr::transmute(
+        method = "closed_form_dual",
+        estimate, se, ci_low, ci_high, status_code
+      ),
     fit_fuller_dual(
       stage2_df,
       outcome = "z",
