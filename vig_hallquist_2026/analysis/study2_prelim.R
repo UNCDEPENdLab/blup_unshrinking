@@ -19,40 +19,8 @@ study2_results <- read_study_cache("study2", this_run = "vig_hallquist_slurm") %
       bias = estimate - truth,
       sq_error = (estimate - truth)^2,
       covered = ci_low <= truth & ci_high >= truth
-  )
-
-# Older cached runs predate the analysis-validity fields. Where they retain the
-# Stage-1 EB correlation, reconstruct the same VIF-based screen used by new
-# results; otherwise retain their ordinary convergence classification.
-if (!("analysis_eligible" %in% names(study2_results))) {
-  if ("stage1_eb_corr" %in% names(study2_results)) {
-    # Historical caches retain the EB correlation calculated on the exact
-    # complete-case dual-OLS data. Convert it to the same VIF=100 rule used by
-    # newly generated results, so the existing cache can be reviewed without
-    # rerunning the full simulation.
-    legacy_vif_limit <- 100
-    legacy_corr_limit <- sqrt(1 - 1 / legacy_vif_limit)
-    study2_results <- study2_results %>%
-      mutate(
-        legacy_dual_ols_near_collinear = method == "naive_dual_blup" &
-          converged & (!is.finite(stage1_eb_corr) | abs(stage1_eb_corr) >= legacy_corr_limit),
-        analysis_eligible = converged & !legacy_dual_ols_near_collinear,
-        analysis_exclusion_reason = case_when(
-          !converged ~ "estimation_unavailable",
-          legacy_dual_ols_near_collinear ~ "stage2_near_collinear",
-          TRUE ~ NA_character_
-        )
-      )
-  } else {
-    study2_results <- study2_results %>%
-      mutate(
-        analysis_eligible = converged,
-        analysis_exclusion_reason = if_else(converged, NA_character_, "estimation_unavailable")
-      )
-  }
-}
-
-study2_results <- study2_results %>%
+  ) %>%
+  add_study2_legacy_eligibility() %>%
   add_study2_analysis_eligibility() %>%
   mutate(analysis_ready = converged & analysis_eligible)
 
