@@ -41,8 +41,8 @@ add_study3_analysis_eligibility <- function(results) {
   se <- suppressWarnings(as.numeric(get_column("se", NA_real_)))
   dual_eligible <- as.logical(get_column("analysis_eligible", NA))
   dual_reason <- as.character(get_column("analysis_exclusion_reason", NA_character_))
-  fuller_guard_pass <- as.logical(get_column("fuller_auto_guard_pass", NA))
-  fuller_guard_reason <- as.character(get_column("fuller_auto_guard_reason", NA_character_))
+  # fuller_guard_pass <- as.logical(get_column("fuller_auto_guard_pass", NA))
+  # fuller_guard_reason <- as.character(get_column("fuller_auto_guard_reason", NA_character_))
   mx_issue_class <- as.character(get_column("mx_issue_class", NA_character_))
   mx_info_definite <- as.logical(get_column("mx_info_definite", NA))
   mx_condition_number <- suppressWarnings(as.numeric(get_column("mx_condition_number", NA_real_)))
@@ -65,16 +65,16 @@ add_study3_analysis_eligibility <- function(results) {
     ifelse(is.na(dual_reason), "stage2_design_ineligible", dual_reason)
   )
 
-  alpha_fuller <- method == "fuller_alpha_stepdown_closed_form"
-  point_reason <- set_reason(
-    point_reason,
-    alpha_fuller & (is.na(fuller_guard_pass) | !fuller_guard_pass),
-    ifelse(
-      is.na(fuller_guard_reason) | fuller_guard_reason == "",
-      "fuller_guard_failed",
-      paste0("fuller_guard_", fuller_guard_reason)
-    )
-  )
+  # alpha_fuller <- method == "fuller_alpha_stepdown_closed_form"
+  # point_reason <- set_reason(
+  #   point_reason,
+  #   alpha_fuller & (is.na(fuller_guard_pass) | !fuller_guard_pass),
+  #   ifelse(
+  #     is.na(fuller_guard_reason) | fuller_guard_reason == "",
+  #     "fuller_guard_failed",
+  #     paste0("fuller_guard_", fuller_guard_reason)
+  #   )
+  # )
 
   lai <- method == "lai_2spa"
   point_reason <- set_reason(point_reason, lai & !is.na(mx_issue_class) & mx_issue_class != "ok", "openmx_issue")
@@ -235,8 +235,10 @@ run_study3_rep <- function(condition) {
       reporting_scale = reporting_scale
     ) %>%
       dplyr::filter(se_type == "naive") %>%
-      dplyr::mutate(method = "oracle_dual") %>%
-      dplyr::select(method, -se_type),
+      dplyr::transmute(
+        method = "oracle_dual",
+        estimate, se, ci_low, ci_high, status_code
+      ),
     fit_observed_dual(
       stage2_df,
       outcome = "q_u1_eb",
@@ -245,8 +247,10 @@ run_study3_rep <- function(condition) {
       reporting_scale = reporting_scale
     ) %>%
       dplyr::filter(se_type == "naive") %>%
-      dplyr::mutate(method = "naive_blup_on_blup") %>%
-      dplyr::select(method, -se_type),
+      dplyr::transmute(
+        method = "naive_blup_on_blup",
+        estimate, se, ci_low, ci_high, status_code
+      ),
     fit_observed_dual(
       stage2_df,
       outcome = "q_corrected_slope",
@@ -255,8 +259,10 @@ run_study3_rep <- function(condition) {
       reporting_scale = reporting_scale
     ) %>%
       dplyr::filter(se_type == "naive") %>%
-      dplyr::mutate(method = "closed_form_on_blup") %>%
-      dplyr::select(method, -se_type),
+      dplyr::transmute(
+        method = "closed_form_on_blup",
+        estimate, se, ci_low, ci_high, status_code
+      ),
     fit_observed_dual(
       stage2_df,
       outcome = "q_u1_eb",
@@ -265,8 +271,10 @@ run_study3_rep <- function(condition) {
       reporting_scale = reporting_scale
     ) %>%
       dplyr::filter(se_type == "naive") %>%
-      dplyr::mutate(method = "blup_on_closed_form") %>%
-      dplyr::select(method, -se_type),
+      dplyr::transmute(
+        method = "blup_on_closed_form",
+        estimate, se, ci_low, ci_high, status_code
+      ),
     fit_observed_dual(
       stage2_df,
       outcome = "q_corrected_slope",
@@ -275,8 +283,10 @@ run_study3_rep <- function(condition) {
       reporting_scale = reporting_scale
     ) %>%
       dplyr::filter(se_type == "naive") %>%
-      dplyr::mutate(method = "closed_form_on_closed_form") %>%
-      dplyr::select(method, -se_type),
+      dplyr::transmute(
+        method = "closed_form_on_closed_form",
+        estimate, se, ci_low, ci_high, status_code
+      ),
     fit_fuller_dual(
       stage2_df,
       outcome = "q_corrected_slope",
