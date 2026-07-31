@@ -753,7 +753,23 @@ fit_lai_2spa_observed_outcome <- function(
     target_algebra
   )
 
-  extract_mx_stats(run_mx_safe(mx_mod))
+  mx_fit <- run_mx_safe(mx_mod)
+  out <- extract_mx_stats(mx_fit)
+
+  # Preserve the model-estimated latent slope SD even when the caller requests
+  # a fixed reporting scale.  Lai Study 1 multiplied the 2S-PA path by this
+  # fitted SD; refreshed simulations also need it to reconstruct that
+  # historical reporting convention without refitting the model.
+  latent_slope_sd <- tryCatch({
+    if (!identical(out$status_code[[1]], 0L)) {
+      NA_real_
+    } else {
+      latent_covariance <- OpenMx::mxEval(S, mx_fit)
+      slope_variance <- as.numeric(latent_covariance[5L, 5L])
+      if (is.finite(slope_variance) && slope_variance > 0) sqrt(slope_variance) else NA_real_
+    }
+  }, error = function(e) NA_real_)
+  dplyr::mutate(out, lai_fitted_latent_slope_sd = latent_slope_sd)
 }
 
 #' Fit Lai 2S-PA/2S-PAA for disparate-clustering Study 3.

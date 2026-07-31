@@ -3,7 +3,8 @@ mplus_diagnostics_template <- function() {
     mplus_warning_count = NA_integer_,
     mplus_critical_warning = NA,
     mplus_critical_warning_detail = NA_character_,
-    mplus_target_parameter_count = NA_integer_
+    mplus_target_parameter_count = NA_integer_,
+    mplus_fitted_latent_slope_sd = NA_real_
   )
 }
 
@@ -104,6 +105,15 @@ extract_mplus_stats <- function(output_file, yvar, xvar, ci_multiplier = stats::
     )
     rows <- which(pars$paramHeader == paste0(yvar, operator) & pars$param == xvar)
     warning_diagnostics$mplus_target_parameter_count <- as.integer(length(rows))
+    slope_variance_rows <- which(
+      pars$paramHeader == "Variances" & pars$param == xvar
+    )
+    if (length(slope_variance_rows) == 1L) {
+      slope_variance <- suppressWarnings(as.numeric(pars[slope_variance_rows, "est"]))
+      warning_diagnostics$mplus_fitted_latent_slope_sd <- if (
+        is.finite(slope_variance) && slope_variance > 0
+      ) sqrt(slope_variance) else NA_real_
+    }
     if (length(rows) != 1L) {
       return(dplyr::bind_cols(tibble::tibble(
         estimate = NA_real_,
