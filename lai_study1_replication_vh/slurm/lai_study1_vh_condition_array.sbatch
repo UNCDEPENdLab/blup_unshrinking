@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #SBATCH --job-name=lai-study1-vh
-#SBATCH --array=1-486%10
+#SBATCH --array=1-486%100
 #SBATCH --cpus-per-task=1
 #SBATCH --mem=16G
 #SBATCH --time=48:00:00

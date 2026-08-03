@@ -76,7 +76,8 @@ The original repository was inspected at commit
 - Naive EB `stdbeta` definitions: [`sim1.R`, lines 135--183](https://github.com/marklhc/2spa-random-slopes-supp/blob/9ffe53168f6bb04e13ef977dc19a8d953d0bf29d/simulation_scripts/sim1.R#L135-L183).
 - 2S-PA and MSEM `stdbeta` definitions: [`sim1.R`, lines 185--280](https://github.com/marklhc/2spa-random-slopes-supp/blob/9ffe53168f6bb04e13ef977dc19a8d953d0bf29d/simulation_scripts/sim1.R#L185-L280).
 - Population target and the `raw_bias` / `robust_bias` calculations: [`sim1.R`, lines 289--325](https://github.com/marklhc/2spa-random-slopes-supp/blob/9ffe53168f6bb04e13ef977dc19a8d953d0bf29d/simulation_scripts/sim1.R#L289-L325).
-- Historical bias figure and its converged-replication convention: [`notebooks/_sim1_results.qmd`, lines 98--158](https://github.com/marklhc/2spa-random-slopes-supp/blob/9ffe53168f6bb04e13ef977dc19a8d953d0bf29d/notebooks/_sim1_results.qmd#L98-L158).
+- Historical Figure 2 bias, Figure 3 coverage, and Figure 4 Type I-error
+  calculations: [`notebooks/_sim1_results_supp.qmd`](https://github.com/marklhc/2spa-random-slopes-supp/blob/9ffe53168f6bb04e13ef977dc19a8d953d0bf29d/notebooks/_sim1_results_supp.qmd).
 
 Relevant local code:
 
@@ -148,7 +149,7 @@ the primary bias and coverage summaries continue to use the VH rule.
 `eligibility_comparison` labels individual rows as `both`,
 `lai_original_only`, `vh_only`, or `neither`.
 
-## Post-estimation Figure 2 outputs
+## Post-estimation Figure 2--4 analogue outputs
 
 After the model runs complete, generate the historical-style analogue and its
 VH-primary companion without rerunning any models:
@@ -168,6 +169,53 @@ The command reads each condition replication file one at a time and writes:
 - `vh_primary_companion_cell_summary.csv`, plus PNG/PDF plots: all seven VH
   methods; common `latent_sd` reporting scale; VH primary eligibility; mean
   bias.
+- `figure3_4_analogue_cell_summary.csv`, plus `figure3_coverage_analogue` and
+  `figure4_type1_analogue` PNG/PDF plots: the same three overlapping methods,
+  `lai_original_standardized` scale, and `status_code == 0` retention.  Figure
+  3 is empirical coverage of the stored 95% confidence interval.  Figure 4 is
+  limited to `beta_zu1 == 0` and defines rejection as exclusion of the truth
+  from that interval.  Lai's original Figure 4 uses `p < .05`; the CI rule is
+  equivalent for ordinary two-sided Wald intervals but is explicitly an
+  analogue when an estimator's interval and p-value constructions differ.
+
+### Cached figure rebuilds
+
+The historical Figure 2 analogue needs replication-level estimates because its
+20%-trimmed bias cannot be recovered from the aggregate summary.  Figures 3--4
+also need replication-level intervals.  On their first run, the postprocessor
+reduces each condition to small historical summaries and writes
+signature-validated caches in
+`figure2_analogue/historical_condition_cache/`, with a
+`figure2_analogue_cache_manifest.csv` recording the source result-file size and
+modification time.  Figure 2 summaries and Figure 3--4 inference summaries
+are cached separately, so later runs reuse both caches and only redraw plots.
+
+The all-seven-method VH companion is now derived directly from
+`lai_study1_vh_summary.csv`; it does not reread the replication files.
+Existing pre-cache `figure2_analogue_cell_summary.csv` output is promoted to
+the cache when its expected condition-method rows are complete, avoiding an
+unnecessary second full pass after an earlier successful figure job.
+
+Force a full historical cache rebuild only after intentionally changing the
+figure calculation itself:
+
+```sh
+Rscript lai_study1_replication_vh/make_figure2_analogue.R \
+  outputs/lai_study1_vh outputs/lai_study1_vh/figure2_analogue true
+```
+
+Changed or replaced condition result files invalidate only their corresponding
+historical cache entries; the combined historical summaries and plots are then
+rebuilt from the cached and refreshed cells.
+
+For the first Figures 3--4 build after a production run, submit the dedicated
+post-estimation job (it makes one interval-only pass through the condition
+files and then caches the results):
+
+```sh
+sbatch --export=ALL,LAI_VH_OUT_DIR=outputs/lai_study1_vh_production \
+  lai_study1_replication_vh/slurm/lai_study1_vh_figures.sbatch
+```
 
 ## Production Slurm execution
 

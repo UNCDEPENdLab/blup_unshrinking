@@ -2,7 +2,7 @@
 
 # Usage:
 # Rscript lai_study1_replication_vh/make_figure2_analogue.R \
-#   outputs/lai_study1_vh outputs/lai_study1_vh/figure2_analogue
+#   outputs/lai_study1_vh outputs/lai_study1_vh/figure2_analogue [force]
 
 suppressPackageStartupMessages({
   library(dplyr)
@@ -22,7 +22,7 @@ source(file.path(refresh_dir, "analysis", "figure2_analogue.R"), local = TRUE)
 if (sys.nframe() == 0L) {
   args <- commandArgs(trailingOnly = TRUE)
   if (length(args) < 1L) {
-    stop("Usage: Rscript make_figure2_analogue.R RESULTS_DIR [ANALYSIS_DIR]")
+    stop("Usage: Rscript make_figure2_analogue.R RESULTS_DIR [ANALYSIS_DIR] [force]")
   }
   results_dir <- args[[1]]
   analysis_dir <- if (length(args) >= 2L) {
@@ -30,5 +30,6 @@ if (sys.nframe() == 0L) {
   } else {
     file.path(results_dir, "figure2_analogue")
   }
-  run_lai_study1_vh_postestimation_figures(results_dir, analysis_dir)
+  force <- if (length(args) >= 3L) args[[3]] %in% c("1", "true", "TRUE") else FALSE
+  run_lai_study1_vh_postestimation_figures(results_dir, analysis_dir, force = force)
 }

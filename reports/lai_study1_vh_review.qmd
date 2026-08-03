@@ -1,0 +1,813 @@
+---
+title: "Lai Study 1 replication with VH estimators"
+subtitle: "Technical review of historical comparability, reporting scale, and slope-SD diagnostics"
+format:
+  html:
+    toc: true
+    toc-depth: 3
+    code-fold: true
+    embed-resources: true
+execute:
+  echo: false
+  warning: false
+  message: false
+params:
+  results_dir: "outputs/lai_study1_vh_production_20260731"
+  figure_dir: null
+  historical_figure_reference: null
+---
+
+## Technical summary
+
+This report reviews the Lai Study 1 data-generating mechanisms using the
+seven-method Vig--Hallquist Study 2 estimator bundle.  It is designed to keep
+two questions separate:
+
+1. Can the overlapping methods reproduce the *pattern* in Lai's Figure 2
+   under the historical scale and retention rule?
+2. What do all seven VH methods show when estimates are put on a common
+   latent-slope-SD reporting scale and screened using the VH eligibility rule?
+
+The historical Figure 2 panel is therefore a **Figure 2 analogue**, not an
+exact reproduction.  The VH bundle does not contain Lai's historical
+u1-only-EB and 2S-PAB variants, and Lai's original standardization can vary
+by method.  The diagnostic sections make that distinction inspectable rather
+than treating a scale change as an estimator effect.
+
+```{r setup}
+library(dplyr)
+library(tidyr)
+library(readr)
+library(ggplot2)
+library(knitr)
+library(scales)
+
+report_input <- tryCatch(knitr::current_input(dir = TRUE), error = function(e) "")
+report_dir <- if (nzchar(report_input)) {
+  report_input <- normalizePath(report_input, mustWork = FALSE)
+  if (dir.exists(report_input)) report_input else dirname(report_input)
+} else {
+  getwd()
+}
+repo_root <- normalizePath(file.path(report_dir, ".."), mustWork = FALSE)
+
+resolve_repo_path <- function(path) {
+  if (is.null(path) || !nzchar(path)) return(NULL)
+  if (grepl("^/", path)) {
+    normalizePath(path, mustWork = FALSE)
+  } else {
+    normalizePath(file.path(repo_root, path), mustWork = FALSE)
+  }
+}
+
+safe_mean <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0L) NA_real_ else mean(x)
+}
+
+safe_median <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0L) NA_real_ else stats::median(x)
+}
+
+fmt_num <- function(x, digits = 3L) {
+  ifelse(is.finite(x), formatC(x, digits = digits, format = "f"), NA_character_)
+}
+
+fmt_pct <- function(x, accuracy = 0.1) {
+  ifelse(is.finite(x), scales::percent(x, accuracy = accuracy), NA_character_)
+}
+
+method_labels <- c(
+  oracle_dual = "Oracle dual",
+  naive_dual_blup = "Naive dual BLUP",
+  closed_form_dual = "Closed-form dual",
+  fuller_closed_form = "Fuller closed-form",
+  fuller_alpha_stepdown_closed_form = "Fuller alpha-stepdown",
+  lai_2spa = "2S-PA",
+  msem = "MSEM"
+)
+
+results_dir <- resolve_repo_path(params$results_dir)
+figure_dir <- resolve_repo_path(params$figure_dir)
+if (is.null(figure_dir)) figure_dir <- file.path(results_dir, "figure2_analogue")
+summary_path <- file.path(results_dir, "lai_study1_vh_summary.csv")
+
+if (!file.exists(summary_path)) {
+  stop("Could not find the aggregate summary: ", summary_path, call. = FALSE)
+}
+
+summary_df <- readr::read_csv(summary_path, show_col_types = FALSE)
+required_columns <- c(
+  "condition_id", "reporting_scale", "method", "num_clus", "clus_size",
+  "icc", "vr_u1_u0", "cor_u0_u1", "beta_zu1", "var_u1", "sigma2",
+  "dgm_population_slope_sd", "dgm_posterior_slope_reliability", "truth",
+  "n_rep", "convergence", "vh_analysis_eligibility_rate",
+  "lai_original_eligibility_rate", "n_eligible_both", "n_lai_original_only",
+  "n_vh_only", "bias", "rmse", "coverage",
+  "mean_eb_to_population_slope_sd",
+  "mean_corrected_to_population_slope_sd",
+  "mean_fitted_to_population_slope_sd",
+  "mean_lai_original_method_multiplier",
+  "lai_original_reporting_available_rate"
+)
+missing_columns <- setdiff(required_columns, names(summary_df))
+if (length(missing_columns) > 0L) {
+  stop(
+    "Aggregate summary is missing required columns: ",
+    paste(missing_columns, collapse = ", "),
+    call. = FALSE
+  )
+}
+
+summary_df <- summary_df |>
+  mutate(
+    method_label = factor(method, levels = names(method_labels), labels = unname(method_labels)),
+    reporting_scale = factor(
+      reporting_scale,
+      levels = c("raw", "latent_sd", "lai_original_standardized")
+    )
+  )
+
+raw_df <- summary_df |> filter(reporting_scale == "raw")
+latent_df <- summary_df |> filter(reporting_scale == "latent_sd")
+historical_df <- summary_df |> filter(reporting_scale == "lai_original_standardized")
+
+n_conditions <- n_distinct(summary_df$condition_id)
+n_methods <- n_distinct(summary_df$method)
+n_replications <- raw_df |> distinct(condition_id, n_rep) |> summarise(total = sum(n_rep)) |> pull(total)
+
+read_optional_csv <- function(path) {
+  if (!file.exists(path)) return(NULL)
+  readr::read_csv(path, show_col_types = FALSE)
+}
+
+historical_figure_summary <- read_optional_csv(
+  file.path(figure_dir, "figure2_analogue_cell_summary.csv")
+)
+vh_figure_summary <- read_optional_csv(
+  file.path(figure_dir, "vh_primary_companion_cell_summary.csv")
+)
+historical_inference_summary <- read_optional_csv(
+  file.path(figure_dir, "figure3_4_analogue_cell_summary.csv")
+)
+
+historical_bias_by_correlation <- if (!is.null(historical_figure_summary)) {
+  historical_figure_summary |>
+    filter(beta_zu1 == 0.4) |>
+    group_by(method, cor_u0_u1) |>
+    summarise(
+      median_robust_bias = safe_median(robust_bias),
+      mean_robust_bias = safe_mean(robust_bias),
+      .groups = "drop"
+    )
+} else {
+  NULL
+}
+
+format_correlation_medians <- function(method) {
+  if (is.null(historical_bias_by_correlation)) return("not available")
+  historical_bias_by_correlation |>
+    filter(method == !!method) |>
+    arrange(cor_u0_u1) |>
+    transmute(text = paste0("rho = ", cor_u0_u1, ": ", fmt_num(median_robust_bias))) |>
+    pull(text) |>
+    paste(collapse = "; ")
+}
+
+naive_historical_correlation_text <- format_correlation_medians("naive_dual_blup")
+two_spa_historical_correlation_text <- format_correlation_medians("lai_2spa")
+msem_historical_correlation_text <- format_correlation_medians("msem")
+
+vh_instability_summary <- if (!is.null(vh_figure_summary)) {
+  vh_figure_summary |>
+    group_by(method) |>
+    summarise(
+      median_bias = safe_median(mean_bias),
+      median_abs_bias = safe_median(abs(mean_bias)),
+      max_abs_bias = max(abs(mean_bias), na.rm = TRUE),
+      n_abs_bias_over_01 = sum(abs(mean_bias) > 0.1, na.rm = TRUE),
+      n_abs_bias_over_1 = sum(abs(mean_bias) > 1, na.rm = TRUE),
+      .groups = "drop"
+    )
+} else {
+  NULL
+}
+
+naive_instability <- if (!is.null(vh_instability_summary)) {
+  vh_instability_summary |> filter(method == "naive_dual_blup")
+} else {
+  NULL
+}
+naive_instability_count <- if (!is.null(naive_instability) && nrow(naive_instability) == 1L) {
+  naive_instability$n_abs_bias_over_1[[1]]
+} else {
+  NA_integer_
+}
+naive_instability_max <- if (!is.null(naive_instability) && nrow(naive_instability) == 1L) {
+  naive_instability$max_abs_bias[[1]]
+} else {
+  NA_real_
+}
+
+historical_inference_by_method <- if (!is.null(historical_inference_summary)) {
+  historical_inference_summary |>
+    group_by(method) |>
+    summarise(
+      coverage_conditions = sum(is.finite(coverage)),
+      mean_coverage = safe_mean(coverage),
+      median_coverage = safe_median(coverage),
+      type1_conditions = sum(beta_zu1 == 0 & is.finite(type1_error)),
+      mean_type1_error = safe_mean(type1_error[beta_zu1 == 0]),
+      median_type1_error = safe_median(type1_error[beta_zu1 == 0]),
+      mean_retained = safe_mean(n_retained),
+      .groups = "drop"
+    )
+} else {
+  NULL
+}
+```
+
+The production aggregate contains `r n_conditions` DGM conditions, `r n_methods`
+methods, and `r scales::comma(n_replications)` simulated data sets per raw
+reporting view.  Its source is
+`r normalizePath(summary_path, mustWork = FALSE)`.
+
+### Result at a glance
+
+For the historical comparison at \(\beta_{Zu1}=.4\), the naïve dual-BLUP
+median trimmed bias is negative at every random-effect correlation
+(`r naive_historical_correlation_text`).  Thus this VH implementation does
+**not** reproduce the correlation-signed naïve-EB pattern described for Lai's
+Figure 2.  In contrast, 2S-PA remains near zero
+(`r two_spa_historical_correlation_text`) and MSEM is small and positive
+(`r msem_historical_correlation_text`) on this historical view.
+
+On the common latent-SD VH view, the naïve dual-BLUP median is not itself the
+main issue; its distribution has `r naive_instability_count` conditions with
+\(|\mathrm{mean\ bias}| > 1\), including a maximum of
+`r fmt_num(naive_instability_max, 1)`.  The report therefore shows its central
+behavior and its rare instability in separate panels rather than letting those
+failures flatten every other method's plot.
+
+## Methods and terminology
+
+The target is the effect of the level-2 covariate \(Z\) on the random slope
+\(u_1\).  “Dual” means that the stage-2 regression uses both the random
+intercept \(u_0\) and random slope \(u_1\) as predictors; this is important
+when those random effects are correlated.
+
+```{r method-glossary}
+method_glossary <- tibble(
+  Method = c(
+    "Oracle dual", "Naive dual BLUP", "Closed-form dual",
+    "Fuller closed-form", "Fuller alpha-stepdown", "2S-PA", "MSEM"
+  ),
+  `Stage-2 predictor or model` = c(
+    "True simulated u0 and u1",
+    "Empirical-Bayes (BLUP) u0 and u1, treated as observed",
+    "Closed-form corrected u0 and u1, treated as observed",
+    "Closed-form corrected scores with their measurement-error covariance",
+    "Fuller correction with alpha stepdown for a guarded correction",
+    "Lai two-stage path-analysis model fitted in OpenMx",
+    "Joint multilevel structural-equation model fitted in Mplus"
+  ),
+  `Interpretive role` = c(
+    "Simulation benchmark; not available in applications",
+    "Shows attenuation/instability from ignoring first-stage uncertainty",
+    "Separates corrected-score construction from stage-2 EIV correction",
+    "EIV-style correction using estimated first-stage error covariance",
+    "Stabilized Fuller variant in the VH Study 2 bundle",
+    "Direct Lai-method overlap for historical comparison",
+    "Latent-variable benchmark and direct Lai-method overlap"
+  )
+)
+knitr::kable(method_glossary, caption = "Estimator terminology used throughout this report")
+```
+
+The first three methods use a two-predictor observed-score regression in stage
+2.  The distinction is whether those predictors are true random effects,
+shrunken EB estimates, or closed-form corrected scores.  The Fuller methods
+also propagate the estimated measurement-error covariance into the stage-2
+correction.  2S-PA and MSEM instead fit their own latent-variable/path models,
+so their reported slope-SD scale must be interpreted separately in the
+historical comparison.
+
+## 1. DGM audit: the Lai grid and the estimand are explicit
+
+The review starts by auditing the condition grid, rather than inferring the
+design from a plotted result.  The external-outcome effect of the random
+intercept is fixed at \(\beta_{zu0}=.4\); the focal slope effect is
+\(\beta_{zu1}\).  The summary rows below use the raw reporting view only, so
+reporting-scale rows do not duplicate conditions.
+
+```{r dgm-audit}
+dgm_conditions <- raw_df |>
+  distinct(
+    condition_id, num_clus, clus_size, icc, vr_u1_u0, cor_u0_u1,
+    beta_zu1, var_u1, sigma2, dgm_population_slope_sd,
+    dgm_posterior_slope_reliability, n_rep
+  )
+
+dgm_grid <- tibble(
+  factor = c(
+    "Clusters", "Cluster size", "ICC", "Slope/intercept variance ratio",
+    "Random-effect correlation", "Slope external effect"
+  ),
+  levels = c(
+    paste(sort(unique(dgm_conditions$num_clus)), collapse = ", "),
+    paste(sort(unique(dgm_conditions$clus_size)), collapse = ", "),
+    paste(sort(unique(dgm_conditions$icc)), collapse = ", "),
+    paste(sort(unique(dgm_conditions$vr_u1_u0)), collapse = ", "),
+    paste(sort(unique(dgm_conditions$cor_u0_u1)), collapse = ", "),
+    paste(sort(unique(dgm_conditions$beta_zu1)), collapse = ", ")
+  )
+)
+
+knitr::kable(dgm_grid, caption = "Lai Study 1 condition grid represented in the VH replication")
+```
+
+The condition count is `r nrow(dgm_conditions)`.  The population slope SD and
+posterior slope reliability below are DGM quantities, not post-hoc calibration
+targets; they provide the reference for the later slope-SD and reliability
+diagnostics.
+
+```{r dgm-reference-table}
+dgm_reference <- dgm_conditions |>
+  summarise(
+    `Population slope SD range` = paste(range(dgm_population_slope_sd), collapse = " to "),
+    `Posterior reliability range` = paste(round(range(dgm_posterior_slope_reliability), 3), collapse = " to "),
+    `Replications per condition` = paste(sort(unique(n_rep)), collapse = ", ")
+  )
+knitr::kable(dgm_reference)
+```
+
+## 2. Historical Figure 2 analogue: compare like with like
+
+This panel is the primary visual comparison with Lai's Figure 2.  It uses only
+the three overlapping methods (naive dual BLUP, 2S-PA, and MSEM), Lai's
+method-specific historical standardization, Lai's `status_code == 0` retention
+rule, and a 20%-trimmed Monte Carlo bias.  Those choices are deliberately
+different from the VH-primary analysis below.
+
+Lai's published Figure 2 code plots six methods: 2S-PA, 2S-PAB, MSEM,
+EB \((u_0+u_1)\), centered EB, and uncentered EB.  This analogue retains only
+the directly corresponding 2S-PA, MSEM, and dual-EB series; it cannot test the
+other three lines.  The original plotting code is available in the
+[Lai supplementary repository](https://github.com/marklhc/2spa-random-slopes-supp/blob/main/notebooks/_sim1_results_supp.qmd).
+
+```{r historical-figure, fig.cap="Lai Study 1 Figure 2 analogue: historical reporting scale and Lai eligibility rule."}
+historical_plot_path <- file.path(figure_dir, "figure2_analogue.png")
+if (file.exists(historical_plot_path)) {
+  knitr::include_graphics(historical_plot_path)
+} else {
+  knitr::asis_output(
+    "**Figure not yet generated.** Run `make_figure2_analogue.R` against the results directory, then re-render this report."
+  )
+}
+```
+
+```{r historical-availability}
+historical_availability <- historical_df |>
+  group_by(method_label) |>
+  summarise(
+    conditions = n(),
+    `Mean scale availability` = safe_mean(lai_original_reporting_available_rate),
+    `Mean Lai eligibility` = safe_mean(lai_original_eligibility_rate),
+    .groups = "drop"
+  ) |>
+  mutate(
+    `Mean scale availability` = fmt_pct(`Mean scale availability`),
+    `Mean Lai eligibility` = fmt_pct(`Mean Lai eligibility`)
+  )
+knitr::kable(
+  historical_availability,
+  caption = "Availability and retention in the historical comparison view"
+)
+```
+
+```{r historical-correlation-table}
+if (!is.null(historical_bias_by_correlation)) {
+  historical_comparison_table <- historical_bias_by_correlation |>
+    mutate(
+      method = recode(
+        method,
+        naive_dual_blup = "Naive dual BLUP",
+        lai_2spa = "2S-PA",
+        msem = "MSEM"
+      ),
+      `Median 20%-trimmed bias` = fmt_num(median_robust_bias),
+      `Mean 20%-trimmed bias` = fmt_num(mean_robust_bias)
+    ) |>
+    select(Method = method, `Correlation` = cor_u0_u1,
+           `Median 20%-trimmed bias`, `Mean 20%-trimmed bias`)
+  knitr::kable(
+    historical_comparison_table,
+    caption = "Historical-view bias at beta[Z.u1] = .4, summarized over the remaining DGM factors"
+  )
+}
+```
+
+The key discrepancy is concentrated in the naïve dual-BLUP analogue: its
+median bias remains roughly \(-.02\) across \(\rho=-.5, 0, .5\), instead of
+switching from negative to positive with the random-effect correlation as in
+the qualitative pattern reported for Lai's Figure 2.  This is evidence of a
+real implementation/DGM or estimand difference worth tracing; it is not
+explained away by the 2S-PA and MSEM lines, which remain close to zero on this
+historical view.  Because the three omitted Lai series are not part of the VH
+bundle, this result narrows the discrepancy but does not establish an exact
+paper-level contradiction.
+
+### Historical coverage and Type I error analogues
+
+The next two panels mimic Lai's Figures 3 and 4 using the same three
+overlapping methods, historical scale, and `status_code == 0` retention rule.
+Coverage is the proportion of retained 95% intervals containing the truth.
+The Type I panel is limited to \(\beta_{Zu1}=0\) and uses two-sided 95% CI
+exclusion as the rejection rule.  Lai's original code used `p < .05`; these
+agree for ordinary two-sided Wald intervals but should not be called an exact
+p-value replication when an estimator's interval construction differs.
+
+```{r figure3-coverage, fig.cap="Figure 3 analogue: empirical 95% coverage under historical Lai reporting and retention."}
+coverage_plot_path <- file.path(figure_dir, "figure3_coverage_analogue.png")
+if (file.exists(coverage_plot_path)) {
+  knitr::include_graphics(coverage_plot_path)
+} else {
+  knitr::asis_output("**Coverage analogue not yet generated.** Run the post-estimation figure command, then re-render this report.")
+}
+```
+
+```{r figure4-type1, fig.cap="Figure 4 analogue: CI-based empirical Type I error under historical Lai reporting and retention."}
+type1_plot_path <- file.path(figure_dir, "figure4_type1_analogue.png")
+if (file.exists(type1_plot_path)) {
+  knitr::include_graphics(type1_plot_path)
+} else {
+  knitr::asis_output("**Type I error analogue not yet generated.** Run the post-estimation figure command, then re-render this report.")
+}
+```
+
+```{r historical-inference-table}
+if (!is.null(historical_inference_by_method)) {
+  historical_inference_table <- historical_inference_by_method |>
+    mutate(
+      Method = recode(
+        method,
+        naive_dual_blup = "Naive dual BLUP",
+        lai_2spa = "2S-PA",
+        msem = "MSEM"
+      ),
+      `Mean coverage` = fmt_pct(mean_coverage),
+      `Median coverage` = fmt_pct(median_coverage),
+      `Mean Type I error` = fmt_pct(mean_type1_error),
+      `Median Type I error` = fmt_pct(median_type1_error),
+      `Mean retained replications` = fmt_num(mean_retained, 1)
+    ) |>
+    select(
+      Method, `Coverage conditions` = coverage_conditions,
+      `Mean coverage`, `Median coverage`,
+      `Type I conditions` = type1_conditions,
+      `Mean Type I error`, `Median Type I error`,
+      `Mean retained replications`
+    )
+  knitr::kable(
+    historical_inference_table,
+    caption = "Condition-weighted historical-view interval performance; Type I error is evaluated only when beta[Z.u1] = 0"
+  )
+}
+```
+
+The reference lines are .95 for coverage and .05 for Type I error.  The table
+uses condition-level rates (not a pooled replication denominator), so it
+describes how performance varies across the Lai design.  Interpret a departure
+from either reference together with the matching bias panel and the number of
+retained replications: a nominal interval result can change when the
+historical reporting multiplier or status-code retention changes.
+
+If `params$historical_figure_reference` points to a locally saved image of the
+published Figure 2, render it alongside this panel during review.  The visual
+comparison should ask whether the sign and correlation pattern agree, not
+whether the current all-method VH analysis matches a method-specific Lai scale.
+
+```{r published-reference, fig.cap="Optional local reference image of Lai's published Figure 2."}
+published_reference <- resolve_repo_path(params$historical_figure_reference)
+if (!is.null(published_reference) && file.exists(published_reference)) {
+  knitr::include_graphics(published_reference)
+}
+```
+
+## 3. VH-primary performance: seven methods on a common latent-SD scale
+
+The VH-primary view uses the `latent_sd` reporting scale and the VH eligibility
+rule.  Each point in the next plot is a condition-level Monte Carlo mean bias;
+the boxplots summarize the 486-condition distribution rather than pooling
+replications across different DGMs.
+
+```{r vh-instability-table}
+if (!is.null(vh_instability_summary)) {
+  vh_instability_table <- vh_instability_summary |>
+    mutate(
+      Method = recode(method, !!!method_labels),
+      `Median bias` = fmt_num(median_bias),
+      `Median |bias|` = fmt_num(median_abs_bias),
+      `Maximum |bias|` = fmt_num(max_abs_bias, 2)
+    ) |>
+    select(Method, `Median bias`, `Median |bias|`,
+           `Maximum |bias|`, `Conditions: |bias| > .1` = n_abs_bias_over_01,
+           `Conditions: |bias| > 1` = n_abs_bias_over_1)
+  knitr::kable(
+    vh_instability_table,
+    caption = "Central performance and extreme condition-level bias on the VH-primary scale"
+  )
+}
+```
+
+```{r vh-performance-table}
+vh_performance <- latent_df |>
+  group_by(method_label) |>
+  summarise(
+    conditions = n(),
+    `Mean bias` = safe_mean(bias),
+    `Median |bias|` = safe_median(abs(bias)),
+    `Mean RMSE` = safe_mean(rmse),
+    `Mean coverage` = safe_mean(coverage),
+    `Mean VH eligibility` = safe_mean(vh_analysis_eligibility_rate),
+    .groups = "drop"
+  ) |>
+  mutate(
+    `Mean bias` = fmt_num(`Mean bias`),
+    `Median |bias|` = fmt_num(`Median |bias|`),
+    `Mean RMSE` = fmt_num(`Mean RMSE`),
+    `Mean coverage` = fmt_pct(`Mean coverage`),
+    `Mean VH eligibility` = fmt_pct(`Mean VH eligibility`)
+  )
+knitr::kable(vh_performance, caption = "Condition-weighted VH-primary performance summary")
+```
+
+```{r vh-primary-companion, fig.cap="VH-primary central-range companion. The fixed ±0.2 range is intentional; rare larger failures are shown in the following diagnostic."}
+vh_plot_path <- file.path(figure_dir, "vh_primary_companion.png")
+if (file.exists(vh_plot_path)) {
+  knitr::include_graphics(vh_plot_path)
+} else {
+  knitr::asis_output(
+    "**Companion Figure 2 panel not yet generated.** It will appear after the post-estimation figure command has run."
+  )
+}
+```
+
+```{r vh-primary-extremes, fig.cap="Full absolute-bias distribution on a log scale. This retains, rather than trims, rare unstable conditions."}
+vh_extreme_path <- file.path(figure_dir, "vh_primary_extremes.png")
+if (file.exists(vh_extreme_path)) {
+  knitr::include_graphics(vh_extreme_path)
+}
+```
+
+The central-range panel shows that the closed-form dual estimator is the main
+source of systematic negative central bias when \(\beta_{Zu1}=.4\), while the
+two Fuller estimators, 2S-PA, MSEM, and oracle are generally much closer to
+zero.  The log-scale diagnostic adds the complementary fact that naïve dual
+BLUP has rare, severe failures even though its median is near zero.  Neither
+claim is visible in the original unbounded all-method boxplot by itself.
+
+## 4. Reporting-scale sensitivity: separate rescaling from estimator behavior
+
+Raw and latent-SD rows report the same fitted estimator on different common
+condition-level scales.  The historical standardized row is different: for
+the directly comparable methods it preserves Lai's method-specific multiplier.
+Consequently, this section is a diagnostic of reporting conventions, not a
+competition between differently scaled numerical values.
+
+```{r scale-sensitivity, fig.width=11, fig.height=6, fig.cap="Condition-level bias by reporting view. Facets have separate vertical scales because their units differ."}
+scale_plot_df <- summary_df |>
+  filter(method %in% names(method_labels)) |>
+  mutate(scale_label = recode(
+    as.character(reporting_scale),
+    raw = "Raw",
+    latent_sd = "Common latent-SD",
+    lai_original_standardized = "Lai historical standardized"
+  ))
+
+ggplot(scale_plot_df, aes(x = method_label, y = bias)) +
+  geom_hline(yintercept = 0, colour = "grey35", linewidth = 0.4) +
+  geom_boxplot(fill = "#fdd0a2", colour = "#9c3d00", outlier.alpha = 0.2) +
+  coord_flip() +
+  facet_wrap(~ scale_label, scales = "free_x") +
+  labs(
+    x = NULL,
+    y = "Condition-level mean bias (view-specific units)",
+    title = "Reporting-scale sensitivity",
+    subtitle = "The historical-standardized view is available only for methods with a direct Lai analogue"
+  ) +
+  theme_bw(base_size = 10)
+```
+
+```{r historical-multiplier-table}
+multiplier_summary <- historical_df |>
+  group_by(method_label) |>
+  summarise(
+    `Mean Lai historical multiplier` = safe_mean(mean_lai_original_method_multiplier),
+    `Availability` = safe_mean(lai_original_reporting_available_rate),
+    .groups = "drop"
+  ) |>
+  mutate(
+    `Mean Lai historical multiplier` = fmt_num(`Mean Lai historical multiplier`),
+    Availability = fmt_pct(Availability)
+  )
+knitr::kable(
+  multiplier_summary,
+  caption = "Method-specific historical scaling diagnostics"
+)
+```
+
+The key review question is whether an apparent change in bias survives the
+common latent-SD view.  If it does not, the historical comparison is likely
+being driven partly by reporting scale rather than by a change in the fitted
+coefficient.
+
+## 5. Slope-SD and reliability diagnostics: test the calibration explanation
+
+The posterior reliability plotted here is calculated from the true full
+two-dimensional random-effect covariance and Lai's RMS-scaled within-cluster
+design.  It should not be replaced by `lambda22` when random effects are
+correlated.  The first plot makes the dependence on cluster size visible while
+retaining the remaining DGM variation as individual points.
+
+```{r reliability-by-size, fig.width=10, fig.height=7, fig.cap="True posterior slope reliability by homogeneous cluster size, stratified by ICC and random-effect correlation."}
+reliability_df <- raw_df |>
+  distinct(
+    condition_id, num_clus, clus_size, icc, cor_u0_u1,
+    dgm_posterior_slope_reliability
+  ) |>
+  mutate(
+    clus_size = factor(clus_size),
+    num_clus = factor(num_clus),
+    icc = factor(icc),
+    cor_u0_u1 = factor(cor_u0_u1)
+  )
+
+ggplot(reliability_df, aes(x = clus_size, y = dgm_posterior_slope_reliability, shape = num_clus)) +
+  geom_jitter(width = 0.16, height = 0, alpha = 0.45, colour = "#1f4e79", size = 1.5) +
+  facet_grid(icc ~ cor_u0_u1, labeller = label_both) +
+  labs(
+    x = "Homogeneous cluster size",
+    y = "True posterior slope reliability",
+    shape = "Clusters",
+    title = "Reliability is an emergent property of the Lai DGM"
+  ) +
+  theme_bw(base_size = 10)
+```
+
+```{r reliability-by-size-table}
+reliability_by_size <- reliability_df |>
+  group_by(clus_size) |>
+  summarise(
+    `Minimum reliability` = min(dgm_posterior_slope_reliability),
+    `Median reliability` = median(dgm_posterior_slope_reliability),
+    `Maximum reliability` = max(dgm_posterior_slope_reliability),
+    .groups = "drop"
+  ) |>
+  mutate(across(-clus_size, fmt_num))
+knitr::kable(
+  reliability_by_size,
+  caption = "True posterior slope reliability varies substantially within every homogeneous cluster-size level"
+)
+```
+
+```{r slope-sd-ratios, fig.width=10, fig.height=5, fig.cap="Stage-1 slope-SD diagnostics relative to the DGM population slope SD."}
+slope_sd_df <- raw_df |>
+  filter(method == "naive_dual_blup") |>
+  select(
+    condition_id, dgm_posterior_slope_reliability,
+    mean_eb_to_population_slope_sd,
+    mean_corrected_to_population_slope_sd,
+    mean_fitted_to_population_slope_sd
+  ) |>
+  pivot_longer(
+    cols = starts_with("mean_") ,
+    names_to = "diagnostic",
+    values_to = "slope_sd_ratio"
+  ) |>
+  mutate(diagnostic = recode(
+    diagnostic,
+    mean_eb_to_population_slope_sd = "EB / population SD",
+    mean_corrected_to_population_slope_sd = "Corrected / population SD",
+    mean_fitted_to_population_slope_sd = "Fitted / population SD"
+  ))
+
+ggplot(slope_sd_df, aes(x = dgm_posterior_slope_reliability, y = slope_sd_ratio)) +
+  geom_hline(yintercept = 1, colour = "grey35", linetype = "dashed") +
+  geom_point(alpha = 0.45, colour = "#7a3e9d", size = 1.4) +
+  facet_wrap(~ diagnostic, nrow = 1) +
+  labs(
+    x = "True posterior slope reliability",
+    y = "Mean slope SD / population slope SD",
+    title = "Stage-1 slope-SD diagnostics versus true reliability"
+  ) +
+  theme_bw(base_size = 10)
+```
+
+The slope-SD ratios use the same Stage-1 fit attached to the naive dual BLUP
+raw summary, avoiding duplicate copies of the diagnostics across reporting
+views.  A ratio of one is a diagnostic reference, not a convergence criterion.
+
+The reliability result is consistent with cluster size being an important
+determinant, but rejects the stronger claim that it is merely a proxy for
+cluster size: at size 3 the reliability spans approximately .07--.86, and at
+size 25 it still spans approximately .40--.98.  The EB slope SD is most
+attenuated at low reliability, whereas the fitted slope SD remains close to
+the population slope SD across the reliability range.  This makes the
+slope-SD correction a useful diagnostic for the observed bias pattern rather
+than a substitute for modelling reliability itself.
+
+## 6. Eligibility and convergence: compare the two retention rules directly
+
+VH eligibility and original-Lai eligibility answer different questions.
+The historical rule retains runs with `status_code == 0`; the VH-primary rule
+also applies estimator-specific finite-estimate, finite-SE, design, and fit
+diagnostics.  The following plot displays the average condition-level rate for
+each rule; it should accompany any comparison that changes the reporting scale
+or estimator bundle.
+
+```{r eligibility-rates, fig.width=10, fig.height=5, fig.cap="Average condition-level retention under the original-Lai and VH-primary rules."}
+eligibility_df <- raw_df |>
+  select(method_label, vh_analysis_eligibility_rate, lai_original_eligibility_rate) |>
+  pivot_longer(
+    cols = c(vh_analysis_eligibility_rate, lai_original_eligibility_rate),
+    names_to = "rule",
+    values_to = "eligibility_rate"
+  ) |>
+  mutate(rule = recode(
+    rule,
+    vh_analysis_eligibility_rate = "VH primary",
+    lai_original_eligibility_rate = "Original Lai"
+  ))
+
+ggplot(eligibility_df, aes(x = method_label, y = eligibility_rate, shape = rule)) +
+  stat_summary(fun = mean, geom = "point", position = position_dodge(width = 0.45), size = 2.6, colour = "#1f4e79") +
+  coord_flip() +
+  scale_y_continuous(labels = percent_format(accuracy = 10), limits = c(0, 1)) +
+  labs(
+    x = NULL,
+    y = "Mean condition-level eligibility rate",
+    shape = NULL,
+    title = "Eligibility depends on the reporting rule"
+  ) +
+  theme_bw(base_size = 11)
+```
+
+```{r eligibility-overlap-table}
+eligibility_overlap <- raw_df |>
+  group_by(method_label) |>
+  summarise(
+    `VH eligible` = safe_mean(vh_analysis_eligibility_rate),
+    `Lai eligible` = safe_mean(lai_original_eligibility_rate),
+    `Both eligible (mean count)` = safe_mean(n_eligible_both),
+    `Lai-only (mean count)` = safe_mean(n_lai_original_only),
+    `VH-only (mean count)` = safe_mean(n_vh_only),
+    `Convergence` = safe_mean(convergence),
+    .groups = "drop"
+  ) |>
+  mutate(
+    `VH eligible` = fmt_pct(`VH eligible`),
+    `Lai eligible` = fmt_pct(`Lai eligible`),
+    `Both eligible (mean count)` = fmt_num(`Both eligible (mean count)`, 1),
+    `Lai-only (mean count)` = fmt_num(`Lai-only (mean count)`, 1),
+    `VH-only (mean count)` = fmt_num(`VH-only (mean count)`, 1),
+    Convergence = fmt_pct(Convergence)
+  )
+knitr::kable(
+  eligibility_overlap,
+  caption = "Condition-averaged eligibility overlap and convergence"
+)
+```
+
+For this run, the VH screen is a strict subset of the original-Lai screen:
+there are no VH-only replications.  The material differences occur for 2S-PA
+and naïve dual BLUP, for which about 2% of replications per condition are
+retained by the original status-code rule but excluded from the VH-primary
+analysis.  Thus the rare large naïve-BLUP biases are not an artifact of a more
+permissive VH retention rule; the stricter VH screen is already in force.
+
+### Recommended review sequence
+
+1. Read the historical analogue beside Lai's Figure 2, comparing sign and
+   correlation patterns only for the three overlapping methods.
+2. Use the VH-primary panel to decide whether the low-reliability negative
+   bias persists after common latent-SD reporting and VH eligibility.
+3. Consult the reporting-scale and slope-SD sections before attributing a
+   cross-method bias difference to an estimator.
+4. Treat eligibility changes as part of the result: a discrepancy that appears
+   only after a retention-rule change is not evidence of a DGM mismatch alone.
+
+## Reproducibility notes
+
+The report is parameterized.  After generating the Figure 2 post-processing
+outputs, render it from the repository root with:
+
+```sh
+quarto render reports/lai_study1_vh_review.qmd \
+  -P results_dir:outputs/lai_study1_vh_production_20260731
+```
+
+Optionally supply `figure_dir` when figures live elsewhere and
+`historical_figure_reference` for a locally saved copy of Lai's published
+Figure 2.  This report does not rerun any models or alter the aggregate output.
