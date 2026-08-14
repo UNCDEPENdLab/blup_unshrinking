@@ -96,7 +96,11 @@ fits the seven-method VH Study 2 bundle on the **raw** coefficient scale:
 4. Fuller closed-form correction;
 5. Fuller alpha-stepdown closed-form correction;
 6. Lai 2S-PA; and
-7. MSEM.
+7. MSEM fitted with the VH Study 2 Mplus machinery.
+
+`lai_study1_vh_methods()` remains exactly this seven-method bundle.  A separate
+historical-only eighth method, `lai_original_msem`, reproduces the OpenMx MSEM
+in the original supplement.  It is not added to raw/common-scale VH summaries.
 
 It then creates `raw` and `latent_sd` reporting rows from the same fitted
 result:
@@ -116,7 +120,7 @@ Rscript lai_study1_replication_vh/run.R \
   oracle_dual,naive_dual_blup,closed_form_dual,fuller_closed_form,lai_2spa
 ```
 
-The MSEM helper is included in the default bundle but can be excluded from
+The VH MSEM helper is included in the default bundle but can be excluded from
 smoke runs because it requires Mplus.
 
 In addition, `lai_original_standardized` is a historical-comparison view for
@@ -128,6 +132,65 @@ multiplier while retaining the common population benchmark
 original naïve model), its `J - 1` sample-SD counterpart, each method's
 historical multiplier, and its source.  Oracle and Fuller methods do not have
 an original-Lai counterpart, so they deliberately have no historical-view row.
+
+## Historical-only eighth method: original OpenMx MSEM
+
+[`historical_msem.R`](historical_msem.R) follows the original supplement's
+`fit_u0u1_msem()`, `run_mx()`, and `get_mx_results()` definitions at commit
+`9ffe53168f6bb04e13ef977dc19a8d953d0bf29d`:
+
+- the same level-1 and level-2 RAM models and integer cross-level join key;
+- target path starts equal to the condition's `beta_zu1`, while the nuisance
+  `u0 -> z` path starts at `.4` and the `z` intercept starts at `1.5`;
+- `stdbeta = (u1 -> z) * sqrt(var(u1))` inside OpenMx;
+- up to five `mxTryHard()` calls, preserving its original default 10 internal
+  extra tries per call; and
+- the standardized SE from `mxSE("stdbeta")`, so uncertainty in the fitted
+  latent slope SD is propagated by the delta method.
+
+The wrapper does not copy fragile source behavior: it validates join keys and
+finite inputs, captures `mxSE()` warnings/errors, writes one auditable failure
+row per replication, and records stricter numerical diagnostics separately.
+It also avoids the supplement's redundant second `run_mx()` call inside
+`get_mx_results()`: estimates and SEs are extracted from the successful fit
+already returned by the source-faithful retry loop.
+The historical retention rule nevertheless remains exactly `status_code == 0`.
+The Type I summary uses Lai's normal-Wald `p < .05` definition.
+
+Direct upstream references are the original [OpenMx MSEM and `stdbeta`
+algebra](https://github.com/marklhc/2spa-random-slopes-supp/blob/9ffe53168f6bb04e13ef977dc19a8d953d0bf29d/simulation_scripts/sim1.R#L237-L280)
+and [`mxSE("stdbeta")` result
+extraction](https://github.com/marklhc/2spa-random-slopes-supp/blob/9ffe53168f6bb04e13ef977dc19a8d953d0bf29d/simulation_scripts/sim1.R#L123-L132).
+
+This method is additive, not an eighth entry in `lai_study1_vh_methods()`.
+The launcher regenerates each condition with the same deterministic seed used
+by the completed VH run and writes only under
+`<results_dir>/historical_openmx_msem/`.  It does not alter the seven-method
+condition files or `lai_study1_vh_summary.csv`.
+
+Run a small preflight:
+
+```sh
+Rscript lai_study1_replication_vh/run_historical_msem.R \
+  10 /tmp/lai_original_msem_preflight 1 1 0 1 0 0
+```
+
+Submit the full additive array against the existing production directory:
+
+```sh
+array_job=$(sbatch --parsable --array=1-486%100 \
+  --export=ALL,LAI_VH_N_SIM=5000,LAI_VH_OUT_DIR=outputs/lai_study1_vh_production_20260731 \
+  lai_study1_replication_vh/slurm/lai_original_msem_condition_array.sbatch)
+
+sbatch --dependency="afterok:${array_job}" \
+  --export=ALL,LAI_VH_N_SIM=5000,LAI_VH_OUT_DIR=outputs/lai_study1_vh_production_20260731 \
+  lai_study1_replication_vh/slurm/rebuild_lai_original_msem_summary.sbatch
+```
+
+After aggregation, rerun `make_figure2_analogue.R`.  The postprocessor validates
+that all 486 add-on rows exist, then adds `MSEM (original OpenMx)` only to the
+historical Figures 2--4 analogues.  The seven-method VH companion figures remain
+unchanged.
 
 ## Eligibility conventions
 
@@ -161,8 +224,9 @@ Rscript lai_study1_replication_vh/make_figure2_analogue.R \
 
 The command reads each condition replication file one at a time and writes:
 
-- `figure2_analogue_cell_summary.csv`, plus PNG/PDF plots: only naïve dual
-  BLUP, 2S-PA, and MSEM; `lai_original_standardized`; `status_code == 0`;
+- `figure2_analogue_cell_summary.csv`, plus PNG/PDF plots: naïve dual BLUP,
+  2S-PA, VH/Mplus MSEM, and the original OpenMx MSEM when its separate
+  aggregate is complete; `lai_original_standardized`; `status_code == 0`;
   20%-trimmed bias. This is labeled a Figure 2 **analogue**, not a full
   reproduction, because the original `u1`-only EB and 2S-PAB methods are not
   in the VH seven-method bundle.
@@ -170,25 +234,40 @@ The command reads each condition replication file one at a time and writes:
   methods; common `latent_sd` reporting scale; VH primary eligibility; mean
   bias.
 - `figure3_4_analogue_cell_summary.csv`, plus `figure3_coverage_analogue` and
-  `figure4_type1_analogue` PNG/PDF plots: the same three overlapping methods,
+  `figure4_type1_analogue` PNG/PDF plots: the same historical methods,
   `lai_original_standardized` scale, and `status_code == 0` retention.  Figure
   3 is empirical coverage of the stored 95% confidence interval.  Figure 4 is
-  limited to `beta_zu1 == 0` and defines rejection as exclusion of the truth
-  from that interval.  Lai's original Figure 4 uses `p < .05`; the CI rule is
-  equivalent for ordinary two-sided Wald intervals but is explicitly an
-  analogue when an estimator's interval and p-value constructions differ.
+  limited to `beta_zu1 == 0`.  The reconstructed VH methods define rejection
+  as exclusion of the truth from the interval; the original OpenMx MSEM uses
+  Lai's stored normal-Wald `p < .05` definition.
+- `vh_primary_inference_companion_cell_summary.csv`, plus
+  `vh_primary_coverage_companion` and `vh_primary_type1_companion` PNG/PDF
+  plots: all seven VH methods, including both Fuller variants; common
+  `latent_sd` reporting; and VH-primary eligibility.  These are **VH
+  companions**, not historical Lai analogues, because Fuller has no original
+  Lai method-specific standardized reporting view.
+- `vh_primary_coverage_extremes` PNG/PDF: a full 0%--100% coverage distribution
+  that exposes severe failures hidden by the focused 70%--100% companion.
+
+The historical plots preserve the original notebook's ggplot2 colors for the
+source-faithful methods: 2S-PA red (`#F8766D`), original OpenMx MSEM green
+(`#00BA38`), and dual EB/naive dual BLUP cyan (`#00BFC4`).  VH/Mplus MSEM is a
+darker dashed green (`#007A3D`) to prevent the implementations from being conflated.
+The seven-method companion retains its established palette.
 
 ### Cached figure rebuilds
 
 The historical Figure 2 analogue needs replication-level estimates because its
 20%-trimmed bias cannot be recovered from the aggregate summary.  Figures 3--4
-also need replication-level intervals.  On their first run, the postprocessor
-reduces each condition to small historical summaries and writes
+and the all-method VH interval companions also need replication-level
+intervals.  On their first run, the postprocessor reduces each condition to
+small historical and VH-primary summaries and writes
 signature-validated caches in
 `figure2_analogue/historical_condition_cache/`, with a
 `figure2_analogue_cache_manifest.csv` recording the source result-file size and
-modification time.  Figure 2 summaries and Figure 3--4 inference summaries
-are cached separately, so later runs reuse both caches and only redraw plots.
+modification time.  Figure 2 summaries, Figure 3--4 historical inference
+summaries, and VH-primary inference summaries are cached separately, so later
+runs reuse all caches and only redraw plots.
 
 The all-seven-method VH companion is now derived directly from
 `lai_study1_vh_summary.csv`; it does not reread the replication files.
@@ -215,6 +294,28 @@ files and then caches the results):
 ```sh
 sbatch --export=ALL,LAI_VH_OUT_DIR=outputs/lai_study1_vh_production \
   lai_study1_replication_vh/slurm/lai_study1_vh_figures.sbatch
+```
+
+### Paired Mplus–OpenMx diagnostic
+
+`analysis/mplus_openmx_replication_audit.R` is a retained-output audit for
+explaining divergences between the VH/Mplus MSEM and historical OpenMx MSEM.
+It selects one closest and one most-divergent matched seed from each requested
+condition, regenerates the exact production data, and fits:
+
+- the current Mplus default (MLR) model with VH's fixed-multiplier reporting;
+- the same Mplus model with the standardized product declared in `MODEL
+  CONSTRAINT`, under both MLR and ML; and
+- Lai's source-faithful OpenMx model and `mxSE(stdbeta)` delta-method result.
+
+It writes CSV comparisons, input fingerprints, and the `.inp`/`.out` files to
+`<output>/mplus_openmx_audit/`. The current-default rerun is also checked
+against its saved production row, so the audit distinguishes changed inputs
+from a different numerical solution.
+
+```sh
+sbatch --export=ALL,LAI_VH_OUT_DIR=outputs/lai_study1_vh_production_20260731 \
+  lai_study1_replication_vh/slurm/lai_mplus_openmx_replication_audit.sbatch
 ```
 
 ## Production Slurm execution

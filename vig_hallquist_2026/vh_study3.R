@@ -336,7 +336,31 @@ run_study3_rep <- function(condition) {
       dplyr::select(method, dplyr::everything())
   )
 
-  results <- add_study3_analysis_eligibility(results)
+  results <- add_study3_analysis_eligibility(results) %>%
+    add_stage1_estimates(
+      fit_obj = fit_y,
+      data = sim$lv1_y,
+      cluster_var = "cid",
+      within_var = "x"
+    ) %>%
+    rename(
+      stage1_y_intercept_variance = stage1_intercept_variance,
+      stage1_y_slope_variance = stage1_slope_variance,
+      stage1_y_intercept_slope_covariance = stage1_intercept_slope_covariance,
+      stage1_y_intercept_slope_correlation = stage1_intercept_slope_correlation
+    ) %>%
+    add_stage1_estimates(
+      fit_obj = fit_q,
+      data = sim$lv1_q,
+      cluster_var = "cid",
+      within_var = "x"
+    ) %>%
+    rename(
+      stage1_q_intercept_variance = stage1_intercept_variance,
+      stage1_q_slope_variance = stage1_slope_variance,
+      stage1_q_intercept_slope_covariance = stage1_intercept_slope_covariance,
+      stage1_q_intercept_slope_correlation = stage1_intercept_slope_correlation
+    )
 
   dplyr::bind_cols(
     results,

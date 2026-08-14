@@ -19,7 +19,13 @@ script_path <- if (length(script_arg)) {
 refresh_dir <- dirname(script_path)
 source(file.path(refresh_dir, "analysis", "figure2_analogue.R"), local = TRUE)
 
-if (sys.nframe() == 0L) {
+is_direct_invocation <- length(script_arg) > 0L &&
+  identical(
+    normalizePath(sub("^--file=", "", script_arg[[1]])),
+    normalizePath(script_path)
+  )
+
+if (is_direct_invocation) {
   args <- commandArgs(trailingOnly = TRUE)
   if (length(args) < 1L) {
     stop("Usage: Rscript make_figure2_analogue.R RESULTS_DIR [ANALYSIS_DIR] [force]")

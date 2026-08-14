@@ -468,6 +468,14 @@ run_study4_rep <- function(condition) {
   ) %>%
     add_study4_method_roles()
 
+  results <- results %>%
+    add_stage1_estimates(
+      fit_obj = fit_y,
+      data = sim$lv1,
+      cluster_var = "cid",
+      within_var = "x"
+    )
+
   dplyr::bind_cols(
     results,
     stage1_diag[rep(1L, nrow(results)), , drop = FALSE],

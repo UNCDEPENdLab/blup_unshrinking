@@ -276,6 +276,201 @@ expected_slope_reliability <- function(G, Z_list, R_list, weights = NULL) {
   )
 }
 
+#' Compute posterior reliability for a linear random-effect contrast.
+#'
+#' @details
+#' For a contrast `a`, reliability is
+#'
+#' `1 - E[a' V_post,i a] / (a' G a)`.
+#'
+#' Using the full posterior covariance keeps the definition valid when the
+#' intercept and slope are correlated or when their sampling errors covary.
+#'
+#' @param G Positive-definite `2 x 2` random-effects covariance matrix.
+#' @param Z_list,R_list Reference design and residual covariance lists.
+#' @param contrast Length-two numeric contrast.
+#' @param weights Optional nonnegative reference-cluster weights.
+#'
+#' @return Expected posterior reliability for the requested contrast.
+expected_contrast_reliability <- function(
+    G,
+    Z_list,
+    R_list,
+    contrast,
+    weights = NULL) {
+  if (length(Z_list) == 0L || length(Z_list) != length(R_list)) {
+    stop("`Z_list` and `R_list` must be nonempty lists of equal length.")
+  }
+  contrast <- as.numeric(contrast)
+  if (length(contrast) != 2L || any(!is.finite(contrast))) {
+    stop("`contrast` must contain two finite values.")
+  }
+  if (is.null(weights)) {
+    weights <- rep(1, length(Z_list))
+  }
+  weights <- as.numeric(weights)
+  if (length(weights) != length(Z_list) || any(!is.finite(weights)) ||
+      any(weights < 0) || sum(weights) <= 0) {
+    stop("`weights` must be nonnegative, finite, and match `Z_list`.")
+  }
+
+  prior_variance <- drop(t(contrast) %*% G %*% contrast)
+  if (!is.finite(prior_variance) || prior_variance <= 0) {
+    stop("The requested contrast must have positive finite variance under `G`.")
+  }
+  posterior_variances <- vapply(
+    seq_along(Z_list),
+    function(i) {
+      V_post <- posterior_random_effect_covariance(
+        G,
+        Z_list[[i]],
+        R_list[[i]]
+      )
+      drop(t(contrast) %*% V_post %*% contrast)
+    },
+    numeric(1L)
+  )
+
+  1 - stats::weighted.mean(posterior_variances / prior_variance, w = weights)
+}
+
+#' Contrast and posterior reliability for slope variation unique of intercept.
+#'
+#' @details
+#' The residualized latent slope is
+#'
+#' `eta = u1 - G12 / G11 * u0`.
+#'
+#' Its variance is `G22 - G12^2 / G11`. In a stage-2 regression containing
+#' both `u0` and `u1`, reparameterizing the predictors as `(u0, eta)` leaves
+#' the coefficient on the focal slope unchanged. Its posterior reliability is
+#' therefore aligned with the dual-predictor estimand.
+#'
+#' @param G Positive-definite `2 x 2` random-effects covariance matrix.
+#' @param Z_list,R_list Reference design and residual covariance lists.
+#' @param weights Optional nonnegative reference-cluster weights.
+#'
+#' @return Expected posterior reliability of the residualized slope.
+expected_residualized_slope_reliability <- function(
+    G,
+    Z_list,
+    R_list,
+    weights = NULL) {
+  contrast <- c(-G[1L, 2L] / G[1L, 1L], 1)
+  expected_contrast_reliability(
+    G = G,
+    Z_list = Z_list,
+    R_list = R_list,
+    contrast = contrast,
+    weights = weights
+  )
+}
+
+#' Calibrate the level-1 residual scale at fixed covariance geometry.
+#'
+#' @details
+#' Unlike `calibrate_slope_variance()`, this calibration holds the entire
+#' random-effects covariance matrix fixed and solves for a common residual SD.
+#' This permits matched-reliability comparisons without changing the ratio of
+#' slope to intercept variance or the condition number of `G`.
+#'
+#' The supplied `R_shape_list` contains residual covariance matrices at unit
+#' scale. Candidate matrices are `sigma^2 * R_shape`. The calibration may
+#' target either marginal slope reliability or residualized-slope reliability.
+#'
+#' @param target_reliability Desired reliability strictly between zero and one.
+#' @param G Fixed positive-definite `2 x 2` random-effects covariance matrix.
+#' @param Z_list Reference random-effect design matrices.
+#' @param R_shape_list Matching unit-scale residual covariance matrices.
+#' @param weights Optional nonnegative reference-cluster weights.
+#' @param reliability_measure Either `"marginal_slope"` or
+#'   `"residualized_slope"`.
+#' @param log_sigma_bounds Search interval for `log(sigma)`.
+#' @param tolerance Root-finding tolerance.
+#'
+#' @return Calibration details, including `sigma`, both achieved reliability
+#'   definitions, and the scaled residual covariance matrices.
+calibrate_residual_scale <- function(
+    target_reliability,
+    G,
+    Z_list,
+    R_shape_list,
+    weights = NULL,
+    reliability_measure = c("marginal_slope", "residualized_slope"),
+    log_sigma_bounds = c(-15, 15),
+    tolerance = 1e-10) {
+  target_reliability <- as.numeric(target_reliability[[1]])
+  reliability_measure <- match.arg(reliability_measure)
+  if (!is.finite(target_reliability) ||
+      target_reliability <= 0 || target_reliability >= 1) {
+    stop("`target_reliability` must be strictly between 0 and 1.")
+  }
+  if (!all(dim(G) == c(2L, 2L)) || any(!is.finite(G)) ||
+      min(eigen(G, symmetric = TRUE, only.values = TRUE)$values) <= 0) {
+    stop("`G` must be a finite positive-definite 2 x 2 matrix.")
+  }
+  if (length(Z_list) == 0L || length(Z_list) != length(R_shape_list)) {
+    stop("`Z_list` and `R_shape_list` must be nonempty lists of equal length.")
+  }
+
+  reliability_at_log_sigma <- function(log_sigma) {
+    sigma <- exp(log_sigma)
+    R_list <- lapply(R_shape_list, function(R_shape) sigma^2 * R_shape)
+    if (identical(reliability_measure, "marginal_slope")) {
+      expected_slope_reliability(G, Z_list, R_list, weights = weights)
+    } else {
+      expected_residualized_slope_reliability(
+        G, Z_list, R_list, weights = weights
+      )
+    }
+  }
+
+  attainable <- vapply(log_sigma_bounds, reliability_at_log_sigma, numeric(1L))
+  attainable_range <- range(attainable)
+  if (target_reliability < attainable_range[[1L]] - tolerance ||
+      target_reliability > attainable_range[[2L]] + tolerance) {
+    stop(sprintf(
+      paste0(
+        "Target reliability %.4f is outside the attainable interval ",
+        "[%.4f, %.4f] for this fixed covariance geometry."
+      ),
+      target_reliability, attainable_range[[1L]], attainable_range[[2L]]
+    ))
+  }
+
+  root <- stats::uniroot(
+    function(log_sigma) {
+      reliability_at_log_sigma(log_sigma) - target_reliability
+    },
+    interval = log_sigma_bounds,
+    tol = tolerance
+  )
+  sigma <- exp(root$root)
+  R_list <- lapply(R_shape_list, function(R_shape) sigma^2 * R_shape)
+  achieved_marginal <- expected_slope_reliability(
+    G, Z_list, R_list, weights = weights
+  )
+  achieved_residualized <- expected_residualized_slope_reliability(
+    G, Z_list, R_list, weights = weights
+  )
+
+  list(
+    target_reliability = target_reliability,
+    reliability_measure = reliability_measure,
+    achieved_reliability = if (identical(
+      reliability_measure, "marginal_slope"
+    )) achieved_marginal else achieved_residualized,
+    achieved_marginal_slope_reliability = achieved_marginal,
+    achieved_residualized_slope_reliability = achieved_residualized,
+    sigma = sigma,
+    residual_covariances = R_list,
+    attainable_reliability = stats::setNames(
+      attainable,
+      c("lower_sigma_bound", "upper_sigma_bound")
+    )
+  )
+}
+
 #' Solve for marginal slope variance from a posterior-reliability target.
 #'
 #' @details

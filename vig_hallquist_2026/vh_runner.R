@@ -193,6 +193,11 @@ summarize_results_df <- function(results) {
     c(
       "condition_id", "study", "method", "method_role", "num_clus", "mean_clus_size",
       "target_reliability", "achieved_reliability", "marginal_rho",
+      "calibration_arm", "calibration_metric",
+      "target_calibration_reliability", "achieved_calibration_reliability",
+      "achieved_partial_reliability", "slope_variance_marginal",
+      "residualized_slope_variance", "slope_intercept_variance_ratio",
+      "G_condition_number", "conditional_slope_icc",
       "standardized_beta_target", "structural_target", "structural_r2",
       "focal_unique_r2", "mean_clus_size_y", "mean_clus_size_q",
       "target_reliability_y", "target_reliability_q",
@@ -317,6 +322,11 @@ summarize_stage1_problem_df <- function(results) {
       "condition_id", "study", "method", "method_role", "stage1_singular_problem",
       "num_clus", "mean_clus_size", "target_reliability",
       "achieved_reliability", "marginal_rho", "standardized_beta_target",
+      "calibration_arm", "calibration_metric",
+      "target_calibration_reliability", "achieved_calibration_reliability",
+      "achieved_partial_reliability", "slope_variance_marginal",
+      "residualized_slope_variance", "slope_intercept_variance_ratio",
+      "G_condition_number", "conditional_slope_icc",
       "structural_target", "structural_r2", "focal_unique_r2",
       "mean_clus_size_y", "mean_clus_size_q",
       "target_reliability_y", "target_reliability_q",
@@ -329,7 +339,7 @@ summarize_stage1_problem_df <- function(results) {
     names(results)
   )
 
-  results %>%
+  results <- results %>%
     dplyr::mutate(
       status10_failure = !is.na(status_code) & status_code == 10L,
       converged = !status10_failure & !is.na(estimate),
@@ -353,8 +363,72 @@ summarize_stage1_problem_df <- function(results) {
       mean_stage1_eb_corr = safe_mean(stage1_eb_corr),
       mean_stage1_design_kappa = safe_mean(stage1_design_kappa),
       sample_stage1_problem_detail = compact_message(stage1_problem_detail[!is.na(stage1_problem_detail)]),
+      # Random-effects summaries: first parameterization
+      mean_stage1_intercept_variance = if ("stage1_intercept_variance" %in% names(results)) {
+        safe_mean(stage1_intercept_variance)
+      } else {
+        NULL
+      },
+      mean_stage1_slope_variance = if ("stage1_slope_variance" %in% names(results)) {
+        safe_mean(stage1_slope_variance)
+      } else {
+        NULL
+      },
+      mean_stage1_intercept_slope_covariance = if ("stage1_intercept_slope_covariance" %in% names(results)) {
+        safe_mean(stage1_intercept_slope_covariance)
+      } else {
+        NULL
+      },
+      mean_stage1_intercept_slope_correlation = if ("stage1_intercept_slope_correlation" %in% names(results)) {
+        safe_mean(stage1_intercept_slope_correlation)
+      } else {
+        NULL
+      },
+
+      # Random-effects summaries: y/q parameterization
+      mean_stage1_y_intercept_variance = if ("stage1_y_intercept_variance" %in% names(results)) {
+        safe_mean(stage1_y_intercept_variance)
+      } else {
+        NULL
+      },
+      mean_stage1_y_slope_variance = if ("stage1_y_slope_variance" %in% names(results)) {
+        safe_mean(stage1_y_slope_variance)
+      } else {
+        NULL
+      },
+      mean_stage1_y_intercept_slope_covariance = if ("stage1_y_intercept_slope_covariance" %in% names(results)) {
+        safe_mean(stage1_y_intercept_slope_covariance)
+      } else {
+        NULL
+      },
+      mean_stage1_y_intercept_slope_correlation = if ("stage1_y_intercept_slope_correlation" %in% names(results)) {
+        safe_mean(stage1_y_intercept_slope_correlation)
+      } else {
+        NULL
+      },
+      mean_stage1_q_intercept_variance = if ("stage1_q_intercept_variance" %in% names(results)) {
+        safe_mean(stage1_q_intercept_variance)
+      } else {
+        NULL
+      },
+      mean_stage1_q_slope_variance = if ("stage1_q_slope_variance" %in% names(results)) {
+        safe_mean(stage1_q_slope_variance)
+      } else {
+        NULL
+      },
+      mean_stage1_q_intercept_slope_covariance = if ("stage1_q_intercept_slope_covariance" %in% names(results)) {
+        safe_mean(stage1_q_intercept_slope_covariance)
+      } else {
+        NULL
+      },
+      mean_stage1_q_intercept_slope_correlation = if ("stage1_q_intercept_slope_correlation" %in% names(results)) {
+        safe_mean(stage1_q_intercept_slope_correlation)
+      } else {
+        NULL
+      },
       .groups = "drop"
     )
+  results
 }
 
 #' Summarize OpenMx and estimator issue classes.
@@ -379,6 +453,11 @@ summarize_issue_df <- function(results) {
       "condition_id", "study", "method", "method_role", "mx_issue_class", "num_clus",
       "mean_clus_size", "target_reliability", "achieved_reliability",
       "marginal_rho", "standardized_beta_target", "structural_target",
+      "calibration_arm", "calibration_metric",
+      "target_calibration_reliability", "achieved_calibration_reliability",
+      "achieved_partial_reliability", "slope_variance_marginal",
+      "residualized_slope_variance", "slope_intercept_variance_ratio",
+      "G_condition_number", "conditional_slope_icc",
       "structural_r2", "focal_unique_r2", "balance_mode", "r_structure",
       "r_rho", "sigma", "mean_clus_size_y", "mean_clus_size_q",
       "target_reliability_y", "target_reliability_q",
@@ -473,6 +552,10 @@ read_replication_results_file <- function(path) {
       "stage1_y_re_corr", "stage1_y_eb_corr", "stage1_y_design_kappa",
       "stage1_q_re_corr", "stage1_q_eb_corr", "stage1_q_design_kappa",
       "target_reliability", "achieved_reliability", "marginal_rho",
+      "target_calibration_reliability", "achieved_calibration_reliability",
+      "achieved_partial_reliability", "slope_variance_marginal",
+      "residualized_slope_variance", "slope_intercept_variance_ratio",
+      "G_condition_number", "conditional_slope_icc",
       "standardized_beta_target", "structural_r2", "focal_unique_r2",
       "tau1", "beta1z", "beta2z", "outcome_residual_variance",
       "target_reliability_y", "target_reliability_q",
@@ -513,7 +596,19 @@ read_replication_results_file <- function(path) {
       "average_measurement_slope_bias_small",
       "average_measurement_slope_rmse_small",
       "average_measurement_slope_bias_large",
-      "average_measurement_slope_rmse_large"
+      "average_measurement_slope_rmse_large",
+      "stage1_intercept_variance",
+      "stage1_slope_variance",
+      "stage1_y_intercept_variance",
+      "stage1_y_slope_variance",
+      "stage1_q_intercept_variance",
+      "stage1_q_slope_variance",
+      "stage1_intercept_slope_covariance",
+      "stage1_intercept_slope_correlation",
+      "stage1_y_intercept_slope_covariance",
+      "stage1_y_intercept_slope_correlation",
+      "stage1_q_intercept_slope_covariance",
+      "stage1_q_intercept_slope_correlation"
     ),
     names(out)
   ), fuller_numeric_cols))
@@ -655,7 +750,7 @@ condition_output_is_complete <- function(
 #' Dispatch one replication to the correct study module.
 #'
 #' @param condition One-row condition tibble with a `study` column equal to
-#'  `"study0"`, `"study1"`, `"study2"`, `"study3"`, or `"study4"`.
+#'  `"study0"`, `"study1"`, `"study2"`, `"study3"`, `"study4"`, or `"study5"`.
 #'
 #' @return A replication-level result tibble from the corresponding
 #'   `run_study*_rep()` function.
@@ -668,6 +763,7 @@ run_study_rep <- function(condition) {
     study2 = run_study2_rep(condition),
     study3 = run_study3_rep(condition),
     study4 = run_study4_rep(condition),
+    study5 = run_study5_rep(condition),
     stop("Unsupported VH study key: ", study_key)
   )
 }
@@ -683,13 +779,13 @@ run_study_rep <- function(condition) {
 #' @return A character vector of object names passed to `foreach(..., .export)`.
 vig_hallquist_parallel_exports <- function() {
   candidates <- c(
-    "run_study_rep", "run_study1_rep", "run_study2_rep", "run_study3_rep", "run_study4_rep",
+    "run_study_rep", "run_study1_rep", "run_study2_rep", "run_study3_rep", "run_study4_rep", "run_study5_rep",
     "vh_pipeline_version",
     "add_study2_method_roles", "add_study2_analysis_eligibility", "add_study3_analysis_eligibility",
-    "add_study4_method_roles",
+    "add_study4_method_roles", "add_stage1_estimates",
     "rescale_fuller_to_population_sd",
     "prepare_fuller_average_measurement", "fit_fuller_average_measurement",
-    "simulate_study1", "simulate_study2", "simulate_study3", "simulate_study4",
+    "simulate_study1", "simulate_study2", "simulate_study3", "simulate_study4", "simulate_study5",
     "simulate_data_blup_as_outcome", "simulate_data_blup_as_predictor",
     "simulate_data_dual_blup", "simulate_data_study4",
     "make_failed_result", "add_study_result_context",
@@ -706,7 +802,7 @@ vig_hallquist_parallel_exports <- function() {
     "lai_condition_to_nlme_correlation", "add_lai_trial_index", "draw_lai_level1_residuals",
     "fit_lai_stage1", "extract_centered_slope_eb", "fit_tempered_eiv_dual_set", "lai_truth", "make_covu",
     "make_study2_cluster_sizes", "make_study3_cluster_sizes", "fixed_params",
-    "study1_methods", "study2_methods", "study3_methods", "study4_methods",
+    "study1_methods", "study2_methods", "study3_methods", "study4_methods", "study5_methods",
     "safe_lmer", "safe_lme", "empty_stage1_diagnostics", "get_stage1_diagnostics",
     "normalize_r_spec", "make_R_matrix", "draw_residuals_from_R",
     "make_random_effect_covariance", "posterior_random_effect_covariance",
@@ -723,7 +819,8 @@ vig_hallquist_parallel_exports <- function() {
     "fit_lai_2spa", "fit_lai_2spa_observed_outcome", "fit_lai_2spa_disparate",
     "fit_lai_2spa_dual_process",
     "run_mx_safe", "extract_mx_stats", "extract_mx_se_details",
-    "classify_mx_issue", "compact_message", "project_to_pd", "fit_mplus_blup_predictor",
+    "classify_mx_issue", "compact_message", "project_to_pd",
+    "run_mplus_modeler_writable_tmp", "fit_mplus_blup_predictor",
     "extract_mplus_stats", "mplus_diagnostics_template", "mplus_message_lines",
     "mplus_warning_diagnostics"
   )
@@ -808,7 +905,7 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
 #'
 #' @param n_sim Positive integer number of replications per condition.
 #' @param study_arg Study selector passed to `select_design()`, typically
-#'   `"all"`, `"study0"`, `"study1"`, `"study2"`, `"study3"`, or `"study4"`.
+#'   `"all"`, `"study0"`, `"study1"`, `"study2"`, `"study3"`, `"study4"`, or `"study5"`.
 #' @param out_dir Root output directory. Defaults to
 #'   `file.path(vig_hallquist_dir, "outputs", "vig_hallquist")`.
 #' @param n_cores Positive integer number of worker cores. Values greater than

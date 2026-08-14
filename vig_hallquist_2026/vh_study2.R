@@ -287,7 +287,14 @@ run_study2_rep <- function(condition) {
       dplyr::mutate(method = "msem") %>%
       dplyr::select(method, dplyr::everything())
   )
+
   results <- results %>%
+    add_stage1_estimates(
+      fit_obj = fit_y,
+      data = sim$lv1,
+      cluster_var = "cid",
+      within_var = "x"
+    ) %>%
     add_study2_analysis_eligibility() %>%
     add_study2_method_roles()
 

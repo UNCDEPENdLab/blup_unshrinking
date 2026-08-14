@@ -17,6 +17,61 @@ mplus_message_lines <- function(messages) {
   unique(lines[nzchar(lines) & !is.na(lines)])
 }
 
+#' Run one Mplus model with a writable Fortran scratch directory.
+#'
+#' @details
+#' Mplus creates a temporary `~model.tst` file before fitting. On managed or
+#' sandboxed systems, the inherited `TMPDIR` can point to a readable but
+#' non-writable application scratch path. Mplus then exits with internal error
+#' `FE1001 9`, and its short error output may contain NUL padding that prevents
+#' `MplusAutomation::readModels()` from parsing the actual cause.
+#'
+#' The directory containing `model_file` is already writable because
+#' `mplusModeler()` writes the input, data, and output files there. Following
+#' the safe approach used by `submitModels()`, this helper creates a unique
+#' private scratch directory beneath it for each Mplus invocation. This matters
+#' because Mplus uses the fixed filename `~model.tst`; merely pointing several
+#' concurrent models at one writable directory would still permit collisions.
+#' The scratch directory is removed and the previous environment value is
+#' restored even if fitting errors.
+#'
+#' @param model An `mplusObject`.
+#' @param model_file Path to the generated `.inp` file.
+#'
+#' @return The result from `MplusAutomation::mplusModeler()`, or `NULL` when it
+#'   throws an R error.
+run_mplus_modeler_writable_tmp <- function(model, model_file) {
+  model_dir <- normalizePath(dirname(model_file), mustWork = TRUE)
+  scratch_dir <- tempfile(
+    pattern = paste0("mplus-scratch-", Sys.getpid(), "-"),
+    tmpdir = model_dir
+  )
+  if (!dir.create(scratch_dir, mode = "0700", showWarnings = FALSE)) {
+    stop("Could not create a private Mplus scratch directory in: ", model_dir)
+  }
+  old_tmpdir <- Sys.getenv("TMPDIR", unset = NA_character_)
+  on.exit({
+    if (is.na(old_tmpdir)) {
+      Sys.unsetenv("TMPDIR")
+    } else {
+      Sys.setenv(TMPDIR = old_tmpdir)
+    }
+    unlink(scratch_dir, recursive = TRUE, force = TRUE)
+  }, add = TRUE)
+  Sys.setenv(TMPDIR = scratch_dir)
+
+  suppressWarnings(
+    tryCatch(
+      MplusAutomation::mplusModeler(
+        model,
+        run = 1L,
+        modelout = model_file
+      ),
+      error = function(e) NULL
+    )
+  )
+}
+
 #' Identify Mplus warnings that make a returned estimate unsuitable for analysis.
 #'
 #' Mplus can write a parameter table even when it warns about a nonconverged or
@@ -187,12 +242,7 @@ fit_mplus_blup_predictor <- function(level1_data, level2_data, join_by = dplyr::
     rdata = data
   )
   
-  fit <- suppressWarnings({
-    tryCatch(
-      MplusAutomation::mplusModeler(model, run = 1L, modelout = model_file),
-      error = function(e) return(NULL)
-    )
-  })
+  fit <- run_mplus_modeler_writable_tmp(model, model_file)
   
   if (is.null(fit)) {
     out <- dplyr::bind_cols(tibble::tibble(
@@ -291,12 +341,7 @@ fit_mplus_dual_process <- function(proc1_data, proc2_data, title = "dual_process
     rdata = data
   )
   
-  fit <- suppressWarnings({
-    tryCatch(
-      MplusAutomation::mplusModeler(model, run = 1L, modelout = model_file),
-      error = function(e) return(NULL)
-    )
-  })
+  fit <- run_mplus_modeler_writable_tmp(model, model_file)
   
   if (is.null(fit)) {
     out <- dplyr::bind_cols(tibble::tibble(

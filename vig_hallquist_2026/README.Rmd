@@ -71,7 +71,15 @@ L2: same observed outcome model as Study 2
 Cluster information: homogeneous, moderate, severe, or information-matched
 heterogeneity, with slope variance calibrated to mean posterior reliability
 
-All four studies manipulate `standardized_beta_target`. Study 1 uses
+Study 5 reuses the Study 2 BLUP-as-predictor generator and all seven Study 2
+estimators. It is a matched-calibration bridge with three arms: the current
+solve-for-`G22` marginal-reliability calibration, a shape-preserving
+solve-for-`sigma` marginal-reliability calibration, and a shape-preserving
+solve-for-`sigma` residualized-slope-reliability calibration. The 36 conditions
+hold `num_clus = 100` and cross cluster size (10, 25), correlation (0, .5), and
+standardized focal effect (0, .2, .4) at target reliability .25.
+
+All five studies manipulate `standardized_beta_target`. Study 1 uses
 `structural_r2 = standardized_beta_target^2` internally to partition the
 marginal slope variance. Studies 2--4 retain total structural R-squared and
 focal unique R-squared only as derived diagnostics.
@@ -84,16 +92,25 @@ The current condition counts are:
 - Study 2: 720 conditions
 - Study 3: 864 conditions
 - Study 4: 111 conditions
-- Studies 1-4 combined: 2,415 conditions
+- Study 5: 36 conditions
+- Studies 1-5 combined: 2,451 conditions
 
 With the default SLURM chunk size of five conditions, the corresponding array
-sizes are 144, 144, 173, 23, and 483 tasks. The bundled SLURM script defaults
-to the combined `1-483%50` array. For a study-specific run, override the array at
+sizes are 144, 144, 173, 23, 8, and 491 tasks. The bundled SLURM script defaults
+to the combined `1-491%50` array. For a study-specific run, override the array at
 submission to avoid launching no-op tasks, for example:
 
 ```bash
 sbatch --array=1-144%50 \
   --export=ALL,VIG_HALLQUIST_STUDY=1 \
+  vig_hallquist_2026/slurm/vig_hallquist_condition_array.sbatch
+```
+
+Study 5 can be submitted on eight array tasks at the default chunk size:
+
+```bash
+sbatch --array=1-8%8 \
+  --export=ALL,VIG_HALLQUIST_STUDY=5,VIG_HALLQUIST_N_SIM=1000,VIG_HALLQUIST_OUT_DIR=outputs/vig_hallquist_study5 \
   vig_hallquist_2026/slurm/vig_hallquist_condition_array.sbatch
 ```
 
@@ -114,7 +131,7 @@ Rscript vig_hallquist_2026/random_effects_structural_simulation.R \
 The aggregation pass must use the same `n_sim`, study selector, and output
 directory as the array run.
 
-At 1,000 replications, the combined design produces approximately 19.5 million
+At 1,000 replications, the combined design produces approximately 19.8 million
 method rows. The runner therefore does not load or materialize one monolithic
 replication table when the expected result exceeds two million rows. It instead
 combines the condition-level summary files and writes a

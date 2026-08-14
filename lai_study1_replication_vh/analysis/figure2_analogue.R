@@ -1,14 +1,19 @@
 # Post-estimation Figure 2 analogue and VH-primary companion summaries.
 
+lai_study1_vh_historical_core_methods <- function() {
+  c("lai_2spa", "msem", "naive_dual_blup")
+}
+
 lai_study1_vh_historical_figure2_methods <- function() {
-  c("naive_dual_blup", "lai_2spa", "msem")
+  c(lai_study1_vh_historical_core_methods(), "lai_original_msem")
 }
 
 lai_study1_vh_historical_figure2_labels <- function() {
   c(
-    naive_dual_blup = "Naive dual BLUP",
     lai_2spa = "2S-PA",
-    msem = "MSEM"
+    msem = "MSEM (VH/Mplus)",
+    naive_dual_blup = "Naive dual BLUP",
+    lai_original_msem = "MSEM (original OpenMx)"
   )
 }
 
@@ -60,7 +65,7 @@ lai_study1_vh_assert_figure_columns <- function(results) {
 #' the VH bundle contains only three directly corresponding methods.
 summarize_lai_study1_vh_figure2_analogue <- function(results) {
   lai_study1_vh_assert_figure_columns(results)
-  methods <- lai_study1_vh_historical_figure2_methods()
+  methods <- lai_study1_vh_historical_core_methods()
   group_vars <- c(
     "condition_id", "method", "icc", "cor_u0_u1", "beta_zu1",
     "num_clus", "clus_size", "vr_u1_u0", "var_u1"
@@ -155,12 +160,12 @@ lai_study1_vh_prepare_figure_data <- function(summary_df, labels) {
       method_label = factor(method, levels = names(labels), labels = unname(labels)),
       icc_label = factor(icc, levels = sort(unique(icc))),
       cor_u0_u1_label = factor(
-        paste0("Corr(u0, u1) = ", cor_u0_u1),
-        levels = paste0("Corr(u0, u1) = ", sort(unique(cor_u0_u1)))
+        paste0("rho == ", cor_u0_u1),
+        levels = paste0("rho == ", sort(unique(cor_u0_u1)))
       ),
       beta_zu1_label = factor(
-        paste0("beta[Z.u1] = ", beta_zu1),
-        levels = paste0("beta[Z.u1] = ", sort(unique(beta_zu1)))
+        paste0("beta[Zu1] == ", beta_zu1),
+        levels = paste0("beta[Zu1] == ", sort(unique(beta_zu1)))
       ),
       num_clus_label = factor(
         paste0("J == ", num_clus),
@@ -176,17 +181,27 @@ plot_lai_study1_vh_figure2_analogue <- function(summary_df) {
   )
   ggplot2::ggplot(
     plot_df,
-    ggplot2::aes(x = icc_label, y = robust_bias, colour = method_label)
+    ggplot2::aes(
+      x = icc_label, y = robust_bias,
+      colour = method_label, linetype = method_label
+    )
   ) +
     ggplot2::geom_hline(yintercept = 0, colour = "grey45") +
     ggplot2::geom_boxplot(na.rm = TRUE, outlier.alpha = 0.45) +
+    ggplot2::scale_colour_manual(values = lai_study1_vh_historical_method_palette()) +
+    ggplot2::scale_linetype_manual(values = lai_study1_vh_historical_method_linetypes()) +
     ggplot2::facet_grid(cor_u0_u1_label ~ beta_zu1_label, labeller = ggplot2::label_parsed) +
     ggplot2::labs(
       title = "Lai Study 1 Figure 2 analogue",
-      subtitle = "Historical Lai scale; status-code-zero retention; overlapping methods only",
+      subtitle = if ("lai_original_msem" %in% summary_df$method) {
+        "Historical Lai scale; three VH overlaps plus Lai's original OpenMx MSEM diagnostic"
+      } else {
+        "Historical Lai scale; status-code-zero retention; three overlapping VH methods"
+      },
       x = "ICC",
       y = "20%-trimmed bias",
-      colour = NULL
+      colour = NULL,
+      linetype = NULL
     ) +
     ggplot2::theme_bw() +
     ggplot2::theme(legend.position = "bottom")
@@ -206,6 +221,7 @@ plot_lai_study1_vh_primary_figure <- function(summary_df, central_limit = 0.2) {
   ) +
     ggplot2::geom_hline(yintercept = 0, colour = "grey45") +
     ggplot2::geom_boxplot(na.rm = TRUE, outlier.alpha = 0.35) +
+    ggplot2::scale_colour_manual(values = lai_study1_vh_primary_method_palette()) +
     ggplot2::coord_cartesian(ylim = c(-central_limit, central_limit)) +
     ggplot2::facet_grid(cor_u0_u1_label ~ beta_zu1_label, labeller = ggplot2::label_parsed) +
     ggplot2::labs(
@@ -232,9 +248,13 @@ plot_lai_study1_vh_primary_extremes <- function(summary_df) {
     lai_study1_vh_primary_figure_labels()
   ) |>
     dplyr::mutate(abs_mean_bias = pmax(abs(mean_bias), 1e-8))
-  ggplot2::ggplot(plot_df, ggplot2::aes(x = method_label, y = abs_mean_bias)) +
+  ggplot2::ggplot(
+    plot_df,
+    ggplot2::aes(x = method_label, y = abs_mean_bias, fill = method_label)
+  ) +
     ggplot2::geom_hline(yintercept = c(0.1, 1), colour = "grey55", linetype = "dashed") +
-    ggplot2::geom_boxplot(fill = "#d7eaf7", colour = "#1f4e79", outlier.alpha = 0.35) +
+    ggplot2::geom_boxplot(colour = "grey25", outlier.alpha = 0.35) +
+    ggplot2::scale_fill_manual(values = lai_study1_vh_primary_method_palette()) +
     ggplot2::scale_y_log10() +
     ggplot2::coord_flip() +
     ggplot2::labs(
@@ -321,25 +341,27 @@ lai_study1_vh_historical_cache_columns <- function() {
 }
 
 lai_study1_vh_historical_methods_complete <- function(summary_df, condition_ids) {
-  expected_methods <- lai_study1_vh_historical_figure2_methods()
+  expected_methods <- lai_study1_vh_historical_core_methods()
   required <- c(
     "condition_id", "method", "robust_bias", "reporting_scale",
     "eligibility_rule", "bias_statistic"
   )
   if (!all(required %in% names(summary_df))) return(FALSE)
-  keys <- summary_df |>
+  core_summary <- summary_df |>
+    dplyr::filter(method %in% expected_methods)
+  keys <- core_summary |>
     dplyr::select(condition_id, method) |>
     dplyr::distinct()
   expected <- tidyr::crossing(
     condition_id = sort(unique(as.integer(condition_ids))),
     method = expected_methods
   )
-  nrow(summary_df) == nrow(expected) &&
+  nrow(core_summary) == nrow(expected) &&
     nrow(keys) == nrow(expected) &&
     nrow(dplyr::anti_join(expected, keys, by = c("condition_id", "method"))) == 0L &&
-    all(as.character(summary_df$reporting_scale) == "lai_original_standardized") &&
-    all(as.character(summary_df$eligibility_rule) == "lai_original_status_code_zero") &&
-    all(as.character(summary_df$bias_statistic) == "20_percent_trimmed_mean_bias")
+    all(as.character(core_summary$reporting_scale) == "lai_original_standardized") &&
+    all(as.character(core_summary$eligibility_rule) == "lai_original_status_code_zero") &&
+    all(as.character(core_summary$bias_statistic) == "20_percent_trimmed_mean_bias")
 }
 
 lai_study1_vh_cache_metadata_matches <- function(cache_df, signature) {
@@ -448,7 +470,12 @@ lai_study1_vh_read_valid_historical_summary_cache <- function(signatures, analys
     return(NULL)
   }
   summary_df <- tryCatch(readr::read_csv(summary_path, show_col_types = FALSE), error = function(e) NULL)
-  if (is.null(summary_df) || !lai_study1_vh_historical_methods_complete(summary_df, signatures$condition_id)) {
+  if (is.null(summary_df)) return(NULL)
+  summary_df <- dplyr::filter(
+    summary_df,
+    method %in% lai_study1_vh_historical_core_methods()
+  )
+  if (!lai_study1_vh_historical_methods_complete(summary_df, signatures$condition_id)) {
     return(NULL)
   }
   summary_df
@@ -461,7 +488,12 @@ lai_study1_vh_bootstrap_historical_cache <- function(signatures, analysis_dir) {
   summary_path <- lai_study1_vh_historical_summary_path(analysis_dir)
   if (!file.exists(summary_path)) return(NULL)
   summary_df <- tryCatch(readr::read_csv(summary_path, show_col_types = FALSE), error = function(e) NULL)
-  if (is.null(summary_df) || !lai_study1_vh_historical_methods_complete(summary_df, signatures$condition_id)) {
+  if (is.null(summary_df)) return(NULL)
+  summary_df <- dplyr::filter(
+    summary_df,
+    method %in% lai_study1_vh_historical_core_methods()
+  )
+  if (!lai_study1_vh_historical_methods_complete(summary_df, signatures$condition_id)) {
     return(NULL)
   }
   for (i in seq_len(nrow(signatures))) {
@@ -525,6 +557,21 @@ lai_study1_vh_historical_inference_columns <- function() {
   )
 }
 
+lai_study1_vh_vh_primary_inference_cache_path <- function(analysis_dir, condition_id) {
+  file.path(
+    lai_study1_vh_historical_cache_dir(analysis_dir),
+    sprintf("condition_%04d_vh_primary_inference.csv", condition_id)
+  )
+}
+
+lai_study1_vh_vh_primary_inference_columns <- function() {
+  c(
+    "condition_id", "method", "reporting_scale", "ci_low", "ci_high", "truth",
+    "vh_analysis_eligible", "icc", "cor_u0_u1", "beta_zu1", "num_clus",
+    "clus_size", "vr_u1_u0", "var_u1"
+  )
+}
+
 #' Summarize historical-style coverage and CI-based Type I error by condition.
 #'
 #' Lai's original code calculates coverage from confidence limits and Type I
@@ -544,7 +591,7 @@ summarize_lai_study1_vh_historical_inference <- function(results) {
   results |>
     dplyr::filter(
       reporting_scale == "lai_original_standardized",
-      method %in% lai_study1_vh_historical_figure2_methods()
+      method %in% lai_study1_vh_historical_core_methods()
     ) |>
     dplyr::mutate(
       lai_original_eligible = dplyr::coalesce(lai_original_eligible, FALSE),
@@ -621,20 +668,125 @@ lai_study1_vh_historical_inference_from_cache <- function(results_dir, analysis_
   dplyr::bind_rows(cell_summaries)
 }
 
+#' Summarize all seven VH methods' coverage and CI-based Type I error.
+#'
+#' This uses the common latent-SD reporting view and VH primary eligibility.
+#' Constant reporting-scale multipliers do not change interval coverage or a
+#' CI-exclusion test, but the explicit scale label makes this companion's
+#' comparability convention unambiguous.
+summarize_lai_study1_vh_vh_primary_inference <- function(results) {
+  required <- lai_study1_vh_vh_primary_inference_columns()
+  missing <- setdiff(required, names(results))
+  if (length(missing) > 0L) {
+    stop("Replication results are missing VH-primary inference columns: ", paste(missing, collapse = ", "))
+  }
+  group_vars <- c(
+    "condition_id", "method", "icc", "cor_u0_u1", "beta_zu1",
+    "num_clus", "clus_size", "vr_u1_u0", "var_u1"
+  )
+  results |>
+    dplyr::filter(
+      reporting_scale == "latent_sd",
+      method %in% names(lai_study1_vh_primary_figure_labels())
+    ) |>
+    dplyr::mutate(
+      vh_analysis_eligible = dplyr::coalesce(vh_analysis_eligible, FALSE),
+      interval_available = is.finite(ci_low) & is.finite(ci_high) & is.finite(truth),
+      retained = vh_analysis_eligible & interval_available,
+      covered = ci_low < truth & ci_high > truth,
+      rejected = ci_low >= truth | ci_high <= truth
+    ) |>
+    dplyr::group_by(dplyr::across(dplyr::all_of(group_vars))) |>
+    dplyr::summarise(
+      n_vh_primary_scale_available = dplyr::n(),
+      n_retained = sum(retained),
+      coverage = mean(covered[retained], na.rm = TRUE),
+      type1_error = if (dplyr::first(beta_zu1) == 0) mean(rejected[retained], na.rm = TRUE) else NA_real_,
+      .groups = "drop"
+    ) |>
+    dplyr::mutate(
+      dplyr::across(c(coverage, type1_error), ~ dplyr::if_else(is.nan(.x), NA_real_, .x)),
+      figure_type = "vh_primary_inference_companion",
+      reporting_scale = "latent_sd",
+      eligibility_rule = "vh_primary",
+      type1_definition = "two_sided_95_percent_ci_exclusion"
+    )
+}
+
+lai_study1_vh_read_vh_primary_inference_condition_cache <- function(cache_path, signature) {
+  cache_df <- lai_study1_vh_read_historical_condition_cache(cache_path, signature)
+  if (is.null(cache_df)) return(NULL)
+  required <- c("coverage", "type1_error", "type1_definition", "eligibility_rule")
+  if (!all(required %in% names(cache_df))) return(NULL)
+  cache_df
+}
+
+lai_study1_vh_write_vh_primary_inference_condition_cache <- function(summary_df, signature, analysis_dir) {
+  cache_dir <- lai_study1_vh_historical_cache_dir(analysis_dir)
+  dir.create(cache_dir, recursive = TRUE, showWarnings = FALSE)
+  cache_path <- lai_study1_vh_vh_primary_inference_cache_path(analysis_dir, signature$condition_id[[1]])
+  cache_df <- summary_df |>
+    dplyr::mutate(
+      figure_cache_version = lai_study1_vh_figure_cache_version(),
+      source_file = signature$source_file[[1]],
+      source_size_bytes = signature$source_size_bytes[[1]],
+      source_mtime_unix = signature$source_mtime_unix[[1]]
+    )
+  readr::write_csv(cache_df, cache_path)
+  summary_df
+}
+
+lai_study1_vh_vh_primary_inference_from_cache <- function(results_dir, analysis_dir,
+                                                           force = FALSE) {
+  files <- lai_study1_vh_replication_files(results_dir)
+  signatures <- lai_study1_vh_source_signatures(files)
+  cell_summaries <- vector("list", nrow(signatures))
+  for (i in seq_len(nrow(signatures))) {
+    signature <- signatures[i, , drop = FALSE]
+    cache_path <- lai_study1_vh_vh_primary_inference_cache_path(analysis_dir, signature$condition_id[[1]])
+    cell_summary <- if (!isTRUE(force)) {
+      lai_study1_vh_read_vh_primary_inference_condition_cache(cache_path, signature)
+    } else {
+      NULL
+    }
+    if (is.null(cell_summary)) {
+      path <- files[match(signature$condition_id[[1]], signatures$condition_id)]
+      results <- readr::read_csv(
+        path,
+        col_select = dplyr::all_of(lai_study1_vh_vh_primary_inference_columns()),
+        show_col_types = FALSE
+      )
+      cell_summary <- summarize_lai_study1_vh_vh_primary_inference(results)
+      cell_summary <- lai_study1_vh_write_vh_primary_inference_condition_cache(cell_summary, signature, analysis_dir)
+    }
+    cell_summaries[[i]] <- cell_summary
+  }
+  dplyr::bind_rows(cell_summaries)
+}
+
 plot_lai_study1_vh_coverage_analogue <- function(summary_df) {
   plot_df <- lai_study1_vh_prepare_figure_data(
     summary_df,
     lai_study1_vh_historical_figure2_labels()
   )
-  ggplot2::ggplot(plot_df, ggplot2::aes(x = icc_label, y = coverage, colour = method_label)) +
+  ggplot2::ggplot(
+    plot_df,
+    ggplot2::aes(
+      x = icc_label, y = coverage,
+      colour = method_label, linetype = method_label
+    )
+  ) +
     ggplot2::geom_hline(yintercept = 0.95, colour = "grey45") +
     ggplot2::geom_boxplot(na.rm = TRUE, outlier.alpha = 0.4) +
+    ggplot2::scale_colour_manual(values = lai_study1_vh_historical_method_palette()) +
+    ggplot2::scale_linetype_manual(values = lai_study1_vh_historical_method_linetypes()) +
     ggplot2::facet_grid(cor_u0_u1_label ~ num_clus_label, labeller = ggplot2::label_parsed) +
-    ggplot2::scale_y_continuous(limits = c(0, 1)) +
+    ggplot2::scale_y_continuous(labels = scales::label_percent(accuracy = 1)) +
+    ggplot2::coord_cartesian(ylim = c(0.70, 1.00)) +
     ggplot2::labs(
       title = "Lai Study 1 Figure 3 analogue: 95% coverage",
-      subtitle = "Historical Lai scale; status-code-zero retention; overlapping methods only",
-      x = "ICC", y = "Empirical 95% coverage", colour = NULL
+      subtitle = "Historical scale; original OpenMx MSEM uses its direct delta-method interval; displayed range 70%--100%",
+      x = "ICC", y = "Empirical 95% coverage", colour = NULL, linetype = NULL
     ) +
     ggplot2::theme_bw() +
     ggplot2::theme(legend.position = "bottom")
@@ -645,14 +797,125 @@ plot_lai_study1_vh_type1_analogue <- function(summary_df) {
     dplyr::filter(summary_df, beta_zu1 == 0),
     lai_study1_vh_historical_figure2_labels()
   )
-  ggplot2::ggplot(plot_df, ggplot2::aes(x = icc_label, y = type1_error, colour = method_label)) +
+  ggplot2::ggplot(
+    plot_df,
+    ggplot2::aes(
+      x = icc_label, y = type1_error,
+      colour = method_label, linetype = method_label
+    )
+  ) +
     ggplot2::geom_hline(yintercept = 0.05, colour = "grey45") +
     ggplot2::geom_boxplot(na.rm = TRUE, outlier.alpha = 0.4) +
+    ggplot2::scale_colour_manual(values = lai_study1_vh_historical_method_palette()) +
+    ggplot2::scale_linetype_manual(values = lai_study1_vh_historical_method_linetypes()) +
     ggplot2::facet_grid(cor_u0_u1_label ~ num_clus_label, labeller = ggplot2::label_parsed) +
-    ggplot2::scale_y_continuous(limits = c(0, 1)) +
+    ggplot2::scale_y_continuous(labels = scales::label_percent(accuracy = 1)) +
+    ggplot2::coord_cartesian(ylim = c(0, 0.15)) +
     ggplot2::labs(
       title = "Lai Study 1 Figure 4 analogue: Type I error",
-      subtitle = "CI-exclusion test at beta[Z.u1] = 0; historical Lai scale and status-code-zero retention",
+      subtitle = "Historical scale; original OpenMx MSEM uses Lai's p < .05 rule; displayed range 0%--15%",
+      x = "ICC", y = "Empirical Type I error", colour = NULL, linetype = NULL
+    ) +
+    ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = "bottom")
+}
+
+lai_study1_vh_historical_method_palette <- function() {
+  c(
+    "Naive dual BLUP" = "#00BFC4",
+    "2S-PA" = "#F8766D",
+    # Preserve Lai's original ggplot2 green for the source-faithful OpenMx
+    # estimator.  The darker green distinguishes the VH/Mplus implementation
+    # without changing the seven-method VH-primary palette.
+    "MSEM (VH/Mplus)" = "#007A3D",
+    "MSEM (original OpenMx)" = "#00BA38"
+  )
+}
+
+lai_study1_vh_historical_method_linetypes <- function() {
+  c(
+    "Naive dual BLUP" = "solid",
+    "2S-PA" = "solid",
+    "MSEM (VH/Mplus)" = "dashed",
+    "MSEM (original OpenMx)" = "solid"
+  )
+}
+
+lai_study1_vh_primary_method_palette <- function() {
+  c(
+    "Oracle dual" = "#4D4D4D",
+    "Naive dual BLUP" = "#00BFC4",
+    "Closed-form dual" = "#619CFF",
+    "Fuller closed-form" = "#B79F00",
+    "Fuller alpha-stepdown" = "#F564E3",
+    "2S-PA" = "#F8766D",
+    "MSEM" = "#00BA38"
+  )
+}
+
+plot_lai_study1_vh_vh_primary_coverage_extremes <- function(summary_df) {
+  plot_df <- lai_study1_vh_prepare_figure_data(
+    summary_df,
+    lai_study1_vh_primary_figure_labels()
+  )
+  ggplot2::ggplot(
+    plot_df,
+    ggplot2::aes(x = method_label, y = coverage, fill = method_label)
+  ) +
+    ggplot2::geom_hline(yintercept = 0.95, colour = "grey35") +
+    ggplot2::geom_boxplot(colour = "grey25", outlier.alpha = 0.35) +
+    ggplot2::scale_fill_manual(values = lai_study1_vh_primary_method_palette()) +
+    ggplot2::scale_y_continuous(
+      limits = c(0, 1),
+      labels = scales::label_percent(accuracy = 1)
+    ) +
+    ggplot2::coord_flip() +
+    ggplot2::labs(
+      title = "VH-primary companion: full coverage distribution",
+      subtitle = "All condition-level values; horizontal reference marks nominal 95% coverage",
+      x = NULL,
+      y = "Empirical 95% coverage"
+    ) +
+    ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = "none")
+}
+
+plot_lai_study1_vh_vh_primary_coverage_companion <- function(summary_df) {
+  plot_df <- lai_study1_vh_prepare_figure_data(
+    summary_df,
+    lai_study1_vh_primary_figure_labels()
+  )
+  ggplot2::ggplot(plot_df, ggplot2::aes(x = icc_label, y = coverage, colour = method_label)) +
+    ggplot2::geom_hline(yintercept = 0.95, colour = "grey45") +
+    ggplot2::geom_boxplot(na.rm = TRUE, outlier.alpha = 0.3) +
+    ggplot2::facet_grid(cor_u0_u1_label ~ num_clus_label, labeller = ggplot2::label_parsed) +
+    ggplot2::scale_colour_manual(values = lai_study1_vh_primary_method_palette()) +
+    ggplot2::scale_y_continuous(labels = scales::label_percent(accuracy = 1)) +
+    ggplot2::coord_cartesian(ylim = c(0.70, 1.00)) +
+    ggplot2::labs(
+      title = "VH-primary companion: 95% coverage",
+      subtitle = "All seven methods; common latent-SD reporting and VH eligibility; displayed range 70%--100%",
+      x = "ICC", y = "Empirical 95% coverage", colour = NULL
+    ) +
+    ggplot2::theme_bw() +
+    ggplot2::theme(legend.position = "bottom")
+}
+
+plot_lai_study1_vh_vh_primary_type1_companion <- function(summary_df) {
+  plot_df <- lai_study1_vh_prepare_figure_data(
+    dplyr::filter(summary_df, beta_zu1 == 0),
+    lai_study1_vh_primary_figure_labels()
+  )
+  ggplot2::ggplot(plot_df, ggplot2::aes(x = icc_label, y = type1_error, colour = method_label)) +
+    ggplot2::geom_hline(yintercept = 0.05, colour = "grey45") +
+    ggplot2::geom_boxplot(na.rm = TRUE, outlier.alpha = 0.3) +
+    ggplot2::facet_grid(cor_u0_u1_label ~ num_clus_label, labeller = ggplot2::label_parsed) +
+    ggplot2::scale_colour_manual(values = lai_study1_vh_primary_method_palette()) +
+    ggplot2::scale_y_continuous(labels = scales::label_percent(accuracy = 1)) +
+    ggplot2::coord_cartesian(ylim = c(0, 0.15)) +
+    ggplot2::labs(
+      title = "VH-primary companion: Type I error",
+      subtitle = "CI-exclusion test at beta[Z.u1] = 0; all seven methods; common latent-SD reporting; displayed range 0%--15%",
       x = "ICC", y = "Empirical Type I error", colour = NULL
     ) +
     ggplot2::theme_bw() +
@@ -699,6 +962,55 @@ summarize_lai_study1_vh_primary_from_aggregate <- function(results_dir) {
     )
 }
 
+#' Read the optional historical OpenMx MSEM add-on aggregate.
+#'
+#' The add-on is accepted only when it has exactly one source-faithful MSEM row
+#' for every condition in the completed VH aggregate.  A missing add-on is not
+#' an error: it lets the original seven-method report remain runnable while the
+#' additive array is still in progress.
+lai_study1_vh_read_original_msem_addon <- function(results_dir,
+                                                   expected_condition_ids) {
+  path <- file.path(
+    results_dir,
+    "historical_openmx_msem",
+    "lai_original_msem_summary.csv"
+  )
+  if (!file.exists(path)) return(NULL)
+  addon <- tryCatch(
+    readr::read_csv(path, show_col_types = FALSE),
+    error = function(e) NULL
+  )
+  required <- c(
+    "condition_id", "method", "reporting_scale", "robust_bias", "mean_bias",
+    "coverage", "type1_error", "n_sim", "n_retained", "truth", "icc",
+    "cor_u0_u1", "beta_zu1", "num_clus", "clus_size", "vr_u1_u0", "var_u1",
+    "eligibility_rule", "bias_statistic", "type1_definition"
+  )
+  if (is.null(addon) || !all(required %in% names(addon))) {
+    warning("Ignoring an invalid historical OpenMx MSEM aggregate: ", path, call. = FALSE)
+    return(NULL)
+  }
+  expected_condition_ids <- sort(unique(as.integer(expected_condition_ids)))
+  observed_condition_ids <- sort(unique(as.integer(addon$condition_id)))
+  keys <- addon |>
+    dplyr::distinct(condition_id, method, reporting_scale)
+  valid <- identical(observed_condition_ids, expected_condition_ids) &&
+    nrow(addon) == length(expected_condition_ids) &&
+    nrow(keys) == length(expected_condition_ids) &&
+    all(addon$method == "lai_original_msem") &&
+    all(addon$reporting_scale == "lai_original_standardized") &&
+    all(addon$eligibility_rule == "lai_original_status_code_zero")
+  if (!valid) {
+    warning(
+      "Ignoring an incomplete historical OpenMx MSEM aggregate; finish and aggregate all conditions first: ",
+      path,
+      call. = FALSE
+    )
+    return(NULL)
+  }
+  addon
+}
+
 #' Build Figure 2 analogue and VH-primary outputs with a resumable cache.
 #'
 #' `force = FALSE` reuses historical condition summaries only when their
@@ -720,17 +1032,56 @@ run_lai_study1_vh_postestimation_figures <- function(results_dir, analysis_dir,
     analysis_dir = analysis_dir,
     force = force
   )
+  vh_primary_inference <- lai_study1_vh_vh_primary_inference_from_cache(
+    results_dir = results_dir,
+    analysis_dir = analysis_dir,
+    force = force
+  )
   vh_primary_summary <- summarize_lai_study1_vh_primary_from_aggregate(results_dir)
+  original_msem_addon <- lai_study1_vh_read_original_msem_addon(
+    results_dir,
+    expected_condition_ids = vh_primary_summary$condition_id
+  )
+  if (!is.null(original_msem_addon)) {
+    historical_summary <- dplyr::bind_rows(
+      historical_summary,
+      original_msem_addon |>
+        dplyr::mutate(
+          figure_type = "lai_figure2_analogue_historical_addon",
+          reporting_scale = "lai_original_standardized",
+          eligibility_rule = "lai_original_status_code_zero",
+          bias_statistic = "20_percent_trimmed_mean_bias"
+        )
+    )
+    historical_inference <- dplyr::bind_rows(
+      historical_inference,
+      original_msem_addon |>
+        dplyr::mutate(
+          figure_type = "lai_figure3_4_analogue_historical_addon",
+          reporting_scale = "lai_original_standardized",
+          eligibility_rule = "lai_original_status_code_zero"
+        )
+    )
+  }
 
   historical_csv <- lai_study1_vh_historical_summary_path(analysis_dir)
   historical_inference_csv <- file.path(analysis_dir, "figure3_4_analogue_cell_summary.csv")
+  vh_primary_inference_csv <- file.path(analysis_dir, "vh_primary_inference_companion_cell_summary.csv")
   primary_csv <- file.path(analysis_dir, "vh_primary_companion_cell_summary.csv")
+  # The cache file initially contains only the three methods recoverable from
+  # the VH condition files. Rewrite it after the additive merge so the report
+  # and later fast renders can see the historical eighth method.
+  readr::write_csv(historical_summary, historical_csv)
   readr::write_csv(historical_inference, historical_inference_csv)
+  readr::write_csv(vh_primary_inference, vh_primary_inference_csv)
   readr::write_csv(vh_primary_summary, primary_csv)
 
   historical_plot <- plot_lai_study1_vh_figure2_analogue(historical_summary)
   coverage_plot <- plot_lai_study1_vh_coverage_analogue(historical_inference)
   type1_plot <- plot_lai_study1_vh_type1_analogue(historical_inference)
+  vh_primary_coverage_plot <- plot_lai_study1_vh_vh_primary_coverage_companion(vh_primary_inference)
+  vh_primary_coverage_extremes_plot <- plot_lai_study1_vh_vh_primary_coverage_extremes(vh_primary_inference)
+  vh_primary_type1_plot <- plot_lai_study1_vh_vh_primary_type1_companion(vh_primary_inference)
   primary_plot <- plot_lai_study1_vh_primary_figure(vh_primary_summary)
   primary_extremes_plot <- plot_lai_study1_vh_primary_extremes(vh_primary_summary)
   plot_files <- c(
@@ -740,6 +1091,12 @@ run_lai_study1_vh_postestimation_figures <- function(results_dir, analysis_dir,
     figure3_coverage_analogue_pdf = file.path(analysis_dir, "figure3_coverage_analogue.pdf"),
     figure4_type1_analogue_png = file.path(analysis_dir, "figure4_type1_analogue.png"),
     figure4_type1_analogue_pdf = file.path(analysis_dir, "figure4_type1_analogue.pdf"),
+    vh_primary_coverage_png = file.path(analysis_dir, "vh_primary_coverage_companion.png"),
+    vh_primary_coverage_pdf = file.path(analysis_dir, "vh_primary_coverage_companion.pdf"),
+    vh_primary_coverage_extremes_png = file.path(analysis_dir, "vh_primary_coverage_extremes.png"),
+    vh_primary_coverage_extremes_pdf = file.path(analysis_dir, "vh_primary_coverage_extremes.pdf"),
+    vh_primary_type1_png = file.path(analysis_dir, "vh_primary_type1_companion.png"),
+    vh_primary_type1_pdf = file.path(analysis_dir, "vh_primary_type1_companion.pdf"),
     vh_primary_png = file.path(analysis_dir, "vh_primary_companion.png"),
     vh_primary_pdf = file.path(analysis_dir, "vh_primary_companion.pdf"),
     vh_primary_extremes_png = file.path(analysis_dir, "vh_primary_extremes.png"),
@@ -751,6 +1108,12 @@ run_lai_study1_vh_postestimation_figures <- function(results_dir, analysis_dir,
   ggplot2::ggsave(plot_files[["figure3_coverage_analogue_pdf"]], coverage_plot, width = 10, height = 9)
   ggplot2::ggsave(plot_files[["figure4_type1_analogue_png"]], type1_plot, width = 10, height = 9, dpi = 300)
   ggplot2::ggsave(plot_files[["figure4_type1_analogue_pdf"]], type1_plot, width = 10, height = 9)
+  ggplot2::ggsave(plot_files[["vh_primary_coverage_png"]], vh_primary_coverage_plot, width = 12, height = 9, dpi = 300)
+  ggplot2::ggsave(plot_files[["vh_primary_coverage_pdf"]], vh_primary_coverage_plot, width = 12, height = 9)
+  ggplot2::ggsave(plot_files[["vh_primary_coverage_extremes_png"]], vh_primary_coverage_extremes_plot, width = 9, height = 4.5, dpi = 300)
+  ggplot2::ggsave(plot_files[["vh_primary_coverage_extremes_pdf"]], vh_primary_coverage_extremes_plot, width = 9, height = 4.5)
+  ggplot2::ggsave(plot_files[["vh_primary_type1_png"]], vh_primary_type1_plot, width = 12, height = 9, dpi = 300)
+  ggplot2::ggsave(plot_files[["vh_primary_type1_pdf"]], vh_primary_type1_plot, width = 12, height = 9)
   ggplot2::ggsave(plot_files[["vh_primary_png"]], primary_plot, width = 11, height = 8, dpi = 300)
   ggplot2::ggsave(plot_files[["vh_primary_pdf"]], primary_plot, width = 11, height = 8)
   ggplot2::ggsave(plot_files[["vh_primary_extremes_png"]], primary_extremes_plot, width = 9, height = 4.5, dpi = 300)
@@ -759,10 +1122,13 @@ run_lai_study1_vh_postestimation_figures <- function(results_dir, analysis_dir,
   invisible(list(
     figure2_analogue = historical_summary,
     figure3_4_analogue = historical_inference,
+    vh_primary_inference = vh_primary_inference,
     vh_primary = vh_primary_summary,
+    original_msem_addon = original_msem_addon,
     files = c(
       figure2_analogue_summary = historical_csv,
       figure3_4_analogue_summary = historical_inference_csv,
+      vh_primary_inference_summary = vh_primary_inference_csv,
       figure2_analogue_manifest = lai_study1_vh_historical_manifest_path(analysis_dir),
       vh_primary_summary = primary_csv,
       plot_files

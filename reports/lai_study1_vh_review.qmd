@@ -7,6 +7,7 @@ format:
     toc-depth: 3
     code-fold: true
     embed-resources: true
+    html-math-method: mathjax
 execute:
   echo: false
   warning: false
@@ -19,20 +20,29 @@ params:
 
 ## Technical summary
 
-This report reviews the Lai Study 1 data-generating mechanisms using the
-seven-method Vig--Hallquist Study 2 estimator bundle.  It is designed to keep
-two questions separate:
+The replication succeeds on its primary like-for-like point-estimate check.
+On Lai's historical reporting scale, our dual-BLUP analogue has negative bias
+near $-.02$ for every random-effect correlation, closely matching Lai's
+original **dual-EB** series.  The previously suspected sign disagreement came
+from comparing that dual method with Lai's separate slope-only EB series,
+whose bias changes sign with the random-effect correlation.  Our 2S-PA and
+MSEM analogues also remain close to zero, as in the original results.
 
-1. Can the overlapping methods reproduce the *pattern* in Lai's Figure 2
-   under the historical scale and retention rule?
-2. What do all seven VH methods show when estimates are put on a common
-   latent-slope-SD reporting scale and screened using the VH eligibility rule?
+That conclusion is scale-specific.  On the raw and common latent-slope-SD
+views, the dual-BLUP estimator is centrally near zero (with rare, very large
+failures), so much of its historical negative bias is attributable to Lai's
+method-specific EB-slope-SD multiplier.  In contrast, closed-form OLS remains
+negatively biased on the common scale, while Fuller, Fuller alpha-stepdown,
+2S-PA, and MSEM are generally much closer to zero.
 
-The historical Figure 2 panel is therefore a **Figure 2 analogue**, not an
-exact reproduction.  The VH bundle does not contain Lai's historical
-u1-only-EB and 2S-PAB variants, and Lai's original standardization can vary
-by method.  The diagnostic sections make that distinction inspectable rather
-than treating a scale change as an estimator effect.
+The interval results from the seven-method run are encouraging but not exact
+replications: our 2S-PA is somewhat conservative and our **VH/Mplus MSEM**
+somewhat anti-conservative relative to Lai's original summaries, especially
+at $J=30$.  A historical-only eighth method now reproduces Lai's original
+OpenMx MSEM and obtains the standardized estimate and delta-method SE directly
+from `mxSE(stdbeta)`.  It is added to the historical panels when its separate
+array has been completed and aggregated; it never enters the seven-method VH
+panels.  Lai's 2S-PAB and slope-only EB variants remain outside this refresh.
 
 ```{r setup}
 library(dplyr)
@@ -85,13 +95,29 @@ method_labels <- c(
   fuller_closed_form = "Fuller closed-form",
   fuller_alpha_stepdown_closed_form = "Fuller alpha-stepdown",
   lai_2spa = "2S-PA",
-  msem = "MSEM"
+  msem = "MSEM (VH/Mplus)",
+  lai_original_msem = "MSEM (original OpenMx)"
+)
+
+method_palette <- c(
+  "Oracle dual" = "#4D4D4D",
+  "Naive dual BLUP" = "#00BFC4",
+  "Closed-form dual" = "#619CFF",
+  "Fuller closed-form" = "#B79F00",
+  "Fuller alpha-stepdown" = "#F564E3",
+  "2S-PA" = "#F8766D",
+  "MSEM (VH/Mplus)" = "#007A3D",
+  "MSEM (original OpenMx)" = "#00BA38"
 )
 
 results_dir <- resolve_repo_path(params$results_dir)
 figure_dir <- resolve_repo_path(params$figure_dir)
 if (is.null(figure_dir)) figure_dir <- file.path(results_dir, "figure2_analogue")
 summary_path <- file.path(results_dir, "lai_study1_vh_summary.csv")
+original_overlap_path <- file.path(
+  repo_root,
+  "lai_study1_replication_vh/reference/lai_original_study1_overlap_summary.csv"
+)
 
 if (!file.exists(summary_path)) {
   stop("Could not find the aggregate summary: ", summary_path, call. = FALSE)
@@ -148,9 +174,33 @@ historical_figure_summary <- read_optional_csv(
 vh_figure_summary <- read_optional_csv(
   file.path(figure_dir, "vh_primary_companion_cell_summary.csv")
 )
+vh_primary_inference_summary <- read_optional_csv(
+  file.path(figure_dir, "vh_primary_inference_companion_cell_summary.csv")
+)
 historical_inference_summary <- read_optional_csv(
   file.path(figure_dir, "figure3_4_analogue_cell_summary.csv")
 )
+paired_engine_audit <- read_optional_csv(
+  file.path(results_dir, "mplus_openmx_audit", "paired_engine_comparisons.csv")
+)
+paired_engine_audit_selection_column <- if (!is.null(paired_engine_audit)) {
+  selection_columns <- grep("^selection", names(paired_engine_audit), value = TRUE)
+  if (length(selection_columns) == 1L) selection_columns[[1]] else NULL
+} else {
+  NULL
+}
+has_paired_engine_audit <- !is.null(paired_engine_audit) &&
+  !is.null(paired_engine_audit_selection_column) &&
+  all(c("mplus_variant", "openmx_standardized_estimate", "openmx_delta_se") %in%
+        names(paired_engine_audit))
+original_overlap_summary <- read_optional_csv(original_overlap_path)
+has_original_msem <- !is.null(historical_figure_summary) &&
+  "lai_original_msem" %in% historical_figure_summary$method
+original_msem_status_text <- if (has_original_msem) {
+  "complete and included in the historical panels"
+} else {
+  "implemented but not yet present in the post-estimation aggregate"
+}
 
 historical_bias_by_correlation <- if (!is.null(historical_figure_summary)) {
   historical_figure_summary |>
@@ -178,6 +228,7 @@ format_correlation_medians <- function(method) {
 naive_historical_correlation_text <- format_correlation_medians("naive_dual_blup")
 two_spa_historical_correlation_text <- format_correlation_medians("lai_2spa")
 msem_historical_correlation_text <- format_correlation_medians("msem")
+original_msem_historical_correlation_text <- format_correlation_medians("lai_original_msem")
 
 vh_instability_summary <- if (!is.null(vh_figure_summary)) {
   vh_figure_summary |>
@@ -226,6 +277,59 @@ historical_inference_by_method <- if (!is.null(historical_inference_summary)) {
 } else {
   NULL
 }
+
+historical_inference_by_method_j <- if (!is.null(historical_inference_summary)) {
+  historical_inference_summary |>
+    group_by(method, num_clus) |>
+    summarise(
+      mean_coverage = safe_mean(coverage),
+      mean_type1_error = safe_mean(type1_error),
+      .groups = "drop"
+    )
+} else {
+  NULL
+}
+
+historical_inference_value <- function(method, metric, num_clus = NULL) {
+  df <- if (is.null(num_clus)) {
+    historical_inference_by_method
+  } else {
+    historical_inference_by_method_j
+  }
+  if (is.null(df)) return(NA_real_)
+  row <- df |> filter(method == !!method)
+  if (!is.null(num_clus)) row <- row |> filter(num_clus == !!num_clus)
+  if (nrow(row) != 1L || !metric %in% names(row)) return(NA_real_)
+  row[[metric]][[1]]
+}
+
+original_inference_by_method <- if (!is.null(original_overlap_summary)) {
+  original_overlap_summary |>
+    distinct(method, mean_coverage, mean_type1_error)
+} else {
+  NULL
+}
+
+vh_inference_by_method <- if (!is.null(vh_primary_inference_summary)) {
+  vh_primary_inference_summary |>
+    group_by(method) |>
+    summarise(
+      mean_coverage = safe_mean(coverage),
+      min_coverage = min(coverage, na.rm = TRUE),
+      n_coverage_below_70 = sum(coverage < 0.70, na.rm = TRUE),
+      mean_type1_error = safe_mean(type1_error[beta_zu1 == 0]),
+      .groups = "drop"
+    )
+} else {
+  NULL
+}
+
+vh_inference_value <- function(method, metric) {
+  if (is.null(vh_inference_by_method)) return(NA_real_)
+  row <- vh_inference_by_method |> filter(method == !!method)
+  if (nrow(row) != 1L || !metric %in% names(row)) return(NA_real_)
+  row[[metric]][[1]]
+}
 ```
 
 The production aggregate contains `r n_conditions` DGM conditions, `r n_methods`
@@ -235,33 +339,59 @@ reporting view.  Its source is
 
 ### Result at a glance
 
-For the historical comparison at \(\beta_{Zu1}=.4\), the naïve dual-BLUP
+For the historical comparison at $\beta_{Zu1}=.4$, the naïve dual-BLUP
 median trimmed bias is negative at every random-effect correlation
-(`r naive_historical_correlation_text`).  Thus this VH implementation does
-**not** reproduce the correlation-signed naïve-EB pattern described for Lai's
-Figure 2.  In contrast, 2S-PA remains near zero
-(`r two_spa_historical_correlation_text`) and MSEM is small and positive
-(`r msem_historical_correlation_text`) on this historical view.
+(`r naive_historical_correlation_text`).  This closely reproduces Lai's
+original dual-EB $(u_0+u_1)$ series.  The correlation-signed pattern in the
+original paper belongs to the two *slope-only* EB specifications, which are
+not in the seven-method VH bundle.  2S-PA remains near zero
+(`r two_spa_historical_correlation_text`) and the VH/Mplus MSEM is small and
+positive (`r msem_historical_correlation_text`) on this historical view.
+The source-faithful OpenMx MSEM add-on is `r original_msem_status_text`.
+`r if (has_original_msem) paste0("Its correlation-specific medians are ", original_msem_historical_correlation_text, ".") else ""`
 
 On the common latent-SD VH view, the naïve dual-BLUP median is not itself the
 main issue; its distribution has `r naive_instability_count` conditions with
-\(|\mathrm{mean\ bias}| > 1\), including a maximum of
+$|\mathrm{mean\ bias}| > 1$, including a maximum of
 `r fmt_num(naive_instability_max, 1)`.  The report therefore shows its central
 behavior and its rare instability in separate panels rather than letting those
 failures flatten every other method's plot.
 
+### Replication goals and current status
+
+```{r replication-status}
+replication_status <- tibble::tribble(
+  ~Goal, ~Status, ~Evidence_or_limit,
+  "Preserve Lai Study 1 DGM and 486-cell grid", "Complete", "Audited in Section 1; 5,000 replications per cell",
+  "Use the seven VH Study 2 estimators", "Complete", "All seven methods appear in the common-scale bias and inference panels",
+  "Add Lai's original OpenMx MSEM without changing the VH bundle", ifelse(has_original_msem, "Complete", "Implemented; run pending"), original_msem_status_text,
+  "Retain raw, common latent-SD, and historical scales", "Complete", "All three reporting views are explicit and separately labeled",
+  "Track VH and original-Lai eligibility", "Complete", "Both rules and their overlap are reported in Section 6",
+  "Diagnose slope SD and posterior reliability", "Complete", "DGM and fitted slope-SD diagnostics are shown in Section 5",
+  "Reproduce Lai Figures 2--4 exactly", "Partial", "The original MSEM now uses Lai's p value and delta-method SE; 2S-PAB and two slope-only EB methods remain absent"
+)
+knitr::kable(replication_status, caption = "Extent to which the refreshed study meets the goals in README.md")
+```
+
+The design therefore answers the intended codebase-validation question, but
+does not replace a strict rerun of all six original methods.  Numeric
+comparisons below use a frozen summary extracted from Lai's original
+`results-sim1-revise2.rds` at commit
+`9ffe53168f6bb04e13ef977dc19a8d953d0bf29d`.
+
 ## Methods and terminology
 
-The target is the effect of the level-2 covariate \(Z\) on the random slope
-\(u_1\).  “Dual” means that the stage-2 regression uses both the random
-intercept \(u_0\) and random slope \(u_1\) as predictors; this is important
+The target is the effect of the level-2 covariate $Z$ on the random slope
+$u_1$.  “Dual” means that the stage-2 regression uses both the random
+intercept $u_0$ and random slope $u_1$ as predictors; this is important
 when those random effects are correlated.
 
 ```{r method-glossary}
 method_glossary <- tibble(
   Method = c(
     "Oracle dual", "Naive dual BLUP", "Closed-form dual",
-    "Fuller closed-form", "Fuller alpha-stepdown", "2S-PA", "MSEM"
+    "Fuller closed-form", "Fuller alpha-stepdown", "2S-PA",
+    "MSEM (VH/Mplus)", "MSEM (original OpenMx; historical only)"
   ),
   `Stage-2 predictor or model` = c(
     "True simulated u0 and u1",
@@ -270,7 +400,8 @@ method_glossary <- tibble(
     "Closed-form corrected scores with their measurement-error covariance",
     "Fuller correction with alpha stepdown for a guarded correction",
     "Lai two-stage path-analysis model fitted in OpenMx",
-    "Joint multilevel structural-equation model fitted in Mplus"
+    "Joint multilevel structural-equation model fitted in Mplus",
+    "Lai's original cross-level OpenMx MSEM; direct standardized algebra and mxSE delta-method SE"
   ),
   `Interpretive role` = c(
     "Simulation benchmark; not available in applications",
@@ -279,7 +410,8 @@ method_glossary <- tibble(
     "EIV-style correction using estimated first-stage error covariance",
     "Stabilized Fuller variant in the VH Study 2 bundle",
     "Direct Lai-method overlap for historical comparison",
-    "Latent-variable benchmark and direct Lai-method overlap"
+    "VH Study 2 latent-variable benchmark; historical comparison diagnostic",
+    "Source-faithful historical benchmark; excluded from VH-primary seven-method comparisons"
   )
 )
 knitr::kable(method_glossary, caption = "Estimator terminology used throughout this report")
@@ -289,16 +421,18 @@ The first three methods use a two-predictor observed-score regression in stage
 2.  The distinction is whether those predictors are true random effects,
 shrunken EB estimates, or closed-form corrected scores.  The Fuller methods
 also propagate the estimated measurement-error covariance into the stage-2
-correction.  2S-PA and MSEM instead fit their own latent-variable/path models,
-so their reported slope-SD scale must be interpreted separately in the
-historical comparison.
+correction.  2S-PA and both MSEM implementations instead fit their own
+latent-variable/path models.  The VH/Mplus MSEM is one of the seven primary
+methods.  The original OpenMx MSEM is an eighth, historical-only diagnostic:
+its standardized effect and SE jointly account for uncertainty in the fitted
+latent slope SD through OpenMx's delta method.
 
 ## 1. DGM audit: the Lai grid and the estimand are explicit
 
 The review starts by auditing the condition grid, rather than inferring the
 design from a plotted result.  The external-outcome effect of the random
-intercept is fixed at \(\beta_{zu0}=.4\); the focal slope effect is
-\(\beta_{zu1}\).  The summary rows below use the raw reporting view only, so
+intercept is fixed at $\beta_{zu0}=.4$; the focal slope effect is
+$\beta_{zu1}$.  The summary rows below use the raw reporting view only, so
 reporting-scale rows do not duplicate conditions.
 
 ```{r dgm-audit}
@@ -344,17 +478,24 @@ knitr::kable(dgm_reference)
 
 ## 2. Historical Figure 2 analogue: compare like with like
 
-This panel is the primary visual comparison with Lai's Figure 2.  It uses only
-the three overlapping methods (naive dual BLUP, 2S-PA, and MSEM), Lai's
-method-specific historical standardization, Lai's `status_code == 0` retention
-rule, and a 20%-trimmed Monte Carlo bias.  Those choices are deliberately
-different from the VH-primary analysis below.
+This panel is the primary visual comparison with Lai's Figure 2.  It contains
+the three methods already available from the VH run (naive dual BLUP, 2S-PA,
+and VH/Mplus MSEM) plus Lai's original OpenMx MSEM when the additive historical
+run is complete.  It uses Lai's method-specific historical standardization,
+Lai's `status_code == 0` retention rule, and a 20%-trimmed Monte Carlo bias.
+Those choices are deliberately different from the VH-primary analysis below.
 
 Lai's published Figure 2 code plots six methods: 2S-PA, 2S-PAB, MSEM,
-EB \((u_0+u_1)\), centered EB, and uncentered EB.  This analogue retains only
-the directly corresponding 2S-PA, MSEM, and dual-EB series; it cannot test the
-other three lines.  The original plotting code is available in the
-[Lai supplementary repository](https://github.com/marklhc/2spa-random-slopes-supp/blob/main/notebooks/_sim1_results_supp.qmd).
+EB $(u_0+u_1)$, centered EB, and uncentered EB.  This analogue retains only
+the directly corresponding 2S-PA and dual-EB series, the current VH/Mplus MSEM
+diagnostic, and—when available—a source-faithful rerun of the original OpenMx
+MSEM.  It cannot test the other three lines.  The original plotting code is available in the
+[Lai supplementary repository](https://github.com/marklhc/2spa-random-slopes-supp/blob/9ffe53168f6bb04e13ef977dc19a8d953d0bf29d/notebooks/_sim1_results_supp.qmd).
+The colors preserve that notebook's ggplot2 mapping: 2S-PA is red, the
+**original OpenMx MSEM** is the original green, and dual EB is cyan.  The
+VH/Mplus MSEM uses a darker green so the two implementations are not conflated.
+Colors assigned to VH-only methods in later panels are stable extensions, not
+claims that those methods correspond to omitted Lai methods.
 
 ```{r historical-figure, fig.cap="Lai Study 1 Figure 2 analogue: historical reporting scale and Lai eligibility rule."}
 historical_plot_path <- file.path(figure_dir, "figure2_analogue.png")
@@ -368,65 +509,84 @@ if (file.exists(historical_plot_path)) {
 ```
 
 ```{r historical-availability}
-historical_availability <- historical_df |>
-  group_by(method_label) |>
-  summarise(
-    conditions = n(),
-    `Mean scale availability` = safe_mean(lai_original_reporting_available_rate),
-    `Mean Lai eligibility` = safe_mean(lai_original_eligibility_rate),
-    .groups = "drop"
-  ) |>
-  mutate(
-    `Mean scale availability` = fmt_pct(`Mean scale availability`),
-    `Mean Lai eligibility` = fmt_pct(`Mean Lai eligibility`)
+if (!is.null(historical_figure_summary)) {
+  historical_availability <- historical_figure_summary |>
+    mutate(Method = recode(method, !!!method_labels)) |>
+    group_by(Method) |>
+    summarise(
+      conditions = n(),
+      `Mean scale availability` = safe_mean(historical_scale_availability_rate),
+      `Mean Lai eligibility` = safe_mean(lai_original_eligibility_rate),
+      `Mean retained replications` = safe_mean(n_retained),
+      .groups = "drop"
+    ) |>
+    mutate(
+      `Mean scale availability` = fmt_pct(`Mean scale availability`),
+      `Mean Lai eligibility` = fmt_pct(`Mean Lai eligibility`),
+      `Mean retained replications` = fmt_num(`Mean retained replications`, 1)
+    )
+  knitr::kable(
+    historical_availability,
+    caption = "Availability and retention in the historical comparison view"
   )
-knitr::kable(
-  historical_availability,
-  caption = "Availability and retention in the historical comparison view"
-)
+}
 ```
 
 ```{r historical-correlation-table}
-if (!is.null(historical_bias_by_correlation)) {
+if (!is.null(historical_bias_by_correlation) && !is.null(original_overlap_summary)) {
   historical_comparison_table <- historical_bias_by_correlation |>
+    mutate(reference_method = if_else(method == "lai_original_msem", "msem", method)) |>
+    left_join(
+      original_overlap_summary |>
+        select(reference_method = method, cor_u0_u1, original_bias = median_robust_bias_beta04),
+      by = c("reference_method", "cor_u0_u1")
+    ) |>
     mutate(
       method = recode(
         method,
         naive_dual_blup = "Naive dual BLUP",
         lai_2spa = "2S-PA",
-        msem = "MSEM"
+        msem = "MSEM (VH/Mplus)",
+        lai_original_msem = "MSEM (original OpenMx)"
       ),
-      `Median 20%-trimmed bias` = fmt_num(median_robust_bias),
-      `Mean 20%-trimmed bias` = fmt_num(mean_robust_bias)
+      `Current median bias` = fmt_num(median_robust_bias),
+      `Original Lai median bias` = fmt_num(original_bias),
+      Difference = fmt_num(median_robust_bias - original_bias)
     ) |>
     select(Method = method, `Correlation` = cor_u0_u1,
-           `Median 20%-trimmed bias`, `Mean 20%-trimmed bias`)
+           `Current median bias`, `Original Lai median bias`, Difference)
   knitr::kable(
     historical_comparison_table,
-    caption = "Historical-view bias at beta[Z.u1] = .4, summarized over the remaining DGM factors"
+    caption = "Current versus original median 20%-trimmed bias at beta[Z.u1] = .4, summarized over the remaining DGM factors"
   )
 }
 ```
 
-The key discrepancy is concentrated in the naïve dual-BLUP analogue: its
-median bias remains roughly \(-.02\) across \(\rho=-.5, 0, .5\), instead of
-switching from negative to positive with the random-effect correlation as in
-the qualitative pattern reported for Lai's Figure 2.  This is evidence of a
-real implementation/DGM or estimand difference worth tracing; it is not
-explained away by the 2S-PA and MSEM lines, which remain close to zero on this
-historical view.  Because the three omitted Lai series are not part of the VH
-bundle, this result narrows the discrepancy but does not establish an exact
-paper-level contradiction.
+The table resolves the central replication question.  Our dual-BLUP medians
+are about $-.022$ across the three values of $\rho$, versus roughly
+$-.024$ to $-.026$ for Lai's dual-EB method.  Both 2S-PA implementations
+are essentially unbiased; the VH/Mplus MSEM differs slightly in sign but
+remains small.  The original OpenMx MSEM row, when present, is the decisive
+like-for-like implementation check because it uses Lai's original model and
+delta-method interval rather than reconstructing a standardized interval from
+a raw Mplus path.
+The slope-only centered and uncentered EB lines in Lai's figure do change sign
+with $\rho$, but they answer a different stage-2 regression question and are
+not represented here.  The current Figure 2 analogue is therefore a strong
+replication for the overlapping point estimators, not evidence of a
+contradiction.
 
 ### Historical coverage and Type I error analogues
 
-The next two panels mimic Lai's Figures 3 and 4 using the same three
-overlapping methods, historical scale, and `status_code == 0` retention rule.
+The next two panels mimic Lai's Figures 3 and 4 using the same historical
+methods, historical scale, and `status_code == 0` retention rule.
 Coverage is the proportion of retained 95% intervals containing the truth.
-The Type I panel is limited to \(\beta_{Zu1}=0\) and uses two-sided 95% CI
-exclusion as the rejection rule.  Lai's original code used `p < .05`; these
-agree for ordinary two-sided Wald intervals but should not be called an exact
-p-value replication when an estimator's interval construction differs.
+The Type I panel is limited to $\beta_{Zu1}=0$ and uses two-sided 95% CI
+exclusion as the rejection rule for the three methods reconstructed from the
+VH output.  The original OpenMx MSEM add-on instead stores and uses Lai's exact
+normal-Wald `p < .05` definition.  These rules ordinarily agree, but keeping
+the provenance explicit prevents the reconstructed VH/Mplus interval from
+being mistaken for Lai's delta-method interval.
 
 ```{r figure3-coverage, fig.cap="Figure 3 analogue: empirical 95% coverage under historical Lai reporting and retention."}
 coverage_plot_path <- file.path(figure_dir, "figure3_coverage_analogue.png")
@@ -449,29 +609,42 @@ if (file.exists(type1_plot_path)) {
 ```{r historical-inference-table}
 if (!is.null(historical_inference_by_method)) {
   historical_inference_table <- historical_inference_by_method |>
+    mutate(reference_method = if_else(method == "lai_original_msem", "msem", method)) |>
+    left_join(
+      original_inference_by_method |>
+        rename(reference_method = method) |>
+        rename(
+          original_mean_coverage = mean_coverage,
+          original_mean_type1_error = mean_type1_error
+        ),
+      by = "reference_method"
+    ) |>
     mutate(
       Method = recode(
         method,
         naive_dual_blup = "Naive dual BLUP",
         lai_2spa = "2S-PA",
-        msem = "MSEM"
+        msem = "MSEM (VH/Mplus)",
+        lai_original_msem = "MSEM (original OpenMx)"
       ),
       `Mean coverage` = fmt_pct(mean_coverage),
+      `Original coverage` = fmt_pct(original_mean_coverage),
       `Median coverage` = fmt_pct(median_coverage),
       `Mean Type I error` = fmt_pct(mean_type1_error),
+      `Original Type I error` = fmt_pct(original_mean_type1_error),
       `Median Type I error` = fmt_pct(median_type1_error),
       `Mean retained replications` = fmt_num(mean_retained, 1)
     ) |>
     select(
       Method, `Coverage conditions` = coverage_conditions,
-      `Mean coverage`, `Median coverage`,
+      `Mean coverage`, `Original coverage`, `Median coverage`,
       `Type I conditions` = type1_conditions,
-      `Mean Type I error`, `Median Type I error`,
+      `Mean Type I error`, `Original Type I error`, `Median Type I error`,
       `Mean retained replications`
     )
   knitr::kable(
     historical_inference_table,
-    caption = "Condition-weighted historical-view interval performance; Type I error is evaluated only when beta[Z.u1] = 0"
+    caption = "Current and original condition-weighted interval performance; reconstructed VH methods use CI exclusion, while original OpenMx MSEM uses Lai's stored normal-Wald p value"
   )
 }
 ```
@@ -482,6 +655,142 @@ describes how performance varies across the Lai design.  Interpret a departure
 from either reference together with the matching bias panel and the number of
 retained replications: a nominal interval result can change when the
 historical reporting multiplier or status-code retention changes.
+
+For these three overlapping methods, 2S-PA is slightly conservative overall:
+mean coverage is `r fmt_pct(historical_inference_value("lai_2spa", "mean_coverage"))`
+and mean CI-based Type I error is
+`r fmt_pct(historical_inference_value("lai_2spa", "mean_type1_error"))`.
+Naïve dual BLUP averages
+`r fmt_pct(historical_inference_value("naive_dual_blup", "mean_coverage"))`
+coverage and `r fmt_pct(historical_inference_value("naive_dual_blup", "mean_type1_error"))`
+Type I error; MSEM averages
+`r fmt_pct(historical_inference_value("msem", "mean_coverage"))` and
+`r fmt_pct(historical_inference_value("msem", "mean_type1_error"))`, respectively.
+The strongest MSEM departure is in the $J=30$ cells, where its mean coverage
+is `r fmt_pct(historical_inference_value("msem", "mean_coverage", 30))` and
+its mean Type I error is
+`r fmt_pct(historical_inference_value("msem", "mean_type1_error", 30))`.
+`r if (has_original_msem) paste0("The source-faithful OpenMx MSEM averages ", fmt_pct(historical_inference_value("lai_original_msem", "mean_coverage")), " coverage and ", fmt_pct(historical_inference_value("lai_original_msem", "mean_type1_error")), " Type I error overall; at J = 30 the corresponding values are ", fmt_pct(historical_inference_value("lai_original_msem", "mean_coverage", 30)), " and ", fmt_pct(historical_inference_value("lai_original_msem", "mean_type1_error", 30)), ".") else "The original OpenMx MSEM results are not yet available; rerun the historical figure postprocessor after its additive aggregate completes."`
+Relative to Lai's original summaries, current dual-BLUP coverage and Type I
+error are close.  Current 2S-PA is more conservative (about 96% coverage and
+4% Type I error versus about 95% and 4.5% originally), while MSEM is more
+anti-conservative (about 94% and 5.7% versus about 96% and 4.2%).  The
+`r if (has_original_msem) "historical OpenMx row now separates a model/software/interval-construction difference from a DGM difference" else "implemented OpenMx add-on will separate model/software/interval construction from the DGM once its production array is complete"`.
+Those are practical inference differences worth tracing; they do not overturn
+the point-estimate replication.
+
+### Paired Mplus–OpenMx audit: two mechanisms, not one
+
+The completed paired-engine audit regenerates the exact data for two close and
+two maximally divergent seed/condition pairs, then retains all Mplus input and
+output files.  It compares the current Mplus specification (whose retained
+output identifies its default estimator as MLR), an explicit-ML version of the
+same model, MLR and ML versions with the standardized product declared in
+`MODEL CONSTRAINT`, and the original OpenMx model.  This separates a
+difference in standard-error construction from a difference in the fitted
+numerical solution.
+
+```{r paired-engine-audit-table}
+if (has_paired_engine_audit) {
+  audit_rows <- paired_engine_audit |>
+    rename(selection = all_of(paired_engine_audit_selection_column)) |>
+    filter(mplus_variant %in% c("current_default", "default_constrained", "ml_constrained")) |>
+    mutate(
+      `Seed class` = recode(
+        selection,
+        closest_saved_solution = "Closest paired solution",
+        most_divergent_saved_solution = "Most divergent paired solution"
+      ),
+      `Mplus fit` = recode(
+        mplus_variant,
+        current_default = "Current default (MLR; fixed multiplier)",
+        default_constrained = "Current default (MLR; product delta method)",
+        ml_constrained = "ML constraint (product delta method)"
+      ),
+      `Mplus standardized estimate` = fmt_num(mplus_fixed_multiplier_estimate),
+      `Mplus SE` = if_else(
+        mplus_variant %in% c("default_constrained", "ml_constrained"),
+        fmt_num(mplus_constraint_delta_se),
+        fmt_num(mplus_fixed_multiplier_se)
+      ),
+      `OpenMx standardized estimate` = fmt_num(openmx_standardized_estimate),
+      `OpenMx delta SE` = fmt_num(openmx_delta_se),
+      `Mplus − OpenMx estimate` = if_else(
+        mplus_variant %in% c("default_constrained", "ml_constrained"),
+        fmt_num(constrained_estimate_difference_vs_openmx),
+        fmt_num(fixed_multiplier_estimate_difference_vs_openmx)
+      )
+    ) |>
+    select(
+      Condition = condition_id, Replication = rep, `Seed class`, `Mplus fit`,
+      `Mplus standardized estimate`, `Mplus SE`,
+      `OpenMx standardized estimate`, `OpenMx delta SE`,
+      `Mplus − OpenMx estimate`
+    )
+  knitr::kable(
+    audit_rows,
+    caption = "One-to-one regenerated-data audit. The same current-default Mplus and OpenMx values reproduce their saved production values exactly."
+  )
+}
+```
+
+`r if (has_paired_engine_audit) {
+  stable <- paired_engine_audit |> rename(selection = all_of(paired_engine_audit_selection_column)) |> filter(selection == "closest_saved_solution", mplus_variant == "ml_constrained") |> slice(1L)
+  divergent <- paired_engine_audit |> rename(selection = all_of(paired_engine_audit_selection_column)) |> filter(selection == "most_divergent_saved_solution", mplus_variant == "ml_constrained") |> slice(1L)
+  paste0(
+    "In the closest pair, the Mplus ML constrained product and OpenMx agree to ",
+    fmt_num(abs(stable$constrained_estimate_difference_vs_openmx[[1]]), 6),
+    " on the standardized estimate, and their delta-method SEs are ",
+    fmt_num(stable$mplus_constraint_delta_se[[1]]), " and ",
+    fmt_num(stable$openmx_delta_se[[1]]), ". This verifies that the two model parameterizations can represent the same fitted solution. ",
+    "In the selected divergent pair, the Mplus ML constrained estimate is ",
+    fmt_num(divergent$mplus_constraint_estimate[[1]]), " whereas OpenMx returns ",
+    fmt_num(divergent$openmx_standardized_estimate[[1]]),
+    "; changing Mplus from its default MLR to ML does not remove that discrepancy. Thus this part of the gap is optimizer/weak-identification behavior, not a reporting-scale transformation."
+  )
+} else {
+  "The paired-engine audit has not yet been run for this result directory."
+}`
+
+`r if (has_paired_engine_audit) {
+  stable_fixed <- paired_engine_audit |> rename(selection = all_of(paired_engine_audit_selection_column)) |> filter(selection == "closest_saved_solution", mplus_variant == "current_default") |> slice(1L)
+  stable_mlr_delta <- paired_engine_audit |> rename(selection = all_of(paired_engine_audit_selection_column)) |> filter(selection == "closest_saved_solution", mplus_variant == "default_constrained") |> slice(1L)
+  stable_ml_delta <- paired_engine_audit |> rename(selection = all_of(paired_engine_audit_selection_column)) |> filter(selection == "closest_saved_solution", mplus_variant == "ml_constrained") |> slice(1L)
+  paste0(
+    "For that same stable pair, the current MLR fixed-multiplier SE is ",
+    fmt_num(stable_fixed$mplus_fixed_multiplier_se[[1]]), ", the MLR product-delta SE is ",
+    fmt_num(stable_mlr_delta$mplus_constraint_delta_se[[1]]), ", and the ML product-delta SE is ",
+    fmt_num(stable_ml_delta$mplus_constraint_delta_se[[1]]),
+    ". Thus both the post-hoc reporting rule and the MLR-versus-ML choice can move an interval even when the fitted point estimate agrees."
+  )
+}`
+
+The divergent Mplus outputs nevertheless state that estimation terminated
+normally. They also report information-matrix condition ratios of about
+$1.22\times10^{-14}$ and $3.61\times10^{-16}$ and explicitly flag possible
+model nonidentification. The saved current-run rows mark those fits as
+noncritical, because the VH Mplus-warning screen does not currently treat the
+`CONDITION NUMBER` / `MODEL NONIDENTIFICATION` wording as a critical warning.
+This is therefore a concrete eligibility-screening gap, rather than evidence
+that the two models are stably estimating different parameters.
+
+The audit also identifies an inference mismatch in the current VH extraction:
+its historical-scale Mplus row takes the SE of the raw $z \leftarrow s$ path
+and multiplies it by the fitted slope SD.  That treats the fitted SD as fixed.
+Lai's OpenMx result instead obtains `mxSE(stdbeta)` for the product itself,
+including uncertainty in the slope variance and its covariance with the path.
+The ML `MODEL CONSTRAINT` audit is the direct Mplus analogue of the latter.
+This difference can be material, but it is not sufficient to explain every
+outlying seed because some paired fits have different point estimates before
+standardization.
+
+At the condition-summary level, the historical OpenMx coverage is also based
+on a more selective usable-interval population.  At $J=30$, OpenMx retains a
+mean 91.3% of replications for interval calculation (with some cells near
+50%), while current Mplus retains about 98.5%.  Therefore the high historical
+OpenMx coverage should not be read as an engine-only advantage until coverage
+is recomputed under a common numerical-eligibility rule and a common
+product-delta estimand.
 
 If `params$historical_figure_reference` points to a locally saved image of the
 published Figure 2, render it alongside this panel during review.  The visual
@@ -562,11 +871,87 @@ if (file.exists(vh_extreme_path)) {
 ```
 
 The central-range panel shows that the closed-form dual estimator is the main
-source of systematic negative central bias when \(\beta_{Zu1}=.4\), while the
+source of systematic negative central bias when $\beta_{Zu1}=.4$, while the
 two Fuller estimators, 2S-PA, MSEM, and oracle are generally much closer to
 zero.  The log-scale diagnostic adds the complementary fact that naïve dual
 BLUP has rare, severe failures even though its median is near zero.  Neither
 claim is visible in the original unbounded all-method boxplot by itself.
+
+### VH-primary coverage and Type I error companions
+
+The following two panels extend the interval diagnostics to all seven VH
+methods, including Fuller closed-form and Fuller alpha-stepdown.  They use the
+common latent-SD reporting view and VH primary eligibility rule.  Unlike the
+three-method historical panels above, these are not Lai Figure 3/4 analogues:
+Fuller has no historical Lai method-specific standardization.  A common
+constant scale does not alter interval inclusion or CI exclusion, but the
+explicit common-scale convention keeps the method comparison and retention rule
+aligned with the VH bias panels.
+
+```{r vh-primary-coverage, fig.cap="VH-primary companion: empirical 95% coverage for all seven methods."}
+vh_coverage_plot_path <- file.path(figure_dir, "vh_primary_coverage_companion.png")
+if (file.exists(vh_coverage_plot_path)) {
+  knitr::include_graphics(vh_coverage_plot_path)
+} else {
+  knitr::asis_output("**VH-primary coverage companion not yet generated.** Run the post-estimation figure command, then re-render this report.")
+}
+```
+
+The focused coverage panel makes departures around 95% readable.  It
+intentionally clips values below 70%, so the full-range diagnostic below is
+required for judging catastrophic failure rather than only near-nominal
+performance.
+
+```{r vh-primary-coverage-extremes, fig.cap="Full-range VH-primary coverage distribution. This exposes values hidden by the focused 70%--100% panel."}
+vh_coverage_extremes_path <- file.path(figure_dir, "vh_primary_coverage_extremes.png")
+if (file.exists(vh_coverage_extremes_path)) {
+  knitr::include_graphics(vh_coverage_extremes_path)
+}
+```
+
+```{r vh-primary-type1, fig.cap="VH-primary companion: CI-based Type I error for all seven methods, at beta[Z.u1] = 0."}
+vh_type1_plot_path <- file.path(figure_dir, "vh_primary_type1_companion.png")
+if (file.exists(vh_type1_plot_path)) {
+  knitr::include_graphics(vh_type1_plot_path)
+} else {
+  knitr::asis_output("**VH-primary Type I-error companion not yet generated.** Run the post-estimation figure command, then re-render this report.")
+}
+```
+
+```{r vh-primary-inference-table}
+if (!is.null(vh_primary_inference_summary)) {
+  vh_primary_inference_table <- vh_primary_inference_summary |>
+    group_by(method) |>
+    summarise(
+      `Mean coverage` = safe_mean(coverage),
+      `Mean Type I error` = safe_mean(type1_error[beta_zu1 == 0]),
+      `Mean retained replications` = safe_mean(n_retained),
+      .groups = "drop"
+    ) |>
+    mutate(
+      Method = recode(method, !!!method_labels),
+      `Mean coverage` = fmt_pct(`Mean coverage`),
+      `Mean Type I error` = fmt_pct(`Mean Type I error`),
+      `Mean retained replications` = fmt_num(`Mean retained replications`, 1)
+    ) |>
+    select(Method, `Mean coverage`, `Mean Type I error`, `Mean retained replications`)
+  knitr::kable(
+    vh_primary_inference_table,
+    caption = "Condition-weighted VH-primary interval performance; Type I error is evaluated only when beta[Z.u1] = 0"
+  )
+}
+```
+
+Closed-form dual is the clear interval failure: its condition-weighted mean
+coverage is `r fmt_pct(vh_inference_value("closed_form_dual", "mean_coverage"))`,
+with `r vh_inference_value("closed_form_dual", "n_coverage_below_70")`
+conditions below 70% and a minimum near
+`r fmt_pct(vh_inference_value("closed_form_dual", "min_coverage"))`.
+Both Fuller variants recover roughly 96% coverage and Type I error near 4%,
+with little practical separation between ordinary Fuller and alpha-stepdown.
+Naïve dual BLUP and MSEM are modestly anti-conservative overall; oracle is
+close to nominal.  Read these averages with the faceted panels because small
+clusters and particular correlations concentrate the departures.
 
 ## 4. Reporting-scale sensitivity: separate rescaling from estimator behavior
 
@@ -576,9 +961,9 @@ the directly comparable methods it preserves Lai's method-specific multiplier.
 Consequently, this section is a diagnostic of reporting conventions, not a
 competition between differently scaled numerical values.
 
-```{r scale-sensitivity, fig.width=11, fig.height=6, fig.cap="Condition-level bias by reporting view. Facets have separate vertical scales because their units differ."}
+```{r scale-sensitivity, fig.width=11, fig.height=6, fig.cap="Central condition-level bias for the three overlapping methods under each reporting view. The fixed range makes shifts between views visible; tail failures are reported separately."}
 scale_plot_df <- summary_df |>
-  filter(method %in% names(method_labels)) |>
+  filter(method %in% c("naive_dual_blup", "lai_2spa", "msem")) |>
   mutate(scale_label = recode(
     as.character(reporting_scale),
     raw = "Raw",
@@ -586,18 +971,21 @@ scale_plot_df <- summary_df |>
     lai_original_standardized = "Lai historical standardized"
   ))
 
-ggplot(scale_plot_df, aes(x = method_label, y = bias)) +
+ggplot(scale_plot_df, aes(x = method_label, y = bias, fill = method_label)) +
   geom_hline(yintercept = 0, colour = "grey35", linewidth = 0.4) +
-  geom_boxplot(fill = "#fdd0a2", colour = "#9c3d00", outlier.alpha = 0.2) +
-  coord_flip() +
-  facet_wrap(~ scale_label, scales = "free_x") +
+  geom_boxplot(colour = "grey25", outlier.alpha = 0.2) +
+  scale_fill_manual(values = method_palette) +
+  coord_flip(ylim = c(-0.15, 0.15)) +
+  facet_wrap(~ scale_label) +
   labs(
     x = NULL,
     y = "Condition-level mean bias (view-specific units)",
     title = "Reporting-scale sensitivity",
-    subtitle = "The historical-standardized view is available only for methods with a direct Lai analogue"
+    subtitle = "Fixed display range: -0.15 to 0.15; historical colors match Lai's original method mapping",
+    fill = NULL
   ) +
-  theme_bw(base_size = 10)
+  theme_bw(base_size = 10) +
+  theme(legend.position = "bottom")
 ```
 
 ```{r historical-multiplier-table}
@@ -618,40 +1006,56 @@ knitr::kable(
 )
 ```
 
-The key review question is whether an apparent change in bias survives the
-common latent-SD view.  If it does not, the historical comparison is likely
-being driven partly by reporting scale rather than by a change in the fitted
-coefficient.
+The key finding is method-specific: the dual-BLUP distribution shifts
+downward on Lai's historical view but is centrally near zero on both common
+views.  Raw-to-latent-SD scaling alone cannot create or remove a bias pattern,
+because it is a fixed condition-level multiplier applied to both estimate and
+truth.  The extra change on the historical view comes from using the observed
+EB-slope SD for the naïve method while retaining the true latent-slope SD in
+the benchmark.  This is why a negative historical dual-EB bias can coexist
+with little central raw-coefficient bias.
 
 ## 5. Slope-SD and reliability diagnostics: test the calibration explanation
 
 The posterior reliability plotted here is calculated from the true full
 two-dimensional random-effect covariance and Lai's RMS-scaled within-cluster
 design.  It should not be replaced by `lambda22` when random effects are
-correlated.  The first plot makes the dependence on cluster size visible while
-retaining the remaining DGM variation as individual points.
+correlated.  The first plot removes duplicate values across the number of
+clusters and $\beta_{Zu1}$, neither of which enters the posterior-reliability
+calculation, and shows the remaining determinants explicitly.
 
-```{r reliability-by-size, fig.width=10, fig.height=7, fig.cap="True posterior slope reliability by homogeneous cluster size, stratified by ICC and random-effect correlation."}
+```{r reliability-by-size, fig.width=10, fig.height=5.5, fig.cap="True posterior slope reliability by homogeneous cluster size, ICC, slope/intercept variance ratio, and random-effect correlation."}
 reliability_df <- raw_df |>
   distinct(
-    condition_id, num_clus, clus_size, icc, cor_u0_u1,
+    clus_size, icc, vr_u1_u0, cor_u0_u1,
     dgm_posterior_slope_reliability
   ) |>
   mutate(
     clus_size = factor(clus_size),
-    num_clus = factor(num_clus),
     icc = factor(icc),
+    vr_u1_u0 = factor(vr_u1_u0),
     cor_u0_u1 = factor(cor_u0_u1)
   )
 
-ggplot(reliability_df, aes(x = clus_size, y = dgm_posterior_slope_reliability, shape = num_clus)) +
-  geom_jitter(width = 0.16, height = 0, alpha = 0.45, colour = "#1f4e79", size = 1.5) +
-  facet_grid(icc ~ cor_u0_u1, labeller = label_both) +
+ggplot(
+  reliability_df,
+  aes(
+    x = clus_size,
+    y = dgm_posterior_slope_reliability,
+    colour = icc,
+    shape = vr_u1_u0
+  )
+) +
+  geom_jitter(width = 0.13, height = 0, alpha = 0.8, size = 2) +
+  facet_wrap(~ cor_u0_u1, nrow = 1, labeller = label_both) +
+  scale_colour_brewer(palette = "Dark2") +
   labs(
     x = "Homogeneous cluster size",
     y = "True posterior slope reliability",
-    shape = "Clusters",
-    title = "Reliability is an emergent property of the Lai DGM"
+    colour = "ICC",
+    shape = "Slope/intercept\nvariance ratio",
+    title = "Reliability is not interchangeable with cluster size",
+    subtitle = "Each size retains substantial variation from ICC, variance ratio, and random-effect correlation"
   ) +
   theme_bw(base_size = 10)
 ```
@@ -716,7 +1120,11 @@ size 25 it still spans approximately .40--.98.  The EB slope SD is most
 attenuated at low reliability, whereas the fitted slope SD remains close to
 the population slope SD across the reliability range.  This makes the
 slope-SD correction a useful diagnostic for the observed bias pattern rather
-than a substitute for modelling reliability itself.
+than a substitute for modelling reliability itself.  Because reliability is
+emergent rather than independently randomized here, however, a trend against
+reliability in this study cannot be interpreted as the isolated causal effect
+of reliability; that is precisely the role of the direct calibration in VH
+Study 2.
 
 ## 6. Eligibility and convergence: compare the two retention rules directly
 
@@ -743,13 +1151,14 @@ eligibility_df <- raw_df |>
 
 ggplot(eligibility_df, aes(x = method_label, y = eligibility_rate, shape = rule)) +
   stat_summary(fun = mean, geom = "point", position = position_dodge(width = 0.45), size = 2.6, colour = "#1f4e79") +
-  coord_flip() +
-  scale_y_continuous(labels = percent_format(accuracy = 10), limits = c(0, 1)) +
+  coord_flip(ylim = c(0.85, 1)) +
+  scale_y_continuous(labels = percent_format(accuracy = 1)) +
   labs(
     x = NULL,
     y = "Mean condition-level eligibility rate",
     shape = NULL,
-    title = "Eligibility depends on the reporting rule"
+    title = "Eligibility depends on the reporting rule",
+    subtitle = "Focused 85%--100% range; exact rates and overlap counts appear below"
   ) +
   theme_bw(base_size = 11)
 ```
@@ -787,16 +1196,130 @@ retained by the original status-code rule but excluded from the VH-primary
 analysis.  Thus the rare large naïve-BLUP biases are not an artifact of a more
 permissive VH retention rule; the stricter VH screen is already in force.
 
-### Recommended review sequence
+## Next steps and conclusions
 
-1. Read the historical analogue beside Lai's Figure 2, comparing sign and
-   correlation patterns only for the three overlapping methods.
-2. Use the VH-primary panel to decide whether the low-reliability negative
-   bias persists after common latent-SD reporting and VH eligibility.
-3. Consult the reporting-scale and slope-SD sections before attributing a
-   cross-method bias difference to an estimator.
-4. Treat eligibility changes as part of the result: a discrepancy that appears
-   only after a retention-rule change is not evidence of a DGM mismatch alone.
+The cross-study interpretation here is benchmarked against the current
+[VH Study 2 analysis](../vig_hallquist_2026/analysis/vh_2026_study2.Rmd), with
+the [VH Study 1 analysis](../vig_hallquist_2026/analysis/vh_2026_study1.Rmd)
+used to distinguish the random-effect-as-predictor and
+random-effect-as-outcome settings.
+
+### The overlapping Lai point-estimate result replicates
+
+The strongest conclusion is positive: when method, reporting scale, bias
+statistic, and eligibility are aligned, the current machinery reproduces
+Lai's principal pattern for the estimators that overlap.  Dual BLUP is
+negatively biased on Lai's historical scale, while 2S-PA and the VH/Mplus MSEM
+are near zero.  The original OpenMx MSEM add-on provides the stricter
+implementation-and-interval check without changing the VH seven-method bundle.
+The apparent failure to reproduce a correlation-signed pattern
+was a terminology mismatch: Lai's sign-changing lines are slope-only EB
+models, not the dual-EB model used here.
+
+The remaining replication gap is inferential rather than a broad failure of
+the DGM or estimator implementation.  Dual BLUP intervals are close to Lai's
+original aggregate behavior, while 2S-PA is modestly more conservative and
+VH/Mplus MSEM more anti-conservative in this run.  The historical OpenMx MSEM
+now supplies the original standardized delta-method interval and p-value; a
+fully strict Figures 3--4 replication still requires all six original methods,
+especially 2S-PAB and the two slope-only EB specifications.
+
+### The scale result narrows what can explain VH Study 2
+
+The historical negative dual-EB bias is not a generic property of using BLUPs
+as predictors.  It is much weaker centrally on the raw and common latent-SD
+views and becomes prominent when the naïve estimate is multiplied by the
+shrunken observed EB-slope SD but compared with a truth scaled by the latent
+slope SD.  VH Study 2's negative **raw/common-scale** bias in low-reliability
+conditions therefore cannot be dismissed as the same historical scaling
+artifact.  Its source must lie in estimator behavior, DGM structure,
+conditioning, or their interaction.
+
+```{r reliability-method-pattern, fig.width=11, fig.height=6, fig.cap="Descriptive median bias across posterior-reliability bands in the Lai DGM. Reliability is emergent here, so these are associations rather than isolated reliability effects."}
+reliability_method_summary <- latent_df |>
+  filter(beta_zu1 == 0.4) |>
+  mutate(
+    reliability_band = cut(
+      dgm_posterior_slope_reliability,
+      breaks = c(-Inf, 0.25, 0.50, 0.75, Inf),
+      labels = c("< .25", ".25--.49", ".50--.74", ">= .75"),
+      right = FALSE
+    )
+  ) |>
+  group_by(method_label, reliability_band) |>
+  summarise(
+    median_bias = safe_median(bias),
+    conditions = n(),
+    .groups = "drop"
+  )
+
+ggplot(
+  reliability_method_summary,
+  aes(x = reliability_band, y = median_bias, colour = method_label, group = method_label)
+) +
+  geom_hline(yintercept = 0, colour = "grey35") +
+  geom_line(linewidth = 0.7) +
+  geom_point(size = 2) +
+  scale_colour_manual(values = method_palette) +
+  coord_cartesian(ylim = c(-0.10, 0.05)) +
+  labs(
+    x = "True posterior slope-reliability band",
+    y = "Median condition-level bias",
+    colour = NULL,
+    title = "Low reliability separates uncorrected closed-form OLS from corrected methods",
+    subtitle = "Common latent-SD scale; beta[Zu1] = .4; VH eligibility"
+  ) +
+  theme_bw(base_size = 10) +
+  theme(legend.position = "bottom")
+```
+
+This descriptive bridge resembles the broader VH pattern in one important
+respect: uncorrected closed-form OLS is negatively biased, particularly when
+reliability is low, and both Fuller corrections materially reduce that bias.
+It differs in another: the central naïve dual-BLUP bias in the Lai DGM is near
+zero or slightly positive across reliability bands, rather than showing the
+pronounced low-reliability negative raw bias observed in VH Study 2.  Rare
+naïve-BLUP failures remain consequential, so medians, trimmed means, and tail
+counts should continue to accompany ordinary means.
+
+### Reliability is not merely cluster size, but it is not isolated here
+
+The diagnostic range within each homogeneous cluster size is wide enough to
+reject “reliability is just cluster size” as a description of the Lai DGM.
+ICC, the slope/intercept variance ratio, and random-effect correlation all
+matter.  Nevertheless, Lai reliability is an emergent combination of these
+factors rather than a randomized design dimension.  Associations in the plot
+above therefore cannot identify a pure reliability effect.  The direct
+posterior-reliability calibration in the VH project remains essential and is
+the stronger design for testing reliability-specific hypotheses.
+
+### Recommended next analyses
+
+1. Run a bridge experiment that starts from the Lai DGM and introduces the VH
+   reliability calibration one component at a time.  Hold the raw/common
+   reporting scale and eligibility rule fixed, then change the cluster-size
+   design, reliability calibration, and outcome model sequentially.  This will
+   localize where the VH low-reliability negative bias enters.
+2. Compare matched reliability bands across Lai and VH using median bias,
+   20%-trimmed bias, RMSE, and tail-failure counts.  Do not rely on the mean
+   alone for naïve BLUP, whose rare failures can dominate it.
+3. Use the source-faithful OpenMx MSEM versus VH/Mplus MSEM contrast to check
+   whether the $J=30$ coverage gap comes from model parameterization,
+   standardization/SE propagation, or software.  Then check 2S-PA interval
+   construction and—if exact paper replication is needed—add 2S-PAB plus the
+   centered and uncentered slope-only EB methods outside the VH bundle.
+4. In VH reporting, keep raw/common latent-SD results primary and retain Lai's
+   historical method-specific scale only as a labeled diagnostic.  Continue to
+   show both eligibility rules and slope-SD ratios so scale, retention, and
+   estimator effects cannot be conflated.
+
+Overall, the replication increases confidence that the shared 2S-PA,
+VH/Mplus MSEM, and dual-BLUP machinery is recovering Lai's point-estimate
+result, while the eighth OpenMx method is designed to provide a source-faithful
+historical control without changing the VH bundle.  It does
+not explain away the different VH Study 2 pattern.  Instead, it sharpens the
+next question: which aspect of VH's direct reliability calibration or DGM
+turns the low-reliability dual-BLUP association negative on a common scale?
 
 ## Reproducibility notes
 

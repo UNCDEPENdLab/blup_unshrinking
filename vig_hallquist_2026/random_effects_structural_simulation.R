@@ -2,9 +2,10 @@
 
 #' ---
 #' title: "Vig & Hallquist 2026 Random Effects Simulation"
-#' description: "Four simulation studies including: (1) RE as outcome, 
+#' description: "Five simulation studies including: (1) RE as outcome,
 #'               (2) RE as predictor, (3) RE as predictor and outcome,
-#'               (4) heterogeneous cluster information and reliability"
+#'               (4) heterogeneous cluster information and reliability,
+#'               (5) matched reliability calibration bridge"
 #' ---
 
 # TODO: check these exports
@@ -75,7 +76,7 @@ source(file.path(vig_hallquist_dir, "vh_study_common.R"), local = TRUE)
 source(file.path(vig_hallquist_dir, "vh_designs.R"), local = TRUE)
 source(file.path(vig_hallquist_dir, "vh_study1.R"), local = TRUE)
 source(file.path(vig_hallquist_dir, "vh_study2.R"), local = TRUE)
-for (study_file in c("vh_study3.R", "vh_study4.R")) {
+for (study_file in c("vh_study3.R", "vh_study4.R", "vh_study5.R")) {
   study_path <- file.path(vig_hallquist_dir, study_file)
   if (file.exists(study_path)) {
     source(study_path, local = TRUE)

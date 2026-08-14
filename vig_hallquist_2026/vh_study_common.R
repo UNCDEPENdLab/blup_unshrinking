@@ -423,6 +423,7 @@ study_methods_for_condition <- function(condition) {
     study2 = study2_methods(),
     study3 = study3_methods(),
     study4 = study4_methods(),
+    study5 = study5_methods(),
     stop("Unsupported study key: ", study_key)
   )
 }
@@ -445,4 +446,32 @@ make_failed_result <- function(condition, methods, truth) {
 
 add_study_result_context <- function(results, condition, truth) {
   dplyr::mutate(results, study = condition$study, truth = truth)
+}
+
+add_stage1_estimates <- function(results, fit_obj, data, cluster_var, within_var = NULL, R_list = NULL, group = NULL, suffix = NULL) {
+  if (is.null(fit_obj)) {
+    return(results)
+  }
+  stage1_components <- extract_stage1_components(
+    fit_obj = fit_obj,
+    data = data,
+    cluster_var = cluster_var,
+    within_var = within_var,
+    R_list = R_list,
+    group = group
+  )
+  G_hat <- stage1_components$G_hat
+  if (is.null(G_hat)) {
+    return(results)
+  } else {
+    dplyr::bind_cols(
+      results,
+      tibble::tibble(
+        stage1_intercept_variance = G_hat[1, 1],
+        stage1_slope_variance = G_hat[2, 2],
+        stage1_intercept_slope_covariance = G_hat[1, 2],
+        stage1_intercept_slope_correlation = G_hat[1, 2] / sqrt(G_hat[1, 1] * G_hat[2, 2])
+      )
+    )
+  }
 }
