@@ -71,6 +71,35 @@ L2: same observed outcome model as Study 2
 Cluster information: homogeneous, moderate, severe, or information-matched
 heterogeneity, with slope variance calibrated to mean posterior reliability
 
+# Legacy and amended calibration pathways
+
+The original Study 1--4 selectors are intentionally preserved:
+
+- `1`, `2`, `3`, and `4` (or `study1`, ..., `study4`) run the legacy
+  one-coordinate calibration. These conditions hold `sigma = 1` and solve only
+  for the marginal slope variance, $\tau_1^2$. Their manifest rows are marked
+  `study_version = "legacy"` and
+  `calibration_version = "legacy_solve_tau1_sq"`.
+- `1v2`, `2v2`, `3v2`, and `4v2` run the amended fixed-shape designs. These
+  conditions fix $\tau_0^2=.81$, use $\tau_1^2/\tau_0^2=1$ in the primary
+  grid, and solve for `sigma` to attain marginal posterior slope reliability.
+  Their rows are marked `study_version = "v2"` and
+  `calibration_version = "shape_preserving_v2"`.
+- `all` retains its historical meaning: legacy Studies 1--5. `allv2` selects
+  amended Studies 1--4. `allversions` selects both series plus the ICC bridge.
+- `iccbridge` selects a 108-condition Study-2-like bridge. Its posterior-R and
+  ICC arms are identical at reference cluster size $m=10$; away from $m=10$,
+  one arm holds posterior reliability constant and the other holds ICC
+  constant.
+
+The original builder names remain callable. Explicit aliases
+`make_study1_legacy_design()` through `make_study4_legacy_design()` make legacy
+use unambiguous. The amended builders are `make_study1_v2_design()` through
+`make_study4_v2_design()`. The shared calibration primitive is
+`calibrate_shape_preserving_measurement()` in `R/reliability_calibration.R`.
+`make_icc_posterior_reliability_crosswalk()` returns the deterministic VH-v2
+and Lai-style ICC/reliability crosswalk.
+
 Study 5 reuses the Study 2 BLUP-as-predictor generator and all seven Study 2
 estimators. It is a matched-calibration bridge with three arms: the current
 solve-for-`G22` marginal-reliability calibration, a shape-preserving
@@ -94,6 +123,12 @@ The current condition counts are:
 - Study 4: 111 conditions
 - Study 5: 36 conditions
 - Studies 1-5 combined: 2,451 conditions
+- Amended Study 1v2: 720 conditions
+- Amended Study 2v2: 720 conditions
+- Amended Study 3v2: 864 conditions
+- Amended Study 4v2: 111 conditions
+- Amended Studies 1v2-4v2 combined: 2,415 conditions
+- ICC/posterior-reliability bridge: 108 conditions
 
 With the default SLURM chunk size of five conditions, the corresponding array
 sizes are 144, 144, 173, 23, 8, and 491 tasks. The bundled SLURM script defaults
@@ -105,6 +140,26 @@ sbatch --array=1-144%50 \
   --export=ALL,VIG_HALLQUIST_STUDY=1 \
   vig_hallquist_2026/slurm/vig_hallquist_condition_array.sbatch
 ```
+
+The amended series uses 483 tasks at the default chunk size:
+
+```bash
+sbatch --array=1-483%50 \
+  --export=ALL,VIG_HALLQUIST_STUDY=allv2,VIG_HALLQUIST_OUT_DIR=outputs/vig_hallquist_v2 \
+  vig_hallquist_2026/slurm/vig_hallquist_condition_array.sbatch
+```
+
+The ICC bridge uses 22 tasks at the default chunk size:
+
+```bash
+sbatch --array=1-22%22 \
+  --export=ALL,VIG_HALLQUIST_STUDY=iccbridge,VIG_HALLQUIST_OUT_DIR=outputs/vig_hallquist_icc_bridge \
+  vig_hallquist_2026/slurm/vig_hallquist_condition_array.sbatch
+```
+
+Use separate output directories for legacy, v2, and bridge runs. Their
+condition identifiers do not overlap, but separate directories also keep
+aggregate manifests and progress files easy to audit.
 
 Study 5 can be submitted on eight array tasks at the default chunk size:
 

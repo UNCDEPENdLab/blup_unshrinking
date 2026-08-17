@@ -1205,6 +1205,333 @@ mechanism plot uses median SE to represent a typical replication; the report
 retains mean-SE ratios and the explicit outlier audit so that heavy-tailed
 uncertainty is not concealed.
 
+# ICC and posterior reliability form a regular crosswalk when covariance shape is fixed
+
+The practical distinction exposed by Study 5 is not that ICC and posterior
+reliability describe unrelated properties. It is that they become difficult to
+compare when a nominal reliability manipulation also changes the relative scale
+and conditioning of the random intercept and slope. Once the covariance shape
+is fixed, ICC and posterior reliability index the same underlying
+signal-to-noise continuum, although they summarize that continuum at different
+levels.
+
+For clarity, three quantities are distinguished here:
+
+- the **time-zero or intercept ICC**,
+  $\tau_0^2/(\tau_0^2+\sigma^2)$, describes the between-cluster share of
+  variation at the centered time origin;
+- the **conditional slope ICC**,
+  $\tau_{1\mid0}^2/(\tau_{1\mid0}^2+\sigma^2)$, uses
+  $\tau_{1\mid0}^2=\tau_1^2-\tau_{01}^2/\tau_0^2$ and describes
+  single-observation slope signal unique of the intercept; and
+- **posterior slope reliability** describes the fraction of marginal slope
+  variance resolved by the complete cluster design. It therefore depends not
+  only on variance partitioning but also on cluster size, time scores, and the
+  residual covariance matrix.
+
+Posterior reliability should not be expected to equal an ICC numerically. A
+cluster supplies several observations, so posterior reliability normally
+exceeds the corresponding single-observation ICC. “More similar” means that
+the ICC diagnostics and posterior reliability have a stable, monotone
+crosswalk once $\tau_1^2/\tau_0^2$, $\rho$, the residual correlation shape,
+and the cluster/time design are controlled. It does not mean that they are
+interchangeable percentages.
+
+```{r icc-crosswalk-data, include=FALSE}
+icc_crosswalk <- make_icc_posterior_reliability_crosswalk()
+icc_bridge_design <- select_design("iccbridge")
+
+study5_icc_geometry <- design %>%
+  distinct(
+    calibration_arm, mean_clus_size, marginal_rho,
+    achieved_reliability, intercept_icc, conditional_slope_icc,
+    slope_intercept_variance_ratio, G_condition_number
+  ) %>%
+  filter(calibration_arm %in% c(
+    "current_g22", "shape_preserving_marginal"
+  )) %>%
+  mutate(
+    calibration_arm_label = recode(
+      calibration_arm,
+      current_g22 = "Legacy: solve slope variance only",
+      shape_preserving_marginal = "Fixed covariance shape"
+    ),
+    m_label = paste0("m = ", mean_clus_size),
+    rho_label = paste0("rho = ", marginal_rho)
+  )
+
+icc_bridge_first_stage <- icc_bridge_design %>%
+  distinct(
+    calibration_arm, mean_clus_size, marginal_rho,
+    posterior_reliability_anchor, icc_anchor,
+    achieved_reliability, intercept_icc
+  ) %>%
+  mutate(
+    calibration_arm_label = recode(
+      calibration_arm,
+      posterior_reliability_targeted = "Hold posterior reliability fixed",
+      icc_anchored_at_m10 = "Hold reference ICC fixed"
+    ),
+    target_label = paste0("R anchor = ", posterior_reliability_anchor),
+    rho_label = paste0("rho = ", marginal_rho)
+  )
+```
+
+## Fixing the full shape keeps intercept and slope signal on comparable scales
+
+Every point in the next figure has marginal posterior slope reliability .25.
+The comparison is therefore about the observation-level variance partition
+that was required to produce that reliability. Under the fixed-shape arm,
+intercept and conditional-slope ICCs remain close because the intercept and
+slope variances are scaled together. Under the legacy solve-$G_{22}$ approach,
+the intercept ICC remains near .45 while the slope ICC collapses, especially
+when the random effects are correlated. Thus the legacy condition called “low
+reliability” is simultaneously a severe mismatch between intercept and slope
+signal.
+
+```{r icc-geometry-plot, fig.width=10, fig.height=5.8}
+ggplot(
+  study5_icc_geometry,
+  aes(
+    x = intercept_icc,
+    y = conditional_slope_icc,
+    colour = calibration_arm_label,
+    shape = m_label
+  )
+) +
+  geom_abline(
+    slope = 1,
+    intercept = 0,
+    linetype = 2,
+    colour = "grey45"
+  ) +
+  geom_point(size = 3.2, stroke = 1) +
+  facet_wrap(~ rho_label) +
+  scale_x_log10(labels = label_number(accuracy = .001)) +
+  scale_y_log10(labels = label_number(accuracy = .001)) +
+  scale_colour_manual(values = c(
+    "Legacy: solve slope variance only" = "#E15759",
+    "Fixed covariance shape" = "#4E79A7"
+  )) +
+  labs(
+    title = "Intercept and conditional-slope ICC under matched posterior reliability",
+    subtitle = "All points have marginal posterior slope reliability .25; dashed line denotes equal ICCs",
+    x = "Time-zero/intercept ICC (log scale)",
+    y = "Conditional slope ICC (log scale)",
+    colour = "Calibration",
+    shape = "Cluster size"
+  ) +
+  theme_minimal(base_size = 12) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+```
+
+The numerical crosswalk makes the scale mismatch concrete. At $m=25$ and
+$\rho=.5$, the legacy arm combines an intercept ICC of approximately
+`r round(study5_icc_geometry$intercept_icc[study5_icc_geometry$calibration_arm == "current_g22" & study5_icc_geometry$mean_clus_size == 25 & study5_icc_geometry$marginal_rho == .5], 3)`
+with a conditional slope ICC below .001. The fixed-shape arm instead has an
+intercept ICC of approximately
+`r round(study5_icc_geometry$intercept_icc[study5_icc_geometry$calibration_arm == "shape_preserving_marginal" & study5_icc_geometry$mean_clus_size == 25 & study5_icc_geometry$marginal_rho == .5], 3)`
+and a conditional slope ICC of approximately
+`r round(study5_icc_geometry$conditional_slope_icc[study5_icc_geometry$calibration_arm == "shape_preserving_marginal" & study5_icc_geometry$mean_clus_size == 25 & study5_icc_geometry$marginal_rho == .5], 3)`.
+Fixing shape therefore removes a second, unintended manipulation even though
+the posterior-reliability target itself is unchanged.
+
+```{r icc-geometry-table}
+study5_icc_geometry %>%
+  filter(marginal_rho == .5) %>%
+  transmute(
+    Calibration = calibration_arm_label,
+    m = mean_clus_size,
+    `Marginal posterior R` = achieved_reliability,
+    `Intercept ICC` = intercept_icc,
+    `Conditional slope ICC` = conditional_slope_icc,
+    `tau1^2 / tau0^2` = slope_intercept_variance_ratio,
+    `kappa(G)` = G_condition_number
+  ) %>%
+  mutate(across(where(is.numeric), ~ round(.x, 4))) %>%
+  arrange(m, Calibration) %>%
+  kable(
+    caption = paste(
+      "ICC/posterior-reliability crosswalk in the correlated Study 5",
+      "conditions. All rows target marginal posterior reliability .25."
+    )
+  )
+```
+
+## ICC and posterior reliability ask different questions as cluster size changes
+
+The fact that ICC and posterior reliability are now connected does not decide
+which one should be the experimental factor. The bridge manifest makes that
+choice explicit. For each correlation and reliability level, the two arms are
+constructed to be the same DGM at $m=10$. One arm then recalibrates $\sigma$
+to hold posterior reliability fixed as $m$ changes; the other holds the
+$m=10$ intercept ICC fixed and allows posterior reliability to emerge. The
+arms therefore differ only away from the reference design.
+
+```{r icc-bridge-plot, fig.width=12, fig.height=7.5}
+ggplot(
+  icc_bridge_first_stage,
+  aes(
+    x = mean_clus_size,
+    y = achieved_reliability,
+    colour = calibration_arm_label,
+    shape = calibration_arm_label,
+    linetype = calibration_arm_label,
+    group = calibration_arm_label
+  )
+) +
+  geom_hline(
+    aes(yintercept = posterior_reliability_anchor),
+    colour = "grey65",
+    linewidth = .45
+  ) +
+  geom_line(linewidth = .8) +
+  geom_point(size = 2.4) +
+  facet_grid(rho_label ~ target_label) +
+  scale_x_continuous(breaks = c(3, 10, 25)) +
+  scale_y_continuous(limits = c(0, 1), labels = percent) +
+  scale_colour_manual(values = c(
+    "Hold posterior reliability fixed" = "#4E79A7",
+    "Hold reference ICC fixed" = "#B6992D"
+  )) +
+  labs(
+    title = "Posterior reliability under R-targeted and ICC-anchored bridge arms",
+    subtitle = "ICC anchors are selected so the two fixed-shape arms coincide at m = 10",
+    x = "Cluster size",
+    y = "Achieved marginal posterior slope reliability",
+    colour = "Bridge arm",
+    shape = "Bridge arm",
+    linetype = "Bridge arm"
+  ) +
+  theme_minimal(base_size = 11) +
+  theme(
+    legend.position = "bottom",
+    panel.grid.minor = element_blank()
+  )
+```
+
+The posterior-reliability arm is flat by construction: “low,” “medium,” and
+“high” mean the same amount of resolved slope information at every cluster
+size. The ICC arm is also coherent, but answers a different question: with the
+same per-observation variance partition, how much more precisely is the slope
+measured when a cluster contributes more observations? Neither question is
+ill-posed. They should not, however, be presented as interchangeable designs.
+
+The anchor values also show why posterior reliability is not a disguised copy
+of Lai's ICC levels. Under the primary ratio-one geometry, posterior
+reliabilities .25, .50, and .80 at $m=10$ correspond to intercept ICCs around
+.03, .09--.10, and .29--.31, depending on $\rho$.
+
+```{r icc-anchor-table}
+icc_bridge_first_stage %>%
+  distinct(marginal_rho, posterior_reliability_anchor, icc_anchor) %>%
+  arrange(marginal_rho, posterior_reliability_anchor) %>%
+  mutate(
+    posterior_reliability_anchor = percent(
+      posterior_reliability_anchor,
+      accuracy = 1
+    ),
+    icc_anchor = round(icc_anchor, 4)
+  ) %>%
+  kable(
+    col.names = c("rho", "Posterior-R anchor at m=10", "Matched intercept ICC"),
+    caption = "Fixed-shape ICC anchors used by the runnable bridge manifest."
+  )
+```
+
+Conversely, holding a Lai-style ICC level fixed allows posterior reliability to
+increase markedly with cluster size. The next table uses Lai's RMS time scaling
+and the primary ratio-one covariance shape; ranges reflect
+$\rho\in\{-.5,0,.5\}$. It is a crosswalk, not a claim that these cells exactly
+reproduce every factor in Lai's original grid.
+
+```{r lai-icc-posterior-crosswalk-table}
+icc_crosswalk %>%
+  filter(
+    design_family == "Lai-style ICC reference",
+    slope_intercept_variance_ratio == 1
+  ) %>%
+  group_by(calibration_target_value, mean_clus_size) %>%
+  summarise(
+    posterior_R_min = min(achieved_marginal_reliability),
+    posterior_R_max = max(achieved_marginal_reliability),
+    .groups = "drop"
+  ) %>%
+  mutate(
+    calibration_target_value = round(calibration_target_value, 2),
+    posterior_R_range = paste0(
+      round(posterior_R_min, 3), "--", round(posterior_R_max, 3)
+    )
+  ) %>%
+  dplyr::select(
+    `Lai-style intercept ICC` = calibration_target_value,
+    m = mean_clus_size,
+    `Marginal posterior-R range` = posterior_R_range
+  ) %>%
+  kable(
+    caption = paste(
+      "Posterior-reliability crosswalk for fixed-shape ratio-one",
+      "Lai-style ICC conditions under RMS time scaling."
+    )
+  )
+```
+
+## Why posterior reliability is primary, with ICC retained as a companion
+
+There is a genuine case for either design convention.
+
+**The case for ICC is familiarity and direct variance interpretation.** ICC is
+widely used in psychological multilevel research, is easy to specify without
+reference to a particular number or spacing of observations, and aligns the
+revised studies with Lai's presentation. Holding ICC fixed also describes a
+recognizable applied scenario: the observation-level signal-to-noise ratio is
+stable, while additional observations improve cluster-specific precision.
+
+**The limitation of ICC for the present hypotheses is that it does not hold
+the focal measurement problem constant.** The same ICC can imply very
+different posterior slope reliabilities at $m=3$ and $m=25$. Moreover, an
+intercept ICC alone does not identify slope precision unless the slope/intercept
+variance ratio, correlation, time design, and residual covariance are also
+specified. Study 5 shows why leaving that geometry implicit is consequential.
+
+**The case for posterior reliability is alignment with the inferential
+problem.** The principal hypotheses concern how estimators behave when an
+individual random slope is measured with low, moderate, or high precision.
+Posterior reliability incorporates all observations used to estimate that
+slope, including their number and time design. Holding it fixed permits a
+cleaner comparison of estimator behavior across cluster sizes and across the
+homogeneous and heterogeneous information profiles in Study 4.
+
+**The limitation of posterior-reliability calibration is that it can require
+unfamiliar ICCs.** In particular, maintaining low posterior reliability when
+$m$ is large requires a low observation-level ICC. The target also depends on
+population values of $G$ and $R$ and on the reference cluster design. These are
+not reasons to abandon it, but they require transparent manipulation checks and
+make the ICC crosswalk essential.
+
+The balanced decision is therefore to use **marginal posterior slope
+reliability as the primary experimental factor because it matches the focal
+measurement-error hypothesis**, while reporting intercept ICC, conditional
+slope ICC, and residualized reliability in every condition. The ICC-anchored
+bridge is a literature-facing robustness analysis: it reveals whether a
+conclusion depends on holding effective slope information constant rather than
+holding the per-observation variance partition constant. This is a choice of
+scientific comparison, not a claim that posterior reliability is universally
+superior to ICC.
+
+The implementation makes this distinction explicit. `study1v2` through
+`study4v2` are the amended fixed-shape studies, and `allv2` selects that series.
+The unsuffixed `study1` through `study4` selectors remain the legacy
+solve-$\tau_1^2$ pathways for exact comparison with prior outputs; `all` keeps
+its historical meaning. The separate `iccbridge` selector produces the paired
+108-condition bridge shown above. Manifest fields record `study_version`,
+`calibration_version`, the calibration metric and target, both posterior
+reliabilities, the ICC diagnostics, $\sigma$, the variance ratio, and
+$\kappa(G)$ so results from the two generations cannot be silently conflated.
+
 # Returning to Studies 1--4: one calibration framework with focused sensitivities
 
 Study 5 directly evaluated the Study 2 data-generating model, so its estimator

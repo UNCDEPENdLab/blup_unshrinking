@@ -711,6 +711,791 @@ make_study4_design <- function() {
     )
 }
 
+# -------------------------------------------------------------------------
+# Amended (v2) fixed-covariance-shape designs
+# -------------------------------------------------------------------------
+
+#' Calibrate a standard Study 1--3 first-stage grid at fixed covariance shape.
+#'
+#' This helper is deliberately measurement-only. Structural coefficients are
+#' added by the study-specific wrappers after the target marginal covariance
+#' and Level-1 residual scale have been fixed.
+calibrate_shape_preserving_first_stage_grid <- function(
+    first_stage_grid,
+    slope_intercept_variance_ratio = 1,
+    calibration_target = "marginal_slope",
+    calibration_reference_n = 1001L) {
+  required <- c(
+    "mean_clus_size", "target_reliability", "marginal_rho",
+    "balance_mode", "min_clus_size", "highly_unbalanced_min_clus_size",
+    "highly_unbalanced_power", "r_structure", "r_rho"
+  )
+  missing <- setdiff(required, names(first_stage_grid))
+  if (length(missing) > 0L) {
+    stop(
+      "Shape-preserving first-stage grid is missing columns: ",
+      paste(missing, collapse = ", ")
+    )
+  }
+
+  lapply(seq_len(nrow(first_stage_grid)), function(i) {
+    condition <- first_stage_grid[i, , drop = FALSE]
+    reference <- make_reliability_reference_design(
+      mean_n_trial = condition$mean_clus_size[[1]],
+      sigma = 1,
+      balance_mode = condition$balance_mode[[1]],
+      min_n_trial = condition$min_clus_size[[1]],
+      highly_unbalanced_min_n_trial =
+        condition$highly_unbalanced_min_clus_size[[1]],
+      highly_unbalanced_power = condition$highly_unbalanced_power[[1]],
+      r_spec = condition_to_r_spec(condition),
+      n_reference = calibration_reference_n
+    )
+    calibration <- calibrate_shape_preserving_measurement(
+      target_value = condition$target_reliability[[1]],
+      Z_list = reference$Z_list,
+      R_shape_list = reference$R_list,
+      weights = reference$count_weights,
+      intercept_variance = fixed_params$tau0^2,
+      slope_intercept_variance_ratio = slope_intercept_variance_ratio,
+      intercept_slope_correlation = condition$marginal_rho[[1]],
+      calibration_target = calibration_target
+    )
+
+    dplyr::bind_cols(
+      condition,
+      tibble::tibble(
+        study_version = "v2",
+        calibration_version = calibration$calibration_version,
+        calibration_arm = paste0(
+          "shape_preserving_", calibration$calibration_target
+        ),
+        calibration_metric = calibration$calibration_target,
+        calibration_target = calibration$calibration_target,
+        calibration_target_value = calibration$calibration_target_value,
+        achieved_calibration_value =
+          calibration$achieved_calibration_value,
+        covariance_shape_fixed = TRUE,
+        calibration_tau0 = fixed_params$tau0,
+        calibration_tau0_sq = calibration$intercept_variance,
+        calibration_tau1_sq = calibration$slope_variance,
+        achieved_reliability =
+          calibration$achieved_marginal_slope_reliability,
+        achieved_partial_reliability =
+          calibration$achieved_residualized_slope_reliability,
+        intercept_icc = calibration$intercept_icc,
+        marginal_slope_icc = calibration$marginal_slope_icc,
+        conditional_slope_icc = calibration$conditional_slope_icc,
+        slope_variance_marginal = calibration$slope_variance,
+        residualized_slope_variance =
+          calibration$residualized_slope_variance,
+        slope_intercept_variance_ratio =
+          calibration$slope_intercept_variance_ratio,
+        G_condition_number = calibration$G_condition_number,
+        sigma = calibration$sigma,
+        tau1_marginal = sqrt(calibration$slope_variance),
+        rho = condition$marginal_rho[[1]],
+        G_marginal = list(calibration$G_marginal),
+        reference_mean_clus_size = reference$mean_trial_count,
+        reference_min_clus_size = reference$min_trial_count,
+        reference_max_clus_size = reference$max_trial_count,
+        calibration_reference_n = length(reference$trial_counts)
+      )
+    )
+  }) %>%
+    dplyr::bind_rows()
+}
+
+#' Build amended Study 1 (fixed covariance shape; marginal reliability target).
+make_study1_v2_design <- function(
+    slope_intercept_variance_ratio = 1) {
+  first_stage <- tidyr::crossing(
+    mean_clus_size = c(3L, 5L, 10L, 25L),
+    target_reliability = c(0.25, 0.5, 0.8),
+    marginal_rho = c(-0.50, 0, 0.50),
+    balance_mode = "balanced",
+    min_clus_size = 2L,
+    highly_unbalanced_min_clus_size = 2L,
+    highly_unbalanced_power = 3,
+    r_structure = "iid",
+    r_rho = NA_real_
+  ) %>%
+    calibrate_shape_preserving_first_stage_grid(
+      slope_intercept_variance_ratio = slope_intercept_variance_ratio
+    )
+
+  design <- tidyr::crossing(
+    first_stage,
+    study = "study1v2",
+    num_clus = c(30L, 50L, 100L, 150L, 300L),
+    standardized_beta_target = c(0, 0.2, 0.4, 0.6),
+    study_label = "BLUP as Outcome (v2 fixed shape)",
+    study_structure = "w"
+  )
+  structural_rows <- lapply(seq_len(nrow(design)), function(i) {
+    condition <- design[i, , drop = FALSE]
+    structural <- decompose_structural_slope(
+      list(G_marginal = condition$G_marginal[[1]]),
+      standardized_beta = condition$standardized_beta_target[[1]]
+    )
+    tibble::tibble(
+      standardized_beta = structural$standardized_beta,
+      structural_r2 = structural$structural_r_squared,
+      beta1w = structural$gamma_x_on_slope,
+      slope_variance_residual = structural$slope_variance_residual,
+      tau1 = structural$slope_sd_residual,
+      rho_residual = structural$intercept_slope_correlation_residual,
+      structural_residual_G_min_eigen = min(eigen(
+        structural$G_residual,
+        symmetric = TRUE,
+        only.values = TRUE
+      )$values)
+    )
+  }) %>%
+    dplyr::bind_rows()
+
+  dplyr::bind_cols(
+    dplyr::select(design, -G_marginal, -tau1_marginal),
+    structural_rows
+  )
+}
+
+#' Build amended Study 2 (fixed covariance shape; marginal reliability target).
+make_study2_v2_design <- function(
+    slope_intercept_variance_ratio = 1) {
+  first_stage <- tidyr::crossing(
+    mean_clus_size = c(3L, 5L, 10L, 25L),
+    target_reliability = c(0.25, 0.5, 0.8),
+    marginal_rho = c(-0.50, 0, 0.50),
+    balance_mode = "balanced",
+    min_clus_size = 2L,
+    highly_unbalanced_min_clus_size = 2L,
+    highly_unbalanced_power = 3,
+    r_structure = "iid",
+    r_rho = NA_real_
+  ) %>%
+    calibrate_shape_preserving_first_stage_grid(
+      slope_intercept_variance_ratio = slope_intercept_variance_ratio
+    )
+
+  design <- tidyr::crossing(
+    first_stage,
+    study = "study2v2",
+    num_clus = c(30L, 50L, 100L, 150L, 300L),
+    standardized_beta_target = c(0, 0.2, 0.4, 0.6),
+    structural_target = "intercept_slope",
+    study_label = "BLUP as Predictor (v2 fixed shape)",
+    study_structure = "z"
+  )
+  structural_rows <- lapply(seq_len(nrow(design)), function(i) {
+    condition <- design[i, , drop = FALSE]
+    structural <- calibrate_blup_predictor_effect(
+      G_marginal = condition$G_marginal[[1]],
+      standardized_slope_beta = condition$standardized_beta_target[[1]],
+      structural_target = condition$structural_target[[1]],
+      nuisance_intercept_beta = fixed_params$beta1z,
+      outcome_variance = fixed_params$z_variance
+    )
+    tibble::tibble(
+      standardized_beta = structural$standardized_slope_beta,
+      beta1z = structural$beta1_intercept,
+      beta2z = structural$beta2_slope,
+      structural_r2 = structural$total_structural_r_squared,
+      focal_unique_r2 = structural$focal_unique_r_squared,
+      outcome_residual_variance = structural$outcome_residual_variance
+    )
+  }) %>%
+    dplyr::bind_rows()
+
+  dplyr::bind_cols(
+    dplyr::select(design, -G_marginal),
+    structural_rows
+  ) %>%
+    dplyr::mutate(tau1 = .data$tau1_marginal) %>%
+    dplyr::select(-tau1_marginal)
+}
+
+#' Build amended Study 3 using the common calibration independently twice.
+make_study3_v2_design <- function(
+    slope_intercept_variance_ratio = 1) {
+  first_stage <- tidyr::crossing(
+    mean_clus_size = c(3L, 5L, 10L),
+    target_reliability = c(0.25, 0.8),
+    marginal_rho = c(0, 0.5),
+    balance_mode = "balanced",
+    min_clus_size = 2L,
+    highly_unbalanced_min_clus_size = 2L,
+    highly_unbalanced_power = 3,
+    r_structure = "iid",
+    r_rho = NA_real_
+  ) %>%
+    calibrate_shape_preserving_first_stage_grid(
+      slope_intercept_variance_ratio = slope_intercept_variance_ratio
+    )
+
+  y_calibration <- first_stage %>%
+    dplyr::transmute(
+      mean_clus_size_y = mean_clus_size,
+      target_reliability_y = target_reliability,
+      marginal_rho,
+      sigma_y = sigma,
+      achieved_reliability_y = achieved_reliability,
+      achieved_partial_reliability_y = achieved_partial_reliability,
+      intercept_icc_y = intercept_icc,
+      marginal_slope_icc_y = marginal_slope_icc,
+      conditional_slope_icc_y = conditional_slope_icc,
+      G_condition_number_y = G_condition_number,
+      slope_variance_marginal_y = slope_variance_marginal,
+      residualized_slope_variance_y = residualized_slope_variance,
+      tau1_y = tau1_marginal,
+      G_y_marginal = G_marginal,
+      reference_mean_clus_size_y = reference_mean_clus_size,
+      reference_min_clus_size_y = reference_min_clus_size,
+      reference_max_clus_size_y = reference_max_clus_size
+    )
+  q_calibration <- first_stage %>%
+    dplyr::transmute(
+      mean_clus_size_q = mean_clus_size,
+      target_reliability_q = target_reliability,
+      marginal_rho,
+      sigma_q = sigma,
+      achieved_reliability_q = achieved_reliability,
+      achieved_partial_reliability_q = achieved_partial_reliability,
+      intercept_icc_q = intercept_icc,
+      marginal_slope_icc_q = marginal_slope_icc,
+      conditional_slope_icc_q = conditional_slope_icc,
+      G_condition_number_q = G_condition_number,
+      slope_variance_marginal_q = slope_variance_marginal,
+      residualized_slope_variance_q = residualized_slope_variance,
+      tau1_q = tau1_marginal,
+      G_q_marginal = G_marginal,
+      reference_mean_clus_size_q = reference_mean_clus_size,
+      reference_min_clus_size_q = reference_min_clus_size,
+      reference_max_clus_size_q = reference_max_clus_size
+    )
+
+  design <- tidyr::crossing(
+    study = "study3v2",
+    num_clus = c(50L, 100L, 150L, 300L),
+    mean_clus_size_y = c(3L, 5L, 10L),
+    mean_clus_size_q = c(3L, 5L, 10L),
+    target_reliability_y = c(0.25, 0.8),
+    target_reliability_q = c(0.25, 0.8),
+    marginal_rho = c(0, 0.5),
+    standardized_beta_target = c(0, 0.2, 0.5),
+    structural_target = "intercept_slope",
+    study_label = "BLUP as Predictor and Outcome (v2 fixed shape)",
+    study_structure = "dual_process"
+  ) %>%
+    dplyr::left_join(
+      y_calibration,
+      by = c("mean_clus_size_y", "target_reliability_y", "marginal_rho")
+    ) %>%
+    dplyr::left_join(
+      q_calibration,
+      by = c("mean_clus_size_q", "target_reliability_q", "marginal_rho")
+    )
+
+  structural_rows <- lapply(seq_len(nrow(design)), function(i) {
+    condition <- design[i, , drop = FALSE]
+    structural <- calibrate_dual_process_effect(
+      G_predictor = condition$G_y_marginal[[1]],
+      G_outcome = condition$G_q_marginal[[1]],
+      standardized_slope_beta = condition$standardized_beta_target[[1]],
+      structural_target = condition$structural_target[[1]],
+      nuisance_intercept_standardized_beta =
+        fixed_params$theta0_standardized
+    )
+    tibble::tibble(
+      standardized_beta = structural$standardized_slope_beta,
+      standardized_theta0 = structural$standardized_intercept_beta,
+      theta0 = structural$theta0_intercept,
+      theta1 = structural$theta1_slope,
+      structural_r2 = structural$total_structural_r_squared,
+      focal_unique_r2 = structural$focal_unique_r_squared,
+      slope_variance_residual_q =
+        structural$outcome_slope_residual_variance,
+      tau1_residual_q = sqrt(structural$outcome_slope_residual_variance),
+      rho_residual_q = structural$outcome_residual_correlation,
+      structural_residual_G_min_eigen = min(eigen(
+        structural$G_outcome_residual,
+        symmetric = TRUE,
+        only.values = TRUE
+      )$values),
+      structural_joint_G_min_eigen = min(eigen(
+        structural$G_joint_marginal,
+        symmetric = TRUE,
+        only.values = TRUE
+      )$values)
+    )
+  }) %>%
+    dplyr::bind_rows()
+
+  dplyr::bind_cols(
+    dplyr::select(design, -G_y_marginal, -G_q_marginal),
+    structural_rows
+  ) %>%
+    dplyr::mutate(
+      study_version = "v2",
+      calibration_version = "shape_preserving_v2",
+      calibration_arm = "shape_preserving_marginal",
+      calibration_metric = "marginal_slope",
+      calibration_target = "marginal_slope",
+      covariance_shape_fixed = TRUE,
+      calibration_tau0 = fixed_params$tau0,
+      calibration_tau0_sq = fixed_params$tau0^2,
+      calibration_tau1_sq = fixed_params$tau0^2 *
+        slope_intercept_variance_ratio,
+      slope_intercept_variance_ratio = slope_intercept_variance_ratio,
+      G_condition_number = .data$G_condition_number_y,
+      balance_mode = "balanced",
+      min_clus_size = 2L,
+      highly_unbalanced_min_clus_size = 2L,
+      highly_unbalanced_power = 3,
+      r_structure = "iid",
+      r_rho = NA_real_
+    )
+}
+
+#' Calibrate one amended Study 4 information profile at fixed G.
+calibrate_study4_profile_v2 <- function(
+    information_profile,
+    target_reliability,
+    marginal_rho,
+    slope_intercept_variance_ratio = 1) {
+  spec <- study4_profile_spec(information_profile)
+  Z_list <- lapply(
+    spec$sizes,
+    study4_time_design,
+    information_matched = spec$information_matched
+  )
+  R_shape_list <- lapply(spec$sizes, diag)
+  calibration <- calibrate_shape_preserving_measurement(
+    target_value = target_reliability,
+    Z_list = Z_list,
+    R_shape_list = R_shape_list,
+    weights = spec$weights,
+    intercept_variance = fixed_params$tau0^2,
+    slope_intercept_variance_ratio = slope_intercept_variance_ratio,
+    intercept_slope_correlation = marginal_rho,
+    calibration_target = "marginal_slope"
+  )
+  type_reliability <- vapply(seq_along(Z_list), function(i) {
+    V_i <- posterior_random_effect_covariance(
+      calibration$G_marginal,
+      Z_list[[i]],
+      calibration$residual_covariances[[i]]
+    )
+    1 - V_i[2L, 2L] / calibration$G_marginal[2L, 2L]
+  }, numeric(1L))
+  type_partial_reliability <- vapply(seq_along(Z_list), function(i) {
+    expected_residualized_slope_reliability(
+      calibration$G_marginal,
+      list(Z_list[[i]]),
+      list(calibration$residual_covariances[[i]])
+    )
+  }, numeric(1L))
+  weighted_mean <- stats::weighted.mean(type_reliability, spec$weights)
+  weighted_variance <- stats::weighted.mean(
+    (type_reliability - weighted_mean)^2,
+    spec$weights
+  )
+  reliability_quartiles <- study4_weighted_quantile(
+    type_reliability,
+    spec$weights,
+    c(0.25, 0.75)
+  )
+  population_measurement <- Map(function(Z_i, R_i) {
+    sigma_i <- Z_i %*% calibration$G_marginal %*% t(Z_i) + R_i
+    A_i <- t(solve(sigma_i, Z_i %*% calibration$G_marginal))
+    R_inv_Z <- solve(R_i, Z_i)
+    list(
+      lambda = A_i %*% Z_i,
+      theta = A_i %*% R_i %*% t(A_i),
+      score_error_covariance = solve(crossprod(Z_i, R_inv_Z))
+    )
+  }, Z_list, calibration$residual_covariances)
+  measurement_diagnostics <- study4_measurement_matrix_summary(
+    lambda_matrices = lapply(population_measurement, `[[`, "lambda"),
+    theta_matrices = lapply(population_measurement, `[[`, "theta"),
+    score_error_covariances = lapply(
+      population_measurement,
+      `[[`,
+      "score_error_covariance"
+    ),
+    weights = spec$weights
+  )
+
+  list(
+    calibration = calibration,
+    profile = spec,
+    type_reliability = type_reliability,
+    type_partial_reliability = type_partial_reliability,
+    reliability_mean = weighted_mean,
+    reliability_sd = sqrt(weighted_variance),
+    reliability_iqr = diff(reliability_quartiles),
+    reliability_min = min(type_reliability),
+    reliability_max = max(type_reliability),
+    partial_reliability_mean = stats::weighted.mean(
+      type_partial_reliability,
+      spec$weights
+    ),
+    partial_reliability_min = min(type_partial_reliability),
+    partial_reliability_max = max(type_partial_reliability),
+    measurement_diagnostics = measurement_diagnostics
+  )
+}
+
+#' Build amended Study 4 (fixed covariance shape across information profiles).
+make_study4_v2_design <- function(
+    slope_intercept_variance_ratio = 1) {
+  primary <- tidyr::crossing(
+    study = "study4v2",
+    num_clus = c(50L, 150L, 300L),
+    target_reliability = c(0.25, 0.5, 0.8),
+    information_profile = c("homogeneous", "moderate", "severe"),
+    marginal_rho = c(0, 0.5),
+    standardized_beta_target = c(0, 0.4),
+    structural_target = "intercept_slope",
+    is_falsification_control = FALSE
+  )
+  information_matched_control <- tidyr::crossing(
+    study = "study4v2",
+    num_clus = c(50L, 150L, 300L),
+    target_reliability = 0.5,
+    information_profile = "severe_information_matched",
+    marginal_rho = 0,
+    standardized_beta_target = 0.4,
+    structural_target = "intercept_slope",
+    is_falsification_control = TRUE
+  )
+  design <- dplyr::bind_rows(primary, information_matched_control)
+
+  calibration_rows <- lapply(seq_len(nrow(design)), function(i) {
+    condition <- design[i, , drop = FALSE]
+    calibrated <- calibrate_study4_profile_v2(
+      information_profile = condition$information_profile[[1]],
+      target_reliability = condition$target_reliability[[1]],
+      marginal_rho = condition$marginal_rho[[1]],
+      slope_intercept_variance_ratio = slope_intercept_variance_ratio
+    )
+    cal <- calibrated$calibration
+    spec <- calibrated$profile
+    reliability <- calibrated$type_reliability
+    partial_reliability <- calibrated$type_partial_reliability
+    measurement <- calibrated$measurement_diagnostics
+    structural <- calibrate_blup_predictor_effect(
+      G_marginal = cal$G_marginal,
+      standardized_slope_beta = condition$standardized_beta_target[[1]],
+      structural_target = condition$structural_target[[1]],
+      nuisance_intercept_beta = fixed_params$beta1z,
+      outcome_variance = fixed_params$z_variance
+    )
+
+    tibble::tibble(
+      study_version = "v2",
+      calibration_version = cal$calibration_version,
+      calibration_arm = "shape_preserving_marginal",
+      calibration_metric = cal$calibration_target,
+      calibration_target = cal$calibration_target,
+      calibration_target_value = cal$calibration_target_value,
+      achieved_calibration_value = cal$achieved_calibration_value,
+      covariance_shape_fixed = TRUE,
+      mean_clus_size = stats::weighted.mean(spec$sizes, spec$weights),
+      profile_min_clus_size = min(spec$sizes),
+      profile_max_clus_size = max(spec$sizes),
+      profile_small_clus_size = min(spec$sizes),
+      profile_large_clus_size = max(spec$sizes),
+      profile_small_weight = spec$weights[[1L]],
+      profile_large_weight = if (length(spec$weights) > 1L) {
+        spec$weights[[length(spec$weights)]]
+      } else {
+        0
+      },
+      information_matched = spec$information_matched,
+      calibration_tau0 = fixed_params$tau0,
+      calibration_tau0_sq = cal$intercept_variance,
+      calibration_tau1_sq = cal$slope_variance,
+      achieved_reliability = cal$achieved_marginal_slope_reliability,
+      achieved_partial_reliability =
+        cal$achieved_residualized_slope_reliability,
+      intercept_icc = cal$intercept_icc,
+      marginal_slope_icc = cal$marginal_slope_icc,
+      conditional_slope_icc = cal$conditional_slope_icc,
+      reliability_sd = calibrated$reliability_sd,
+      reliability_iqr = calibrated$reliability_iqr,
+      reliability_min = calibrated$reliability_min,
+      reliability_max = calibrated$reliability_max,
+      reliability_small = reliability[[1L]],
+      reliability_large = reliability[[length(reliability)]],
+      partial_reliability_mean = calibrated$partial_reliability_mean,
+      partial_reliability_min = calibrated$partial_reliability_min,
+      partial_reliability_max = calibrated$partial_reliability_max,
+      partial_reliability_small = partial_reliability[[1L]],
+      partial_reliability_large =
+        partial_reliability[[length(partial_reliability)]],
+      population_lambda22_mean = measurement$lambda22_mean,
+      population_lambda22_min = measurement$lambda22_min,
+      population_lambda22_max = measurement$lambda22_max,
+      population_lambda_matrix_frobenius_rms_dispersion =
+        measurement$lambda_matrix_frobenius_rms_dispersion,
+      population_theta22_mean = measurement$theta22_mean,
+      population_theta22_min = measurement$theta22_min,
+      population_theta22_max = measurement$theta22_max,
+      population_theta_matrix_frobenius_rms_dispersion =
+        measurement$theta_matrix_frobenius_rms_dispersion,
+      population_ols_var22_mean = measurement$ols_var22_mean,
+      population_ols_var22_min = measurement$ols_var22_min,
+      population_ols_var22_max = measurement$ols_var22_max,
+      population_ols_cov_matrix_frobenius_rms_dispersion =
+        measurement$ols_cov_matrix_frobenius_rms_dispersion,
+      slope_variance_marginal = cal$slope_variance,
+      residualized_slope_variance = cal$residualized_slope_variance,
+      slope_intercept_variance_ratio =
+        cal$slope_intercept_variance_ratio,
+      G_condition_number = cal$G_condition_number,
+      sigma = cal$sigma,
+      tau1 = sqrt(cal$slope_variance),
+      rho = condition$marginal_rho[[1]],
+      standardized_beta = structural$standardized_slope_beta,
+      beta1z = structural$beta1_intercept,
+      beta2z = structural$beta2_slope,
+      structural_r2 = structural$total_structural_r_squared,
+      focal_unique_r2 = structural$focal_unique_r_squared,
+      outcome_residual_variance = structural$outcome_residual_variance
+    )
+  }) %>%
+    dplyr::bind_rows()
+
+  dplyr::bind_cols(design, calibration_rows) %>%
+    dplyr::mutate(
+      balance_mode = "heterogeneous_profile",
+      min_clus_size = .data$profile_min_clus_size,
+      highly_unbalanced_min_clus_size = .data$profile_min_clus_size,
+      highly_unbalanced_power = NA_real_,
+      r_structure = "iid",
+      r_rho = NA_real_,
+      study_label = "Heterogeneous Cluster Information (v2 fixed shape)",
+      study_structure = "z"
+    )
+}
+
+#' Crosswalk between ICC inputs and posterior slope reliability.
+#'
+#' The first family contains the amended VH posterior-reliability targets under
+#' sample-SD time scaling. The second contains Lai-style ICC inputs under the
+#' RMS time scaling used in the Study 1 supplement. Both hold the random-effect
+#' variance ratio fixed within a row, so ICC and posterior reliability become
+#' transparent re-expressions of the same regular covariance family.
+make_icc_posterior_reliability_crosswalk <- function(
+    vh_cluster_sizes = c(3L, 5L, 10L, 25L),
+    lai_cluster_sizes = c(3L, 10L, 25L),
+    reliability_targets = c(0.25, 0.5, 0.8),
+    icc_targets = c(0.05, 0.2, 0.5),
+    marginal_rhos = c(-0.5, 0, 0.5),
+    variance_ratios = c(0.5, 1, 2)) {
+  make_time_design <- function(n, scaling) {
+    if (identical(scaling, "vh_sample_sd")) {
+      return(make_reliability_time_design(n))
+    }
+    x <- seq(-1, 1, length.out = n)
+    x <- x / sqrt(mean(x^2))
+    cbind(intercept = 1, slope = x)
+  }
+  grids <- dplyr::bind_rows(
+    tidyr::crossing(
+      design_family = "VH v2 posterior reliability target",
+      time_standardization = "vh_sample_sd",
+      mean_clus_size = as.integer(vh_cluster_sizes),
+      marginal_rho = marginal_rhos,
+      slope_intercept_variance_ratio = variance_ratios,
+      calibration_metric = "marginal_slope",
+      calibration_target_value = reliability_targets
+    ),
+    tidyr::crossing(
+      design_family = "Lai-style ICC reference",
+      time_standardization = "lai_rms",
+      mean_clus_size = as.integer(lai_cluster_sizes),
+      marginal_rho = marginal_rhos,
+      slope_intercept_variance_ratio = variance_ratios,
+      calibration_metric = "intercept_icc",
+      calibration_target_value = icc_targets
+    )
+  )
+
+  lapply(seq_len(nrow(grids)), function(i) {
+    row <- grids[i, , drop = FALSE]
+    n_i <- row$mean_clus_size[[1]]
+    calibration <- calibrate_shape_preserving_measurement(
+      target_value = row$calibration_target_value[[1]],
+      Z_list = list(make_time_design(
+        n_i,
+        row$time_standardization[[1]]
+      )),
+      R_shape_list = list(diag(n_i)),
+      intercept_variance = fixed_params$tau0^2,
+      slope_intercept_variance_ratio =
+        row$slope_intercept_variance_ratio[[1]],
+      intercept_slope_correlation = row$marginal_rho[[1]],
+      calibration_target = row$calibration_metric[[1]]
+    )
+    dplyr::bind_cols(
+      row,
+      tibble::tibble(
+        sigma = calibration$sigma,
+        intercept_icc = calibration$intercept_icc,
+        marginal_slope_icc = calibration$marginal_slope_icc,
+        conditional_slope_icc = calibration$conditional_slope_icc,
+        achieved_marginal_reliability =
+          calibration$achieved_marginal_slope_reliability,
+        achieved_residualized_reliability =
+          calibration$achieved_residualized_slope_reliability,
+        G_condition_number = calibration$G_condition_number
+      )
+    )
+  }) %>%
+    dplyr::bind_rows()
+}
+
+#' Build a runnable ICC-versus-posterior-reliability bridge manifest.
+#'
+#' ICC anchors are chosen separately within each rho/reliability level so the
+#' two arms are identical at the reference cluster size m=10. The posterior-R
+#' arm recalibrates sigma at every m, whereas the ICC arm holds that reference
+#' ICC fixed across m. Differences away from m=10 therefore isolate the choice
+#' of what is held constant as cluster information changes.
+make_icc_reliability_bridge_design <- function(
+    reference_cluster_size = 10L,
+    slope_intercept_variance_ratio = 1) {
+  target_grid <- tidyr::crossing(
+    posterior_reliability_anchor = c(0.25, 0.5, 0.8),
+    marginal_rho = c(-0.5, 0, 0.5)
+  )
+  anchor_rows <- lapply(seq_len(nrow(target_grid)), function(i) {
+    row <- target_grid[i, , drop = FALSE]
+    anchor <- calibrate_shape_preserving_measurement(
+      target_value = row$posterior_reliability_anchor[[1]],
+      Z_list = list(make_reliability_time_design(reference_cluster_size)),
+      R_shape_list = list(diag(reference_cluster_size)),
+      intercept_variance = fixed_params$tau0^2,
+      slope_intercept_variance_ratio =
+        slope_intercept_variance_ratio,
+      intercept_slope_correlation = row$marginal_rho[[1]],
+      calibration_target = "marginal_slope"
+    )
+    dplyr::bind_cols(
+      row,
+      tibble::tibble(icc_anchor = anchor$intercept_icc)
+    )
+  }) %>%
+    dplyr::bind_rows()
+
+  first_stage_grid <- tidyr::crossing(
+    calibration_arm = c(
+      "posterior_reliability_targeted", "icc_anchored_at_m10"
+    ),
+    mean_clus_size = c(3L, 10L, 25L),
+    anchor_rows,
+    balance_mode = "balanced",
+    min_clus_size = 2L,
+    highly_unbalanced_min_clus_size = 2L,
+    highly_unbalanced_power = 3,
+    r_structure = "iid",
+    r_rho = NA_real_
+  )
+  calibrated <- lapply(seq_len(nrow(first_stage_grid)), function(i) {
+    condition <- first_stage_grid[i, , drop = FALSE]
+    n_i <- condition$mean_clus_size[[1]]
+    target_metric <- if (identical(
+      condition$calibration_arm[[1]],
+      "posterior_reliability_targeted"
+    )) "marginal_slope" else "intercept_icc"
+    target_value <- if (identical(target_metric, "marginal_slope")) {
+      condition$posterior_reliability_anchor[[1]]
+    } else {
+      condition$icc_anchor[[1]]
+    }
+    cal <- calibrate_shape_preserving_measurement(
+      target_value = target_value,
+      Z_list = list(make_reliability_time_design(n_i)),
+      R_shape_list = list(diag(n_i)),
+      intercept_variance = fixed_params$tau0^2,
+      slope_intercept_variance_ratio =
+        slope_intercept_variance_ratio,
+      intercept_slope_correlation = condition$marginal_rho[[1]],
+      calibration_target = target_metric
+    )
+    dplyr::bind_cols(
+      condition,
+      tibble::tibble(
+        study_version = "bridge",
+        calibration_version = "shape_preserving_v2",
+        calibration_metric = target_metric,
+        calibration_target = target_metric,
+        calibration_target_value = target_value,
+        achieved_calibration_value = cal$achieved_calibration_value,
+        covariance_shape_fixed = TRUE,
+        target_reliability =
+          condition$posterior_reliability_anchor[[1]],
+        achieved_reliability =
+          cal$achieved_marginal_slope_reliability,
+        achieved_partial_reliability =
+          cal$achieved_residualized_slope_reliability,
+        intercept_icc = cal$intercept_icc,
+        marginal_slope_icc = cal$marginal_slope_icc,
+        conditional_slope_icc = cal$conditional_slope_icc,
+        calibration_tau0 = fixed_params$tau0,
+        calibration_tau0_sq = cal$intercept_variance,
+        calibration_tau1_sq = cal$slope_variance,
+        sigma = cal$sigma,
+        slope_variance_marginal = cal$slope_variance,
+        residualized_slope_variance = cal$residualized_slope_variance,
+        slope_intercept_variance_ratio =
+          cal$slope_intercept_variance_ratio,
+        G_condition_number = cal$G_condition_number,
+        tau1 = sqrt(cal$slope_variance),
+        rho = condition$marginal_rho[[1]],
+        G_marginal = list(cal$G_marginal)
+      )
+    )
+  }) %>%
+    dplyr::bind_rows()
+
+  design <- tidyr::crossing(
+    calibrated,
+    study = "iccbridge",
+    num_clus = 100L,
+    standardized_beta_target = c(0, 0.4),
+    structural_target = "intercept_slope",
+    study_label = "ICC versus posterior reliability bridge",
+    study_structure = "z"
+  )
+  structural_rows <- lapply(seq_len(nrow(design)), function(i) {
+    condition <- design[i, , drop = FALSE]
+    structural <- calibrate_blup_predictor_effect(
+      G_marginal = condition$G_marginal[[1]],
+      standardized_slope_beta = condition$standardized_beta_target[[1]],
+      structural_target = condition$structural_target[[1]],
+      nuisance_intercept_beta = fixed_params$beta1z,
+      outcome_variance = fixed_params$z_variance
+    )
+    tibble::tibble(
+      standardized_beta = structural$standardized_slope_beta,
+      beta1z = structural$beta1_intercept,
+      beta2z = structural$beta2_slope,
+      structural_r2 = structural$total_structural_r_squared,
+      focal_unique_r2 = structural$focal_unique_r_squared,
+      outcome_residual_variance = structural$outcome_residual_variance
+    )
+  }) %>%
+    dplyr::bind_rows()
+
+  dplyr::bind_cols(
+    dplyr::select(design, -G_marginal),
+    structural_rows
+  )
+}
+
 #' Build Study 5: a matched-reliability calibration bridge.
 #'
 #' @details
@@ -786,24 +1571,22 @@ make_study5_design <- function() {
       calibration_metric <- if (identical(
         arm, "shape_preserving_marginal"
       )) "marginal_slope" else "residualized_slope"
-      G <- make_random_effect_covariance(
-        intercept_variance = shape_variance,
-        slope_variance = shape_variance,
-        intercept_slope_correlation = condition$marginal_rho[[1]]
-      )
-      residual_calibration <- calibrate_residual_scale(
-        target_reliability = target,
-        G = G,
+      shape_calibration <- calibrate_shape_preserving_measurement(
+        target_value = target,
         Z_list = reference$Z_list,
         R_shape_list = reference$R_list,
         weights = reference$count_weights,
-        reliability_measure = calibration_metric
+        intercept_variance = shape_variance,
+        slope_intercept_variance_ratio = 1,
+        intercept_slope_correlation = condition$marginal_rho[[1]],
+        calibration_target = calibration_metric
       )
-      sigma <- residual_calibration$sigma
+      G <- shape_calibration$G_marginal
+      sigma <- shape_calibration$sigma
       achieved_marginal <-
-        residual_calibration$achieved_marginal_slope_reliability
+        shape_calibration$achieved_marginal_slope_reliability
       achieved_partial <-
-        residual_calibration$achieved_residualized_slope_reliability
+        shape_calibration$achieved_residualized_slope_reliability
     }
 
     residualized_variance <-
@@ -816,6 +1599,14 @@ make_study5_design <- function() {
       condition,
       tibble::tibble(
         calibration_metric = calibration_metric,
+        calibration_target = calibration_metric,
+        calibration_target_value = target,
+        calibration_version = if (identical(arm, "current_g22")) {
+          "legacy_solve_tau1_sq"
+        } else {
+          "shape_preserving_v2"
+        },
+        covariance_shape_fixed = !identical(arm, "current_g22"),
         calibration_tau0 = fixed_params$tau0,
         sigma = sigma,
         achieved_calibration_reliability = achieved_calibration,
@@ -825,6 +1616,8 @@ make_study5_design <- function() {
         residualized_slope_variance = residualized_variance,
         slope_intercept_variance_ratio = G[2L, 2L] / G[1L, 1L],
         G_condition_number = kappa(G, exact = TRUE),
+        intercept_icc = G[1L, 1L] / (G[1L, 1L] + sigma^2),
+        marginal_slope_icc = G[2L, 2L] / (G[2L, 2L] + sigma^2),
         conditional_slope_icc =
           residualized_variance / (residualized_variance + sigma^2),
         tau1 = sqrt(G[2L, 2L]),
@@ -875,6 +1668,13 @@ make_study5_design <- function() {
   )
 }
 
+# Explicit legacy aliases make it possible to call the original one-coordinate
+# solve directly even after the amended wrappers become the preferred designs.
+make_study1_legacy_design <- make_study1_design
+make_study2_legacy_design <- make_study2_design
+make_study3_legacy_design <- make_study3_design
+make_study4_legacy_design <- make_study4_design
+
 study_condition_counts <- function() {
   c(
     study1 = 5L * 4L * 3L * 3L * 4L,
@@ -882,35 +1682,78 @@ study_condition_counts <- function() {
     study3 = 4L * 3L * 3L * 2L * 2L * 2L * 3L,
     study4 = (3L * 3L * 3L * 2L * 2L) + 3L,
     study0 = 1L,
-    study5 = 3L * 2L * 2L * 3L
+    study5 = 3L * 2L * 2L * 3L,
+    study1v2 = 5L * 4L * 3L * 3L * 4L,
+    study2v2 = 4L * 3L * 3L * 5L * 4L,
+    study3v2 = 4L * 3L * 3L * 2L * 2L * 2L * 3L,
+    study4v2 = (3L * 3L * 3L * 2L * 2L) + 3L,
+    iccbridge = 2L * 3L * 3L * 3L * 2L
   )
 }
 
 select_design <- function(study_arg = "all", max_conditions = NA_integer_) {
-  study_arg <- tolower(study_arg)
-  requested <- if (identical(study_arg, "all")) {
-    1:5
-  } else {
-    as.integer(unlist(strsplit(gsub("study", "", study_arg, fixed = TRUE), ",")))
-  }
-  if (anyNA(requested) || any(!(requested %in% 0:5))) {
-    stop("No study conditions selected. Use `all`, `0`, `1`, `2`, `3`, `4`, `5`, or a comma-separated combination like `1,2`.")
+  study_arg <- tolower(trimws(as.character(study_arg[[1]])))
+  legacy_primary <- paste0("study", 1:5)
+  amended_primary <- paste0("study", 1:4, "v2")
+  requested <- switch(
+    study_arg,
+    all = legacy_primary,
+    legacy = legacy_primary,
+    alllegacy = legacy_primary,
+    v2 = amended_primary,
+    amended = amended_primary,
+    allv2 = amended_primary,
+    allversions = c(legacy_primary, amended_primary, "iccbridge"),
+    all_versions = c(legacy_primary, amended_primary, "iccbridge"),
+    {
+      tokens <- trimws(unlist(strsplit(study_arg, ",", fixed = TRUE)))
+      vapply(tokens, function(token) {
+        token <- sub("^study", "", token)
+        switch(
+          token,
+          `0` = "study0",
+          `1` = "study1",
+          `2` = "study2",
+          `3` = "study3",
+          `4` = "study4",
+          `5` = "study5",
+          `1v2` = "study1v2",
+          `2v2` = "study2v2",
+          `3v2` = "study3v2",
+          `4v2` = "study4v2",
+          bridge = "iccbridge",
+          iccbridge = "iccbridge",
+          NA_character_
+        )
+      }, character(1L))
+    }
+  )
+  if (length(requested) == 0L || anyNA(requested)) {
+    stop(paste0(
+      "No study conditions selected. Use `all` for the original Studies 1--5, ",
+      "`allv2` for amended Studies 1--4, `1`--`5`, `1v2`--`4v2`, ",
+      "`iccbridge`, or a comma-separated combination."
+    ))
   }
 
   builders <- list(
-    make_study0_design,
-    make_study1_design,
-    make_study2_design,
-    make_study3_design,
-    make_study4_design,
-    make_study5_design
+    study0 = make_study0_design,
+    study1 = make_study1_legacy_design,
+    study2 = make_study2_legacy_design,
+    study3 = make_study3_legacy_design,
+    study4 = make_study4_legacy_design,
+    study5 = make_study5_design,
+    study1v2 = make_study1_v2_design,
+    study2v2 = make_study2_v2_design,
+    study3v2 = make_study3_v2_design,
+    study4v2 = make_study4_v2_design,
+    iccbridge = make_icc_reliability_bridge_design
   )
   counts <- study_condition_counts()
   offsets <- c(0L, cumsum(counts)[-length(counts)])
   names(offsets) <- names(counts)
-  built <- lapply(requested, function(i) {
-    study_name <- paste0("study", i)
-    study_design <- builders[[i + 1]]()
+  built <- lapply(requested, function(study_name) {
+    study_design <- builders[[study_name]]()
     if (is.null(study_design) || nrow(study_design) == 0L) {
       return(tibble::tibble())
     }
@@ -919,6 +1762,26 @@ select_design <- function(study_arg = "all", max_conditions = NA_integer_) {
         "Canonical condition count is out of sync for ", study_name,
         ": expected ", counts[[study_name]], ", got ", nrow(study_design), "."
       )
+    }
+    if (!("study_version" %in% names(study_design))) {
+      study_design$study_version <- if (study_name %in% paste0("study", 1:4)) {
+        "legacy"
+      } else if (identical(study_name, "study5")) {
+        "bridge"
+      } else {
+        "legacy_smoke"
+      }
+    }
+    if (!("calibration_version" %in% names(study_design))) {
+      study_design$calibration_version <- if (
+        study_name %in% paste0("study", 1:4)
+      ) {
+        "legacy_solve_tau1_sq"
+      } else if (identical(study_name, "study5")) {
+        "study5_calibration_bridge"
+      } else {
+        "legacy_solve_tau1_sq"
+      }
     }
     study_design %>%
       dplyr::mutate(
@@ -933,7 +1796,7 @@ select_design <- function(study_arg = "all", max_conditions = NA_integer_) {
   }
 
   if (nrow(design) == 0L) {
-    stop("No study conditions selected. Use `all`, `0`, `1`, `2`, `3`, `4`, `5`, or a comma-separated combination like `1,2`.")
+    stop("No study conditions selected.")
   }
 
   design

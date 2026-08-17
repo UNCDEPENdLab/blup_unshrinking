@@ -121,6 +121,30 @@ select_lai_measurement_columns <- function(stage1_components, n_re, prefix = "")
   out
 }
 
+#' Order a 2-by-2 loading matrix for OpenMx `unique.bivariate` paths.
+#'
+#' @details
+#' The Stage-1 columns use ordinary row/column subscripts: `lambda12` is row 1,
+#' column 2 of the loading matrix, so the natural row-major listing is
+#' `lambda11, lambda12, lambda21, lambda22`. In contrast,
+#' `mxPath(..., connect = "unique.bivariate")` fills the RAM `A` matrix in
+#' column-major order. It therefore requires
+#' `lambda11, lambda21, lambda12, lambda22`. Supplying row-major order silently
+#' transposes the two off-diagonal loadings.
+#'
+#' All bivariate 2S-PA and 2S-PAA wrappers use this helper for both fixed values
+#' and definition-variable labels so the OpenMx-specific ordering is explicit
+#' and cannot drift between model variants.
+#'
+#' @param prefix Optional column-name prefix, such as `"q_"` for the outcome
+#'   process in the dual-process model.
+#'
+#' @return Character vector of loading-column names in the column-major order
+#' required by OpenMx.
+openmx_bivariate_loading_columns <- function(prefix = "") {
+  paste0(prefix, c("lambda11", "lambda21", "lambda12", "lambda22"))
+}
+
 #' Compute Lai-style EB measurement-model inputs from a Stage-1 fit.
 #'
 #' @details
@@ -614,11 +638,12 @@ extract_mx_stats <- function(mx_fit, algebra_name = "xstd_u1", ci_multiplier = s
 #'
 #' @return A one-row tibble from `extract_mx_stats()` for `gamma_hat`.
 fit_lai_2spa <- function(stage2_df, use_average = FALSE) {
+  loading_cols <- openmx_bivariate_loading_columns()
   if (isTRUE(use_average)) {
-    loading_arg <- list(values = colMeans(stage2_df[, c("lambda11", "lambda12", "lambda21", "lambda22")], na.rm = TRUE))
+    loading_arg <- list(values = colMeans(stage2_df[, loading_cols], na.rm = TRUE))
     theta_arg <- list(values = colMeans(stage2_df[, c("theta11", "theta12", "theta22")], na.rm = TRUE))
   } else {
-    loading_arg <- list(labels = paste0("data.", c("lambda11", "lambda12", "lambda21", "lambda22")))
+    loading_arg <- list(labels = paste0("data.", loading_cols))
     theta_arg <- list(labels = paste0("data.", c("theta11", "theta12", "theta22")))
   }
 
@@ -707,11 +732,12 @@ fit_lai_2spa_observed_outcome <- function(
       0
     }
   }
+  loading_cols <- openmx_bivariate_loading_columns()
   if (isTRUE(use_average)) {
-    loading_arg <- list(values = colMeans(stage2_df[, c("lambda11", "lambda12", "lambda21", "lambda22")], na.rm = TRUE))
+    loading_arg <- list(values = colMeans(stage2_df[, loading_cols], na.rm = TRUE))
     theta_arg <- list(values = colMeans(stage2_df[, c("theta11", "theta12", "theta22")], na.rm = TRUE))
   } else {
-    loading_arg <- list(labels = paste0("data.", c("lambda11", "lambda12", "lambda21", "lambda22")))
+    loading_arg <- list(labels = paste0("data.", loading_cols))
     theta_arg <- list(labels = paste0("data.", c("theta11", "theta12", "theta22")))
   }
   target_algebra <- if (is.null(reporting_scale)) {
@@ -791,13 +817,14 @@ fit_lai_2spa_observed_outcome <- function(
 #'
 #' @return A one-row tibble from `extract_mx_stats()` for `xstd_u1`.
 fit_lai_2spa_disparate <- function(stage2_df, use_average = FALSE) {
+  loading_cols <- openmx_bivariate_loading_columns()
   if (isTRUE(use_average)) {
-    loading_arg <- list(values = colMeans(stage2_df[, c("lambda11", "lambda12", "lambda21", "lambda22")], na.rm = TRUE))
+    loading_arg <- list(values = colMeans(stage2_df[, loading_cols], na.rm = TRUE))
     theta_arg <- list(values = colMeans(stage2_df[, c("theta11", "theta12", "theta22")], na.rm = TRUE))
     z_loading_arg <- list(values = mean(stage2_df$z_lambda11, na.rm = TRUE))
     z_theta_arg <- list(values = mean(stage2_df$z_theta11, na.rm = TRUE))
   } else {
-    loading_arg <- list(labels = paste0("data.", c("lambda11", "lambda12", "lambda21", "lambda22")))
+    loading_arg <- list(labels = paste0("data.", loading_cols))
     theta_arg <- list(labels = paste0("data.", c("theta11", "theta12", "theta22")))
     z_loading_arg <- list(labels = "data.z_lambda11")
     z_theta_arg <- list(labels = "data.z_theta11")
@@ -843,9 +870,9 @@ fit_lai_2spa_dual_process <- function(
     theta0_start = 0,
     theta1_start = 0,
     reporting_scale = NULL) {
-  y_loading_cols <- c("lambda11", "lambda12", "lambda21", "lambda22")
+  y_loading_cols <- openmx_bivariate_loading_columns()
   y_theta_cols <- c("theta11", "theta12", "theta22")
-  q_loading_cols <- paste0("q_", y_loading_cols)
+  q_loading_cols <- openmx_bivariate_loading_columns("q_")
   q_theta_cols <- paste0("q_", y_theta_cols)
 
   if (isTRUE(use_average)) {

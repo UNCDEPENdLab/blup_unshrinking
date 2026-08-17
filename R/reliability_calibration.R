@@ -471,6 +471,155 @@ calibrate_residual_scale <- function(
   )
 }
 
+#' Calibrate a measurement process while holding covariance shape fixed.
+#'
+#' @details
+#' This is the shared calibration entry point for the amended Vig--Hallquist
+#' studies. It fixes the population random-effect covariance geometry---the
+#' intercept variance, slope/intercept variance ratio, and intercept--slope
+#' correlation---and varies only the common Level-1 residual scale. The target
+#' may be marginal posterior slope reliability, posterior reliability of the
+#' slope residualized on the intercept, or the time-zero/intercept ICC.
+#'
+#' The ICC parameterization and posterior-reliability parameterization
+#' therefore traverse the same fixed-shape DGM family. They differ in which
+#' member of that family is held constant when cluster design changes.
+#'
+#' @param target_value Target value strictly between zero and one.
+#' @param Z_list Reference random-effect design matrices.
+#' @param R_shape_list Matching unit-diagonal residual correlation matrices.
+#' @param weights Optional nonnegative reference-cluster weights.
+#' @param intercept_variance Fixed marginal random-intercept variance.
+#' @param slope_intercept_variance_ratio Fixed ratio `G[2,2] / G[1,1]`.
+#' @param intercept_slope_correlation Fixed marginal correlation.
+#' @param calibration_target One of `"marginal_slope"`,
+#'   `"residualized_slope"`, or `"intercept_icc"`.
+#' @param tolerance Numerical tolerance passed to posterior-reliability
+#'   calibration and used for validation.
+#'
+#' @return A list containing the fixed `G`, solved `sigma`, scaled residual
+#'   covariance matrices, both posterior reliabilities, ICC diagnostics, and
+#'   covariance-geometry diagnostics.
+calibrate_shape_preserving_measurement <- function(
+    target_value,
+    Z_list,
+    R_shape_list,
+    weights = NULL,
+    intercept_variance = 0.81,
+    slope_intercept_variance_ratio = 1,
+    intercept_slope_correlation = 0,
+    calibration_target = c(
+      "marginal_slope", "residualized_slope", "intercept_icc"
+    ),
+    tolerance = 1e-10) {
+  calibration_target <- match.arg(calibration_target)
+  target_value <- as.numeric(target_value[[1L]])
+  intercept_variance <- as.numeric(intercept_variance[[1L]])
+  slope_intercept_variance_ratio <- as.numeric(
+    slope_intercept_variance_ratio[[1L]]
+  )
+  intercept_slope_correlation <- as.numeric(
+    intercept_slope_correlation[[1L]]
+  )
+
+  if (!is.finite(target_value) || target_value <= 0 || target_value >= 1) {
+    stop("`target_value` must be strictly between zero and one.")
+  }
+  if (!is.finite(intercept_variance) || intercept_variance <= 0 ||
+      !is.finite(slope_intercept_variance_ratio) ||
+      slope_intercept_variance_ratio <= 0) {
+    stop("The fixed covariance variances and ratio must be positive.")
+  }
+  if (length(Z_list) == 0L || length(Z_list) != length(R_shape_list)) {
+    stop("`Z_list` and `R_shape_list` must be nonempty lists of equal length.")
+  }
+  unit_diagonal <- vapply(
+    R_shape_list,
+    function(R_shape) {
+      is.matrix(R_shape) && all(is.finite(R_shape)) &&
+        max(abs(diag(R_shape) - 1)) <= sqrt(tolerance)
+    },
+    logical(1L)
+  )
+  if (!all(unit_diagonal)) {
+    stop(
+      "`R_shape_list` must contain unit-diagonal residual correlation matrices."
+    )
+  }
+
+  G <- make_random_effect_covariance(
+    intercept_variance = intercept_variance,
+    slope_variance = intercept_variance * slope_intercept_variance_ratio,
+    intercept_slope_correlation = intercept_slope_correlation
+  )
+
+  if (identical(calibration_target, "intercept_icc")) {
+    # ICC = tau0^2 / (tau0^2 + sigma^2). Holding G fixed and solving sigma is
+    # scale-equivalent to Lai's total-variance-one parameterization.
+    sigma <- sqrt(intercept_variance * (1 - target_value) / target_value)
+    residual_covariances <- lapply(
+      R_shape_list,
+      function(R_shape) sigma^2 * R_shape
+    )
+    achieved_marginal <- expected_slope_reliability(
+      G, Z_list, residual_covariances, weights = weights
+    )
+    achieved_residualized <- expected_residualized_slope_reliability(
+      G, Z_list, residual_covariances, weights = weights
+    )
+  } else {
+    residual_calibration <- calibrate_residual_scale(
+      target_reliability = target_value,
+      G = G,
+      Z_list = Z_list,
+      R_shape_list = R_shape_list,
+      weights = weights,
+      reliability_measure = calibration_target,
+      tolerance = tolerance
+    )
+    sigma <- residual_calibration$sigma
+    residual_covariances <- residual_calibration$residual_covariances
+    achieved_marginal <-
+      residual_calibration$achieved_marginal_slope_reliability
+    achieved_residualized <-
+      residual_calibration$achieved_residualized_slope_reliability
+  }
+
+  residualized_slope_variance <-
+    G[2L, 2L] - G[1L, 2L]^2 / G[1L, 1L]
+  intercept_icc <- G[1L, 1L] / (G[1L, 1L] + sigma^2)
+  marginal_slope_icc <- G[2L, 2L] / (G[2L, 2L] + sigma^2)
+  conditional_slope_icc <- residualized_slope_variance /
+    (residualized_slope_variance + sigma^2)
+  achieved_calibration_value <- switch(
+    calibration_target,
+    marginal_slope = achieved_marginal,
+    residualized_slope = achieved_residualized,
+    intercept_icc = intercept_icc
+  )
+
+  list(
+    calibration_version = "shape_preserving_v2",
+    calibration_target = calibration_target,
+    calibration_target_value = target_value,
+    achieved_calibration_value = achieved_calibration_value,
+    achieved_marginal_slope_reliability = achieved_marginal,
+    achieved_residualized_slope_reliability = achieved_residualized,
+    intercept_icc = intercept_icc,
+    marginal_slope_icc = marginal_slope_icc,
+    conditional_slope_icc = conditional_slope_icc,
+    intercept_variance = G[1L, 1L],
+    slope_variance = G[2L, 2L],
+    residualized_slope_variance = residualized_slope_variance,
+    slope_intercept_variance_ratio = G[2L, 2L] / G[1L, 1L],
+    intercept_slope_correlation = intercept_slope_correlation,
+    G_condition_number = kappa(G, exact = TRUE),
+    sigma = sigma,
+    G_marginal = G,
+    residual_covariances = residual_covariances
+  )
+}
+
 #' Solve for marginal slope variance from a posterior-reliability target.
 #'
 #' @details

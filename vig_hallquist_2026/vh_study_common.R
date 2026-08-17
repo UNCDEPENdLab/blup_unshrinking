@@ -424,6 +424,11 @@ study_methods_for_condition <- function(condition) {
     study3 = study3_methods(),
     study4 = study4_methods(),
     study5 = study5_methods(),
+    study1v2 = study1_methods(),
+    study2v2 = study2_methods(),
+    study3v2 = study3_methods(),
+    study4v2 = study4_methods(),
+    iccbridge = study2_methods(),
     stop("Unsupported study key: ", study_key)
   )
 }

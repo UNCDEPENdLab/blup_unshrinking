@@ -2,10 +2,11 @@
 
 #' ---
 #' title: "Vig & Hallquist 2026 Random Effects Simulation"
-#' description: "Five simulation studies including: (1) RE as outcome,
+#' description: "Legacy and amended simulation studies including: (1) RE as outcome,
 #'               (2) RE as predictor, (3) RE as predictor and outcome,
 #'               (4) heterogeneous cluster information and reliability,
-#'               (5) matched reliability calibration bridge"
+#'               (5) matched reliability calibration bridge, and an
+#'               ICC-versus-posterior-reliability bridge"
 #' ---
 
 # TODO: check these exports

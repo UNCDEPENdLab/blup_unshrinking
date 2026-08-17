@@ -191,17 +191,24 @@ get_condition_file_paths <- function(out_dir, condition_id) {
 summarize_results_df <- function(results) {
   design_cols <- intersect(
     c(
-      "condition_id", "study", "method", "method_role", "num_clus", "mean_clus_size",
+      "condition_id", "study", "study_version", "calibration_version",
+      "method", "method_role", "num_clus", "mean_clus_size",
       "target_reliability", "achieved_reliability", "marginal_rho",
-      "calibration_arm", "calibration_metric",
+      "calibration_arm", "calibration_metric", "calibration_target",
+      "calibration_target_value", "achieved_calibration_value",
+      "covariance_shape_fixed", "posterior_reliability_anchor", "icc_anchor",
       "target_calibration_reliability", "achieved_calibration_reliability",
       "achieved_partial_reliability", "slope_variance_marginal",
       "residualized_slope_variance", "slope_intercept_variance_ratio",
-      "G_condition_number", "conditional_slope_icc",
+      "G_condition_number", "intercept_icc", "marginal_slope_icc",
+      "conditional_slope_icc",
       "standardized_beta_target", "structural_target", "structural_r2",
       "focal_unique_r2", "mean_clus_size_y", "mean_clus_size_q",
       "target_reliability_y", "target_reliability_q",
       "achieved_reliability_y", "achieved_reliability_q",
+      "achieved_partial_reliability_y", "achieved_partial_reliability_q",
+      "intercept_icc_y", "intercept_icc_q",
+      "conditional_slope_icc_y", "conditional_slope_icc_q",
       "balance_mode", "r_structure", "r_rho", "sigma", "sigma_y", "sigma_q",
       "information_profile", "is_falsification_control", "information_matched",
       "profile_min_clus_size", "profile_max_clus_size",
@@ -319,14 +326,18 @@ summarize_stage1_problem_df <- function(results) {
 
   design_cols <- intersect(
     c(
-      "condition_id", "study", "method", "method_role", "stage1_singular_problem",
+      "condition_id", "study", "study_version", "calibration_version",
+      "method", "method_role", "stage1_singular_problem",
       "num_clus", "mean_clus_size", "target_reliability",
       "achieved_reliability", "marginal_rho", "standardized_beta_target",
-      "calibration_arm", "calibration_metric",
+      "calibration_arm", "calibration_metric", "calibration_target",
+      "calibration_target_value", "achieved_calibration_value",
+      "covariance_shape_fixed", "posterior_reliability_anchor", "icc_anchor",
       "target_calibration_reliability", "achieved_calibration_reliability",
       "achieved_partial_reliability", "slope_variance_marginal",
       "residualized_slope_variance", "slope_intercept_variance_ratio",
-      "G_condition_number", "conditional_slope_icc",
+      "G_condition_number", "intercept_icc", "marginal_slope_icc",
+      "conditional_slope_icc",
       "structural_target", "structural_r2", "focal_unique_r2",
       "mean_clus_size_y", "mean_clus_size_q",
       "target_reliability_y", "target_reliability_q",
@@ -450,14 +461,18 @@ summarize_issue_df <- function(results) {
 
   design_cols <- intersect(
     c(
-      "condition_id", "study", "method", "method_role", "mx_issue_class", "num_clus",
+      "condition_id", "study", "study_version", "calibration_version",
+      "method", "method_role", "mx_issue_class", "num_clus",
       "mean_clus_size", "target_reliability", "achieved_reliability",
       "marginal_rho", "standardized_beta_target", "structural_target",
-      "calibration_arm", "calibration_metric",
+      "calibration_arm", "calibration_metric", "calibration_target",
+      "calibration_target_value", "achieved_calibration_value",
+      "covariance_shape_fixed", "posterior_reliability_anchor", "icc_anchor",
       "target_calibration_reliability", "achieved_calibration_reliability",
       "achieved_partial_reliability", "slope_variance_marginal",
       "residualized_slope_variance", "slope_intercept_variance_ratio",
-      "G_condition_number", "conditional_slope_icc",
+      "G_condition_number", "intercept_icc", "marginal_slope_icc",
+      "conditional_slope_icc",
       "structural_r2", "focal_unique_r2", "balance_mode", "r_structure",
       "r_rho", "sigma", "mean_clus_size_y", "mean_clus_size_q",
       "target_reliability_y", "target_reliability_q",
@@ -552,23 +567,35 @@ read_replication_results_file <- function(path) {
       "stage1_y_re_corr", "stage1_y_eb_corr", "stage1_y_design_kappa",
       "stage1_q_re_corr", "stage1_q_eb_corr", "stage1_q_design_kappa",
       "target_reliability", "achieved_reliability", "marginal_rho",
+      "calibration_target_value", "achieved_calibration_value",
+      "posterior_reliability_anchor", "icc_anchor",
       "target_calibration_reliability", "achieved_calibration_reliability",
       "achieved_partial_reliability", "slope_variance_marginal",
       "residualized_slope_variance", "slope_intercept_variance_ratio",
-      "G_condition_number", "conditional_slope_icc",
+      "G_condition_number", "intercept_icc", "marginal_slope_icc",
+      "conditional_slope_icc", "calibration_tau0", "calibration_tau0_sq",
+      "calibration_tau1_sq", "sigma",
       "standardized_beta_target", "structural_r2", "focal_unique_r2",
       "tau1", "beta1z", "beta2z", "outcome_residual_variance",
       "target_reliability_y", "target_reliability_q",
       "achieved_reliability_y", "achieved_reliability_q",
+      "achieved_partial_reliability_y", "achieved_partial_reliability_q",
+      "intercept_icc_y", "intercept_icc_q",
+      "marginal_slope_icc_y", "marginal_slope_icc_q",
+      "conditional_slope_icc_y", "conditional_slope_icc_q",
       "tau1_y", "tau1_q", "theta0", "theta1",
       "standardized_theta0", "slope_variance_marginal_y",
       "slope_variance_marginal_q", "slope_variance_residual_q",
       "tau1_residual_q", "rho_residual_q", "sigma_y", "sigma_q",
+      "structural_residual_G_min_eigen", "structural_joint_G_min_eigen",
       "sigma2", "var_u1", "sigma_z", "fuller_lambda1", "fuller_lambda2",
       "fuller_sigma2", "fuller_weight_min", "fuller_weight_max",
       "fuller_correction_c", "profile_small_weight", "profile_large_weight",
       "reliability_sd", "reliability_iqr", "reliability_min", "reliability_max",
       "reliability_small", "reliability_large",
+      "partial_reliability_mean", "partial_reliability_min",
+      "partial_reliability_max", "partial_reliability_small",
+      "partial_reliability_large",
       "population_lambda22_mean", "population_lambda22_min",
       "population_lambda22_max",
       "population_lambda_matrix_frobenius_rms_dispersion",
@@ -629,6 +656,7 @@ read_replication_results_file <- function(path) {
       "stage1_y_singular_problem", "stage1_y_lmer_singular",
       "stage1_q_singular_problem", "stage1_q_lmer_singular",
       "is_falsification_control", "information_matched",
+      "covariance_shape_fixed",
       fuller_logical_cols
     ),
     names(out)
@@ -750,7 +778,7 @@ condition_output_is_complete <- function(
 #' Dispatch one replication to the correct study module.
 #'
 #' @param condition One-row condition tibble with a `study` column equal to
-#'  `"study0"`, `"study1"`, `"study2"`, `"study3"`, `"study4"`, or `"study5"`.
+#'  a legacy, amended-v2, Study 5, or ICC-bridge study key.
 #'
 #' @return A replication-level result tibble from the corresponding
 #'   `run_study*_rep()` function.
@@ -764,6 +792,11 @@ run_study_rep <- function(condition) {
     study3 = run_study3_rep(condition),
     study4 = run_study4_rep(condition),
     study5 = run_study5_rep(condition),
+    study1v2 = run_study1_rep(condition),
+    study2v2 = run_study2_rep(condition),
+    study3v2 = run_study3_rep(condition),
+    study4v2 = run_study4_rep(condition),
+    iccbridge = run_study2_rep(condition),
     stop("Unsupported VH study key: ", study_key)
   )
 }
@@ -810,6 +843,7 @@ vig_hallquist_parallel_exports <- function() {
     "extract_stage1_components", "extract_stage1_components.merMod", "extract_stage1_components.lme",
     "extract_stage1_components.default", "normalize_R_list", "as_plain_vcov_matrix", "stage1_fixef",
     "format_stage1_eb_row", "default_re_design", "make_eb_output_row", "select_lai_measurement_columns",
+    "openmx_bivariate_loading_columns",
     "compute_eb_measurement_inputs", "compute_bivariate_eb_inputs",
     "compute_univariate_eb_inputs", "compute_lai_2spa_inputs",
     "assess_dual_ols_design", "fit_observed_single", "fit_observed_dual",
@@ -905,7 +939,8 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
 #'
 #' @param n_sim Positive integer number of replications per condition.
 #' @param study_arg Study selector passed to `select_design()`, typically
-#'   `"all"`, `"study0"`, `"study1"`, `"study2"`, `"study3"`, `"study4"`, or `"study5"`.
+#'   `"all"` for legacy Studies 1--5, `"allv2"` for amended Studies
+#'   1--4, an individual legacy/v2 key, or `"iccbridge"`.
 #' @param out_dir Root output directory. Defaults to
 #'   `file.path(vig_hallquist_dir, "outputs", "vig_hallquist")`.
 #' @param n_cores Positive integer number of worker cores. Values greater than
