@@ -392,13 +392,19 @@ are estimated precisely; precision does not make them substantively small.
 
 The decision from this bridge is to retain posterior-reliability calibration,
 replace the one-coordinate $\tau_1^2$ manipulation with a shape-preserving one,
-and include residualized-slope reliability ($R_\eta$) as a primary design
-quantity. The partial-reliability arm improves MSEM specifically when
-$\rho=.5$, but it does not cure the Fuller/2S-PA overcoverage. The oracle is the
-interval-calibration benchmark. Among the feasible estimators, MSEM gives the
-best overall balance in this grid; Fuller is a stable, low-bias point-estimation
-comparator whose intervals are conservative; and 2S-PA should be reported with
-both conditional coverage and eligibility.
+and report residualized-slope reliability ($R_\eta$) alongside marginal slope
+reliability. The partial-reliability arm improves MSEM specifically when
+$\rho=.5$, but it is not a clean comparison at the same marginal information:
+targeting $R_\eta=.25$ raises marginal slope reliability to about .364, whereas
+the fixed-shape marginal arm holds it at .25. It also does not cure the
+Fuller/2S-PA overcoverage. For a coherent revision of Studies 1--4, the most
+defensible primary design is therefore to target marginal slope reliability in
+every measurement process, hold covariance shape fixed, and use $R_\eta$ as a
+required diagnostic and focused sensitivity factor in correlated conditions.
+The oracle is the interval-calibration benchmark. Among the feasible
+estimators, MSEM gives the best overall balance in this grid; Fuller is a
+stable, low-bias point-estimation comparator whose intervals are conservative;
+and 2S-PA should be reported with both conditional coverage and eligibility.
 
 # Question and decision
 
@@ -420,6 +426,11 @@ The prespecified interpretation is:
   estimator or interval limitations remain after DGM repair; and
 - oracle coverage fails: audit truth and interval construction before deciding
   between information factors.
+
+The observed pattern supports the first interpretation most strongly. The
+partial arm adds useful evidence for correlated dual-predictor models, but its
+change in marginal reliability prevents treating it as a decisive test that
+$R_\eta$ should replace marginal reliability as the shared primary factor.
 
 `r if (results_available) paste0("The production replication file was found at ", replication_path, " and the results below are live.") else paste0("No production replication file was found at ", replication_path, ". This report therefore validates and displays the design, and will populate its results sections after the simulation is run.")`
 
@@ -527,14 +538,14 @@ arm_summary %>%
 The oracle provides the critical calibration check: mean coverage ranges from
 `r percent(min(arm_summary$mean_coverage[arm_summary$method_label == "Oracle dual"]), accuracy = .1)`
 to `r percent(max(arm_summary$mean_coverage[arm_summary$method_label == "Oracle dual"]), accuracy = .1)`,
-with complete eligibility. This makes a truth-coding or generic confidence-
-interval bug an implausible explanation for the proxy-method patterns.
+with complete eligibility. This makes a truth-coding or generic
+confidence-interval bug an implausible explanation for the proxy-method patterns.
 
 The fixed-shape arms move all three proxy methods away from the severe
 legacy-arm undercoverage. However, “improvement” should not be read as
 “calibration.”
-Fuller is above its cell-specific Monte Carlo band in 11 of 12 marginal-
-reliability cells and 10 of 12 partial-reliability cells. 2S-PA is above the
+Fuller is above its cell-specific Monte Carlo band in 11 of 12
+marginal-reliability cells and 10 of 12 partial-reliability cells. 2S-PA is above the
 band in 11 of 12 cells in each fixed-shape arm. MSEM is more balanced: under
 marginal calibration it is below the band in 5 cells, within it in 5, and above
 it in 2; under partial calibration the corresponding counts are 2, 4, and 6.
@@ -879,8 +890,8 @@ The oracle arm-average intervals all include zero, and only zero or one of its
 centering. In contrast, legacy calibration produces reliably negative
 arm-average bias for Fuller (95% MC CI [-.063, -.054]) and 2S-PA
 ([-.070, -.060]). Shape preservation reverses the direction: the corrected
-methods are generally positively biased for non-null effects. Partial-
-reliability calibration reduces the arm-average bias relative to marginal
+methods are generally positively biased for non-null effects.
+Partial-reliability calibration reduces the arm-average bias relative to marginal
 calibration for 2S-PA (.081 versus .114) and MSEM (.050 versus .072), but does
 not eliminate it.
 
@@ -1021,9 +1032,12 @@ using a median in the plot makes both facts visible.
    remains after accounting for its association with the random intercept. The
    two definitions generate the same population condition when $\rho=0$. When
    $\rho=.5$, calibration to $R_\eta$ improves MSEM coverage, especially for
-   non-null effects. It does not remove the conservative coverage of Fuller or
-   2S-PA. Thus $R_\eta$ is a useful design factor and diagnostic, not a single
-   criterion that guarantees valid confidence intervals.
+   non-null effects. However, that arm also increases marginal reliability from
+   .25 to about .364 and lowers $\sigma$, so Study 5 does not isolate
+   estimand alignment from a general increase in slope information. It also
+   does not remove the conservative coverage of Fuller or 2S-PA. Thus
+   $R_\eta$ is a useful diagnostic and sensitivity factor, not evidence that
+   different studies require different primary reliability targets.
 
 3. **The null conditions are tests of false-positive control, not merely
    another set of coverage cells.** With the two-sided CI-inversion rule used
@@ -1097,11 +1111,13 @@ using a median in the plot makes both facts visible.
 ## Recommended design and analysis decision
 
 The next study should use a shape-preserving DGM rather than solve only for
-$\tau_1^2$, and should manipulate or at least report both marginal and
-residualized posterior reliability. The oracle should remain the calibration
-anchor. MSEM should be the primary feasible estimator, Fuller the stable
-point-estimation comparator, and 2S-PA the continuity comparator with Lai.
-Naive BLUP should serve only as a negative control.
+$\tau_1^2$. Across Studies 1--4, the shared primary manipulation should target
+marginal slope reliability while fixing $\tau_1^2/\tau_0^2$; residualized
+reliability should always be reported and should be matched in a smaller,
+correlated-condition sensitivity analysis. The oracle should remain the
+calibration anchor. MSEM should be the primary feasible estimator, Fuller the
+stable point-estimation comparator, and 2S-PA the continuity comparator with
+Lai. Naive BLUP should serve only as a negative control.
 
 The next comparison should also be judged cell by cell. For null effects, the
 primary criteria are total and directional Type I error, bias, and eligibility.
@@ -1174,8 +1190,8 @@ treats ineligible fits as non-rejections and can make a method with frequent
 failures appear safer than it is. Neither quantity alone defines the behavior
 of a real analysis pipeline unless the handling of failed fits is specified.
 
-The grid contains 100 clusters, one regular covariance shape, two moderate-to-
-large cluster sizes, nonnegative correlation, one reliability target, and
+The grid contains 100 clusters, one regular covariance shape, two
+moderate-to-large cluster sizes, nonnegative correlation, one reliability target, and
 three effect sizes. Conclusions about negative correlation, very small
 clusters, different covariance shapes, other reliability targets, or power
 are extrapolations. Arm-level means weight the 12 design cells equally and can
@@ -1189,91 +1205,233 @@ mechanism plot uses median SE to represent a typical replication; the report
 retains mean-SE ratios and the explicit outlier audit so that heavy-tailed
 uncertainty is not concealed.
 
-# Returning to Studies 1--4: a revised calibration plan
+# Returning to Studies 1--4: one calibration framework with focused sensitivities
 
-Study 5 directly evaluated the Study 2 data-generating model, so its strongest
-conclusion applies to Study 2. The same calibration mechanism is nevertheless
-used throughout Studies 1--4: residual variance is held fixed while the
-random-slope variance is solved to attain the target posterior reliability. This means
-that reliability, the slope-to-intercept variance ratio, and the conditioning of
-the random-effects covariance matrix can change together in every study. We
-should therefore revisit the earlier studies with a common shape-preserving
-calibration framework, while treating the Study 5 findings as a reason for
-redesign rather than assuming that every Study 5 estimator result will
-generalize unchanged.
+Study 5 directly evaluated the Study 2 data-generating model, so its estimator
+results should not simply be projected onto Studies 1, 3, and 4. It does,
+however, diagnose a design problem shared by all four earlier studies: holding
+Level-1 residual variance fixed and solving for $\tau_1^2$ makes the intended
+reliability manipulation also change latent covariance geometry. The revision
+should remove that confound without replacing it with four different meanings
+of “reliability.”
 
-## Common calibration standard
+The recommended amendment is therefore **one common primary calibration and
+one common sensitivity strategy**. In every measurement process, fix the
+population intercept/slope covariance shape and solve for residual scale to
+attain the target *marginal slope reliability*. Always compute
+residualized-slope reliability, $R_\eta$, and use matched-$R_\eta$ conditions as focused
+sensitivities when the structural model includes both intercept and slope as
+predictors. The studies then differ in the role played by the latent slope, not
+in the definition of their primary reliability factor.
+
+## Study 5 supports a common primary target, not four different targets
+
+The intercept/slope variance ratio is not a minor implementation detail. In the
+legacy $\rho=.5$ conditions, targeting marginal reliability .25 by solving for
+$\tau_1^2$ drives $\tau_1^2/\tau_0^2$ from about .0065 at $m=10$ to .0011 at
+$m=25$; the corresponding condition number of $G$ increases from about 207 to
+1,259. The fixed-shape arms instead hold the ratio at 1 and have
+$\kappa(G)=3$. Thus the legacy reliability factor also becomes an increasingly
+severe covariance-degeneracy factor as cluster size grows.
+
+The fixed-shape marginal and partial arms are informative, but they do not
+hold the same total slope information at $\rho=.5$. Targeting marginal
+reliability at .25 produces $R_\eta\approx.162$--.163. Targeting
+$R_\eta=.25$ instead produces marginal reliability of approximately
+.363--.365 and a smaller residual scale. Consequently, the partial arm changes
+both estimand-aligned information and overall slope information.
+
+```{r coherence-evidence-table, eval=results_available}
+format_range <- function(x, digits = 3) {
+  x <- range(x, na.rm = TRUE)
+  if (diff(x) < 10^(-digits)) {
+    sprintf(paste0("%.", digits, "f"), mean(x))
+  } else {
+    paste0(
+      sprintf(paste0("%.", digits, "f"), x[[1]]),
+      "--",
+      sprintf(paste0("%.", digits, "f"), x[[2]])
+    )
+  }
+}
+
+coherence_design <- design %>%
+  filter(
+    calibration_arm %in% c(
+      "shape_preserving_marginal", "shape_preserving_partial"
+    ),
+    marginal_rho == .5
+  ) %>%
+  distinct(
+    calibration_arm, mean_clus_size, sigma,
+    achieved_reliability, achieved_partial_reliability
+  ) %>%
+  group_by(calibration_arm) %>%
+  summarise(
+    achieved_marginal_R = format_range(achieved_reliability),
+    achieved_partial_R = format_range(achieved_partial_reliability),
+    sigma_range = format_range(sigma),
+    .groups = "drop"
+  )
+
+coherence_msem <- performance %>%
+  filter(
+    method == "msem",
+    calibration_arm %in% c(
+      "shape_preserving_marginal", "shape_preserving_partial"
+    ),
+    marginal_rho == .5
+  ) %>%
+  group_by(calibration_arm) %>%
+  summarise(
+    msem_coverage = mean(coverage),
+    msem_eligibility = mean(convergence),
+    .groups = "drop"
+  )
+
+coherence_null <- null_performance %>%
+  filter(
+    method == "msem",
+    calibration_arm %in% c(
+      "shape_preserving_marginal", "shape_preserving_partial"
+    )
+  ) %>%
+  group_by(calibration_arm) %>%
+  summarise(
+    msem_null_type1 = mean(type1_error),
+    .groups = "drop"
+  )
+
+coherence_design %>%
+  left_join(coherence_msem, by = "calibration_arm") %>%
+  left_join(coherence_null, by = "calibration_arm") %>%
+  mutate(
+    calibration_arm = recode(
+      calibration_arm,
+      shape_preserving_marginal = "Target marginal R = .25",
+      shape_preserving_partial = "Target residualized R = .25"
+    ),
+    msem_coverage = percent(msem_coverage, accuracy = .1),
+    msem_eligibility = percent(msem_eligibility, accuracy = .1),
+    msem_null_type1 = percent(msem_null_type1, accuracy = .1)
+  ) %>%
+  dplyr::select(
+    calibration_arm, achieved_marginal_R, achieved_partial_R,
+    sigma_range, msem_coverage, msem_eligibility, msem_null_type1
+  ) %>%
+  kable(
+    col.names = c(
+      "Fixed-shape arm", "Marginal R at rho=.5",
+      "Residualized R at rho=.5", "sigma for m=10--25",
+      "MSEM coverage at rho=.5", "MSEM eligibility at rho=.5",
+      "MSEM null Type I error"
+    ),
+    caption = paste(
+      "Why the partial-reliability arm is a sensitivity rather than a",
+      "different primary calibration. Performance values are equal-cell",
+      "averages; null Type I error averages all four null cells per arm."
+    )
+  )
+```
+
+This comparison yields three conclusions. First, fixing covariance shape is
+the decisive repair: the marginal arm already moves MSEM close to nominal
+overall coverage and eliminates the catastrophic geometry of the legacy arm.
+Second, the partial arm improves MSEM coverage and eligibility in correlated
+conditions, but it also supplies more marginal slope information. Its benefit
+cannot be attributed uniquely to using the reliability definition aligned with
+the dual-predictor coefficient. Third, it does not resolve method-specific
+inference: Fuller and 2S-PA still cover about 99% at $\rho=.5$, and MSEM becomes
+somewhat conservative at the null. At $\rho=0$, the two fixed-shape DGMs are
+identical and their small performance differences are Monte Carlo noise.
+
+These findings argue against assigning residualized reliability as the primary
+target in Studies 2 and 4 while using marginal reliability in Study 1. Such a
+plan is theoretically defensible but makes a nominal reliability level mean
+different amounts of total slope information across studies. A common marginal
+target gives reviewers a stable comparison; $R_\eta$ then answers the narrower
+question of whether information unique of the intercept explains performance
+in correlated, dual-predictor settings.
+
+## Common primary calibration standard
 
 The revised studies should share the following design rules.
 
-1. **Fix the random-effects covariance shape before targeting reliability.**
-   Set the intercept and slope variances, their ratio, and the intercept--slope
-   correlation first. For the primary replication, use the regular shape tested
-   in Study 5, $\tau_1^2/\tau_0^2=1$. Solve for the Level-1 residual scale
-   $\sigma$ to attain each reliability target. This varies the amount of
-   measurement information without also collapsing the latent slope
-   distribution.
+1. **Use one covariance anchor.** Standardize the within-cluster time variable
+   in the same way in every process. Set $\tau_0^2=.81$ and use
+   $\tau_1^2/\tau_0^2=1$ for the primary design, so $\tau_1^2=.81$ before any
+   structural decomposition. Retain the planned intercept--slope correlations.
+   Because the variance ratio depends on the scale of time, the common time
+   standardization is part of this definition, not a cosmetic preprocessing
+   choice.
 
-2. **Match the reliability definition to the structural estimand.** Marginal
-   slope reliability and residualized-slope reliability should both be stored
-   and reported. The primary calibration target should depend on whether the
-   focal coefficient concerns the full latent slope or the part of the slope
-   unique of the random intercept. This is preferable to declaring either
-   definition universally correct.
+2. **Target marginal slope reliability everywhere.** For each first-stage
+   process and each target (.25, .50, or .80), hold $G$ fixed and solve for the
+   Level-1 residual scale $\sigma$. Use the study-specific reference design
+   distribution---balanced cluster size in Studies 1--3 and the weighted
+   information profile in Study 4---but the same reliability formula and
+   solver. This keeps “low,” “medium,” and “high” reliability comparable across
+   the study series.
 
-3. **Separate measurement calibration from structural-effect calibration.**
-   First construct the desired marginal random-effects covariance and calibrate
-   its posterior reliability. Then add the structural regression while
-   preserving that marginal covariance. After this decomposition, verify that
-   the residual covariance is positive definite and that the final generated
-   process still has the intended marginal variances, correlation, reliability,
-   standardized effect, and residual outcome variance.
+3. **Always report $R_\eta$; manipulate it only in focused sensitivities.**
+   Store marginal and residualized reliability for every condition. Add a
+   matched-$R_\eta$ sensitivity only when $\rho\ne0$ and the focal slope enters
+   jointly with the intercept. Label that arm by both achieved reliabilities;
+   do not describe it as the same information condition as the marginal arm.
 
-4. **Record geometry and information diagnostics in every condition
-   manifest.** At minimum, retain $\tau_0^2$, $\tau_1^2$,
+4. **Separate measurement calibration from structural-effect calibration.**
+   First construct and calibrate the desired marginal $G$. Then add the
+   structural regression while preserving that marginal covariance. Verify
+   afterward that the residual covariance is positive definite and that the
+   generated process retains its intended $G$, reliability, standardized
+   effect, structural $R^2$, and residual outcome variance.
+
+5. **Use one manifest and audit vocabulary.** Retain $\tau_0^2$, $\tau_1^2$,
    $\tau_{01}=\operatorname{Cov}(u_0,u_1)$,
-   $\tau_1^2/\tau_0^2$, the condition number of $G$, $\sigma$, marginal
-   posterior reliability, residualized posterior reliability, and the
-   residualized slope variance. For heterogeneous clusters, also retain the
-   mean, spread, and range of cluster-specific reliability. These quantities
-   should appear in design checks before any performance result is interpreted.
+   $\tau_1^2/\tau_0^2$, the condition number of $G$, $\sigma$, both posterior
+   reliabilities, and the residualized slope variance. For heterogeneous
+   profiles, also retain the weighted mean, SD, IQR, minimum, and maximum of
+   cluster-specific reliability. Show these checks before estimator results.
 
-5. **Keep a limited legacy-calibration arm.** The original `solve-G_22`
-   conditions, which were calibrated by solving for $\tau_1^2$, should not
-   remain the basis for the main conclusions, but a matched subset
-   should be retained as a historical bridge. This will show which original
-   findings were robust and which depended on the induced covariance geometry.
-   Results from legacy and revised calibrations should be labeled explicitly
-   and never pooled into a single reliability effect.
+6. **Treat the variance ratio as a fixed anchor plus a robustness check.** The
+   full grids should use $\tau_1^2/\tau_0^2=1$. A smaller cross-study bridge
+   should repeat difficult conditions at ratios 0.5 and 2.0. If conclusions
+   change materially, the ratio should become a reported design factor; if they
+   do not, the primary grids need not be tripled. Study 5 alone cannot establish
+   that ratio 1 is optimal.
 
-6. **Do not treat $\tau_1^2/\tau_0^2=1$ as proven optimal.** Study 5 used one
-   regular covariance shape, cluster sizes of 10 and 25, and nonnegative
-   correlations. The revised studies should use this shape for the primary
-   comparison but include a smaller sensitivity set with variance ratios such
-   as 0.5 and 2.0. Negative correlation, cluster sizes of 3 and 5, and the .50
-   and .80 reliability targets also require explicit calibration checks because
-   Study 5 did not test them.
+7. **Retain the legacy arm only as a bridge.** The original `solve-G_22`
+   conditions, which solve for $\tau_1^2$ while fixing $\sigma=1$, should not
+   support the revised primary conclusions. Preserve a matched subset to show
+   which original findings were geometry-dependent, and label it as a different
+   DGM rather than another level of the revised reliability factor.
 
-## Study-specific recommendations
+## Study-specific roles within the common design
 
-| Study | Structural question | Recommended primary calibration | Revision needed |
+The four studies do require different implementation checks, but not different
+primary reliability definitions. Each study uses the same marginal-reliability
+calibration; the special handling follows from the number and structural role
+of its measured latent processes.
+
+| Study | What changes across studies | Shared primary calibration | Necessary study-specific check |
 |:--|:--|:--|:--|
-| **1: BLUP as outcome** | A cluster-level variable predicts the latent slope | **Marginal slope reliability**, with residualized reliability reported as a diagnostic | Fix the marginal $G$ shape and solve for $\sigma$ before decomposing the slope into the part predicted by $w$ and its residual. Verify the marginal $G$ again after the decomposition. |
-| **2: BLUP as predictor** | The latent slope predicts an observed outcome while controlling for the latent intercept | **Residualized-slope reliability**, with marginal reliability retained for comparison | Replace the original `solve-G_22` ($\tau_1^2$) grid with the shape-preserving design. Retain matched marginal- and residualized-reliability arms in the low-reliability, correlated conditions because Study 5 showed that their difference matters for MSEM. |
-| **3: BLUP as predictor and outcome** | One latent slope predicts another, conditional on the first process's latent intercept | **Residualized reliability for the predictor slope; marginal reliability for the outcome slope** | Calibrate the two first-stage processes separately with fixed covariance shapes. Then add the structural relation and verify that the generated outcome process retains its target marginal covariance. Include a focused sensitivity arm that swaps the reliability definitions because this asymmetric calibration was not tested in Study 5. |
-| **4: heterogeneous cluster information** | Methods are compared as cluster-specific information becomes more heterogeneous | **Residualized-slope reliability for the focal predictor**, matched on its weighted mean across information profiles | Hold $G$ fixed across the homogeneous, moderate, severe, and information-matched profiles. Solve for a profile-specific $\sigma$ to equate mean reliability, while allowing the intended within-condition reliability dispersion to differ. This isolates heterogeneity from covariance-shape changes. |
+| **1: BLUP as outcome** | A measured latent slope is the structural outcome | Target marginal slope reliability with fixed $G$ | Calibrate the marginal slope before decomposing it into the part predicted by $w$ and residual variation; verify that the decomposition reconstructs the target marginal $G$. |
+| **2: BLUP as predictor** | The measured intercept and slope jointly predict an observed outcome | Target marginal slope reliability with fixed $G$ | Report $R_\eta$ in every cell and include matched-$R_\eta$ sensitivities for correlated, low-information conditions. Study 5 already supplies the central bridge. |
+| **3: BLUP as predictor and outcome** | Two separate repeated-measures processes contribute a predictor slope and an outcome slope | Apply the same marginal-reliability calibration independently to both processes | Verify both marginal covariance matrices after constructing the structural relation; use $R_\eta$ sensitivity on the predictor process rather than giving the two processes different primary targets. |
+| **4: heterogeneous cluster information** | The distribution, rather than only the mean, of cluster information is manipulated | Match the weighted mean marginal slope reliability with fixed $G$ | Solve one profile-specific $\sigma$ while preserving the intended reliability dispersion; compare row-specific and average measurement corrections and report the full reliability distribution. |
 
-### Study 1: preserve the meaning of a slope outcome
+### Study 1: one measured outcome process
 
-Study 1 differs conceptually from Study 2 because the latent slope is the
-outcome of the structural regression rather than one member of a correlated
-predictor pair. Marginal slope reliability is therefore the more direct primary
-target. The calibration should begin with a fixed marginal $G$ and solve for
-$\sigma$; only afterward should the standardized effect of $w$ be used to split
-the total slope into explained and residual variation. This ordering preserves
-the population slope distribution that the first-stage model is intended to
-recover. Residualized reliability remains important as a diagnostic because a
-correlated random intercept can still influence posterior slope uncertainty.
+Study 1 is the simplest application of the common rule. The latent slope is the
+outcome of the structural regression, so marginal slope reliability is both the
+cross-study primary target and the reliability most directly tied to the
+measured outcome. Begin with the common marginal $G$, solve for $\sigma$, and
+only then use the standardized effect of $w$ to split the total slope into
+explained and residual variation. The resulting residual random-effects
+covariance must reconstruct the target marginal $G$ after the effect of $w$ is
+integrated out. $R_\eta$ is reported because correlated intercepts affect slope
+precision, but no full matched-$R_\eta$ arm is needed unless the Study 1 bridge
+shows an unexpected correlation-specific failure.
 
 The revised report should reassess the original claims about attenuation,
 Fuller overcoverage, 2S-PA standard errors, and agreement with the direct MLM.
@@ -1282,15 +1440,18 @@ the structural target when the latent slope is observed, whereas the direct MLM
 checks whether a correctly specified one-stage analysis recovers it from the
 repeated measures.
 
-### Study 2: make the estimand-aligned arm primary
+### Study 2: one measured predictor process
 
 Study 2 is the closest direct beneficiary of Study 5. Because the structural
 model includes both the random intercept and random slope as predictors, the
 focal slope coefficient concerns slope variation remaining after the intercept
-is accounted for. The fixed-shape residualized-reliability arm should therefore
-be the primary revised DGM, with the fixed-shape marginal arm retained as a
-planned sensitivity analysis. The original arm should appear only as a legacy
-comparison.
+is accounted for. That fact justifies treating $R_\eta$ as an important
+estimand-aligned diagnostic, but Study 5 does not justify changing the primary
+reliability definition: the partial-target arm also increases marginal slope
+reliability and improves numerical eligibility. The revised full grid should
+therefore use the common fixed-shape marginal calibration. The matched-$R_\eta$
+arm should be retained for the correlated stress cells, and the original arm
+should appear only as a legacy comparison.
 
 The estimator hierarchy should follow the Study 5 conclusions: use the oracle
 as the calibration anchor, MSEM as the primary feasible estimator to evaluate,
@@ -1300,90 +1461,147 @@ dual-BLUP regression as a negative control. The full Study 2 grid should not be
 rerun until a smaller bridge reproduces the Study 5 pattern at cluster sizes 3
 and 5, negative $\rho$, and reliability targets .50 and .80.
 
-### Study 3: calibrate the two processes according to their roles
+### Study 3: apply the same rule twice
 
-Study 3 has two measurement problems, so applying one reliability definition
-to both processes is unnecessarily restrictive. On the predictor side, the
-coefficient on the first process's slope is conditional on its intercept;
-residualized-slope reliability is consequently the most aligned primary target.
-On the outcome side, the total slope of the second process is the dependent
-latent variable, making its marginal slope reliability the natural starting
-target. Both processes should have fixed covariance shapes, and their residual
-scales should be solved separately for the requested information levels.
+Study 3 has two measurement problems, but that is a reason to reuse the same
+calibration module twice rather than define two primary meanings of
+reliability. Fix a marginal covariance shape for each process and solve its own
+residual scale to attain the requested marginal slope reliability. The
+predictor process still requires $R_\eta$ because its intercept and slope enter
+jointly; the outcome process does not need a different primary target merely
+because its slope is on the left side of the structural equation.
 
-The structural equation that generates the second slope must then be applied
-without changing its intended marginal covariance. This verification is
-especially important because its residual slope variance depends on the
-structural effect. A focused factorial check should compare the recommended
-asymmetric calibration with all-marginal and all-residualized alternatives
-before the large Study 3 grid is launched. The comparison will determine
-whether the estimand-aligned choice improves calibration or whether joint-model
-behavior requires a different definition.
+The structural equation that generates the second slope must be applied without
+changing its intended marginal covariance. This verification is especially
+important because its residual slope variance depends on the structural effect.
+A focused sensitivity should match $R_\eta$ on the predictor process in
+correlated conditions while leaving the outcome process under the common
+marginal calibration. This asks the estimand-alignment question directly
+without making the main Study 3 grid asymmetric or incomparable with the other
+studies.
 
 ### Study 4: isolate heterogeneity rather than regenerate the Study 2 confound
 
 Study 4 is intended to vary the dispersion of cluster information while
 holding mean reliability comparable. Its revised calibration should therefore
 hold the entire $G$ matrix fixed across information profiles. For each profile
-and target mean reliability, solve one common residual scale for that profile.
-The cluster-size pattern then creates the intended distribution of individual
-reliabilities, while covariance geometry no longer changes as a by-product of
-matching their mean.
+and target weighted mean *marginal* reliability, solve one common residual scale
+for that profile. The cluster-size pattern then creates the intended
+distribution of individual reliabilities, while covariance geometry no longer
+changes as a by-product of matching their mean.
 
 The information-matched falsification condition remains valuable and should be
-preserved. Its calibration audit should demonstrate both comparable mean
-residualized reliability and reduced dispersion of the full measurement
-matrices, not only equality of trial-count means. The revised analysis should
-also retain row-specific versus average-measurement comparisons, because those
-are the study's substantive focus, but add the same eligibility, Type I error,
-and tail-sensitive diagnostics used in Study 5.
+preserved. Its calibration audit should demonstrate comparable weighted mean
+marginal reliability and reduced dispersion of the full measurement matrices,
+not only equality of trial-count means. Because the focal predictor model is
+dual-predictor, also report the distribution of $R_\eta$ and include a
+matched-$R_\eta$ sensitivity for the severe correlated profile. Retain the
+row-specific versus average-measurement comparisons, because those are the
+study's substantive focus, and add the eligibility, Type I error, and
+tail-sensitive diagnostics used in Study 5.
 
-## A staged rerun rather than an immediate full replacement
+## Refactor once and make the studies thin wrappers
 
-The most efficient return to Studies 1--4 is a two-stage process.
+The code should mirror the conceptual argument. A single
+measurement-calibration function should accept the reference $Z_i$ and residual-correlation
+matrices, $\tau_0^2$, the variance ratio, $\rho$, and the target marginal slope
+reliability. It should construct $G$, solve for $\sigma$, and return both
+reliabilities plus the geometry diagnostics. Study-specific design functions
+should supply only the reference cluster distribution and the number of
+measurement processes.
 
-1. **Run calibration bridges first.** For each study, select the
-   low-reliability stress conditions, at least one null and one non-null effect,
-   $\rho=0$ and a correlated condition, and both the smallest and a moderate
-   cluster size. Compare the legacy, fixed-shape marginal, and estimand-aligned
-   calibration arms. Study 3 should instead compare legacy, all-marginal,
-   all-residualized, and the recommended asymmetric calibration. Use common
-   random-number streams across matched arms where practical so arm differences have
-   less Monte Carlo noise.
+Structural-effect calibration should remain a separate second step. Study 1
+decomposes a marginal slope into a component predicted by $w$ and a residual;
+Studies 2 and 4 calibrate regression of an observed outcome on the latent
+intercept and slope; Study 3 calibrates the relation between two latent
+processes. Each wrapper should verify that this second step reconstructs the
+marginal covariance produced by the shared first step.
 
-2. **Require design checks before estimator comparisons.** Confirm the target
-   reliability, fixed covariance geometry, positive-definite structural
-   residual covariance, and nominal oracle behavior. If the oracle fails, the
-   DGM or target scaling should be corrected before conclusions about proxy
-   methods are drawn.
+Every condition should carry a `calibration_version` and an explicit
+`calibration_target` such as `marginal_slope`. The legacy key `current_g22` may
+remain for compatibility, but reader-facing outputs should call it the legacy
+`solve-G_22` arm and identify $\tau_1^2$ as the solved quantity. Use matched
+random-number streams across bridge arms when practical, and never overwrite
+the original Study 1--4 outputs.
 
-3. **Then rerun the full revised grids.** Once the bridge establishes that the
-   revised DGM behaves as intended at the difficult boundaries, extend it to
-   all cluster counts, effect sizes, correlations, and reliability targets.
-   Save these as versioned revised studies rather than overwriting the original
-   results. The original runs remain useful evidence about what happens under
-   the one-coordinate calibration, but they should not carry the main
-   generalizations about low reliability.
+## Staged rerun and decision gates
 
-4. **Use one inferential reporting template across studies.** For null effects,
-   report cell-specific total and directional Type I error, eligibility, and
-   bias with Monte Carlo intervals. For non-null effects, report bias, coverage,
-   direct power, interval width, eligibility, and joint success-and-cover or
-   success-and-reject probabilities. Include empirical SD and tail summaries so
-   a few unstable estimates cannot be mistaken for typical performance.
+1. **Validate the shared calibration module without fitting the estimators.**
+   Exercise every cluster-size distribution, $\rho\in\{-.5,0,.5\}$,
+   reliability target, and variance-ratio sensitivity. Require the achieved
+   target to agree with the requested marginal reliability to numerical
+   tolerance, the requested variance ratio to remain fixed, $G$ and every
+   structural residual covariance to be positive definite, and the generated
+   marginal covariance to reconstruct the stored target. At $\rho=0$, marginal
+   and residualized reliability must coincide.
 
-5. **Interpret changes, not just revised rankings.** Each revised report should
-   state whether a conclusion from the original study is preserved, weakened,
-   reversed, or shown to be calibration-dependent. This comparison is the main
-   scientific benefit of retaining the legacy bridge: it reveals which claims
-   concern score reliability and which concern the particular covariance
-   geometry previously used to create it.
+2. **Run small study-specific bridges.** Use at least one null and one non-null
+   effect, the smallest and a moderate cluster size, and zero plus nonzero
+   correlation. Study 5 already supplies the central Study 2 bridge at
+   reliability .25 and $m=10,25$; extend it only to the missing boundaries:
+   $m=3,5$, $\rho=-.5$, and reliability .50 and .80. For Studies 1 and 3,
+   compare the legacy and common-primary DGMs and add only the relevant
+   predictor-side $R_\eta$ sensitivity. For Study 4, compare the legacy and
+   common-primary DGMs across the homogeneous, severe, and information-matched
+   profiles before filling the full heterogeneity grid.
 
-The immediate priority should be a Study 2 revision, because Study 5 already
-provides its bridge and identifies residualized reliability as consequential
-when the intercept and slope are correlated. Study 4 should follow because its
-central claim requires reliability heterogeneity to be separated cleanly from
-changes in $G$. Studies 1 and 3 then require smaller calibration pilots before
-full reruns: Study 1 because its slope is an outcome, and Study 3 because the
-predictor and outcome processes call for different, not yet directly validated,
-reliability targets.
+3. **Use the oracle as the DGM gate.** In every bridge cell, oracle coverage and
+   null Type I error should fall within the cell-specific Monte Carlo acceptance
+   range around .95 and .05, respectively. A failed oracle gate is a reason to
+   repair the DGM, truth scaling, or interval construction before comparing
+   proxy methods. It is not evidence against a proxy estimator.
+
+4. **Then run the full primary grids.** Once the common-primary bridges pass,
+   rerun Studies 1--4 with $\tau_1^2/\tau_0^2=1$ and marginal reliability as the
+   primary factor. Run the matched-$R_\eta$ and variance-ratio conditions as a
+   smaller, clearly labeled sensitivity module rather than crossing them with
+   every factor. This keeps the main design interpretable and the computational
+   expansion bounded.
+
+5. **Use one inferential reporting template.** For null effects, report
+   cell-specific total and directional Type I error, eligibility, and bias with
+   Monte Carlo intervals. For non-null effects, report bias, coverage, direct
+   power, interval width, eligibility, and joint success-and-cover or
+   success-and-reject probabilities. Include empirical SD and tail summaries.
+   Each revised report should state whether an original conclusion is
+   preserved, weakened, reversed, or shown to depend on legacy geometry.
+
+## Reviewer-facing explanation
+
+The common design can be described without asking readers to learn four
+calibration systems:
+
+> Across all studies, we fixed the population covariance structure of the
+> random intercept and slope and manipulated the precision of slope measurement
+> by changing Level-1 residual variance. The residual variance was selected so
+> that expected marginal posterior slope reliability equaled .25, .50, or .80
+> under the study's cluster design. We also report the posterior reliability of
+> slope variation unique of the intercept. In models that include both random
+> effects as predictors, matched unique-slope-reliability conditions provide a
+> planned sensitivity analysis rather than a different definition of the main
+> reliability factor.
+
+This account gives the study series one manipulation, one population covariance
+anchor, and one set of manipulation checks. The studies remain substantively
+distinct because they ask what happens when an imperfectly measured slope is
+an outcome (Study 1), a predictor (Study 2), both a predictor and outcome across
+two processes (Study 3), or measured with heterogeneous information across
+clusters (Study 4). Those are meaningful differences in the role and structure
+of measurement error; they do not require changing what the primary reliability
+factor means.
+
+## Final recommendation and priority order
+
+The preferred plan is therefore **common marginal calibration for all primary
+grids, mandatory reporting of $R_\eta$, and targeted $R_\eta$ sensitivity
+conditions**. This is more coherent than the earlier proposal to make
+residualized reliability primary in Studies 2 and 4 and to use an asymmetric
+target in Study 3. It is also closer to what Study 5 establishes: covariance
+geometry clearly matters, whereas the partial-reliability arm is beneficial for
+MSEM but is not a clean test of reliability definition alone.
+
+Implementation should proceed in this order: build and test the shared
+calibration module; complete the missing Study 2 boundary bridge; validate the
+Study 4 heterogeneity bridge; run the smaller Study 1 and Study 3 bridges; and
+only then launch the four full primary grids. This sequence resolves the
+highest-risk extrapolations before committing the largest computational effort.

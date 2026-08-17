@@ -1,0 +1,1090 @@
+---
+title: "Why low-reliability coverage differs between VH Study 2 and Lai Study 1"
+author: "Simulation design audit"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output:
+  html_document:
+    toc: true
+    toc_depth: 3
+    toc_float: true
+    number_sections: true
+    code_folding: hide
+    self_contained: true
+params:
+  vh_cache: "outputs/vig_hallquist_slurm/study_cache/study2.fst"
+  lai_summary: "outputs/lai_study1_vh_production_20260731/lai_study1_vh_summary.csv"
+  lai_pdf: "documentation/Lai2026_2SPA.pdf"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(
+  echo = FALSE,
+  warning = FALSE,
+  message = FALSE,
+  fig.align = "center",
+  dpi = 120
+)
+
+library(dplyr)
+library(tidyr)
+library(readr)
+library(fst)
+library(ggplot2)
+library(knitr)
+library(scales)
+
+report_input <- tryCatch(knitr::current_input(dir = TRUE), error = function(e) "")
+report_dir <- if (nzchar(report_input)) {
+  report_input <- normalizePath(report_input, mustWork = FALSE)
+  if (dir.exists(report_input)) report_input else dirname(report_input)
+} else {
+  getwd()
+}
+repo_root <- normalizePath(file.path(report_dir, ".."), mustWork = FALSE)
+
+resolve_repo_path <- function(path) {
+  if (grepl("^/", path)) {
+    normalizePath(path, mustWork = FALSE)
+  } else {
+    normalizePath(file.path(repo_root, path), mustWork = FALSE)
+  }
+}
+
+vh_cache_path <- resolve_repo_path(params$vh_cache)
+lai_summary_path <- resolve_repo_path(params$lai_summary)
+lai_pdf_path <- resolve_repo_path(params$lai_pdf)
+
+required_files <- c(vh_cache_path, lai_summary_path, lai_pdf_path)
+missing_files <- required_files[!file.exists(required_files)]
+if (length(missing_files) > 0L) {
+  stop("Missing required report input(s): ", paste(missing_files, collapse = ", "))
+}
+
+fmt_num <- function(x, digits = 3L) {
+  ifelse(is.finite(x), formatC(x, digits = digits, format = "f"), NA_character_)
+}
+fmt_pct <- function(x, accuracy = 0.1) {
+  ifelse(is.finite(x), scales::percent(x, accuracy = accuracy), NA_character_)
+}
+safe_mean <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0L) NA_real_ else mean(x)
+}
+safe_min <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0L) NA_real_ else min(x)
+}
+safe_median <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0L) NA_real_ else median(x)
+}
+
+method_labels <- c(
+  oracle_dual = "Oracle dual",
+  naive_dual_blup = "Naive dual BLUP",
+  closed_form_dual = "Uncorrected closed-form OLS",
+  fuller_closed_form = "Fuller",
+  fuller_alpha_stepdown_closed_form = "Fuller alpha-stepdown",
+  lai_2spa = "Lai 2S-PA",
+  msem = "MSEM"
+)
+method_order <- names(method_labels)
+
+method_palette <- c(
+  "Oracle dual" = "#4D4D4D",
+  "Naive dual BLUP" = "#4C78A8",
+  "Uncorrected closed-form OLS" = "#9ECAE1",
+  "Fuller" = "#B79F00",
+  "Fuller alpha-stepdown" = "#E28E2C",
+  "Lai 2S-PA" = "#D95F59",
+  "MSEM" = "#4E8A5B"
+)
+rho_palette <- c(
+  "-0.5" = "#4C78A8",
+  "0" = "#777777",
+  "0.5" = "#F28E2B"
+)
+effect_palette <- c(
+  "0.2" = "#9ECAE1",
+  "0.4" = "#4C78A8",
+  "0.6" = "#B07932"
+)
+
+matrix_condition_number <- function(g00, g11, rho) {
+  vapply(seq_along(g00), function(i) {
+    G <- matrix(
+      c(
+        g00[[i]], rho[[i]] * sqrt(g00[[i]] * g11[[i]]),
+        rho[[i]] * sqrt(g00[[i]] * g11[[i]]), g11[[i]]
+      ),
+      nrow = 2L,
+      byrow = TRUE
+    )
+    kappa(G, exact = TRUE)
+  }, numeric(1L))
+}
+
+theme_report <- function(base_size = 10) {
+  theme_bw(base_size = base_size) +
+    theme(
+      panel.grid.minor = element_blank(),
+      legend.position = "bottom",
+      strip.background = element_rect(fill = "grey95", colour = "grey75"),
+      plot.title.position = "plot"
+    )
+}
+```
+
+# Technical summary
+
+The low-coverage cells in VH Study 2 are **not close analogues of Lai Study 1's
+low-ICC cells**, even when their marginal posterior slope reliabilities are
+similar. The evidence points to a design-induced identification problem, not a
+coverage-counting error.
+
+- **The marginal reliability target is too close to a correlation-induced
+  floor.** With $|\rho_{u0,u1}|=.5$, the minimum attainable marginal slope
+  reliability rises from .177 at cluster size 3 to .238 at size 25. Targeting
+  .25 therefore leaves almost no reliability to be supplied by direct slope
+  information in the size-25 cell.
+- **The calibration creates covariance matrices far outside Lai's design.** At
+  target reliability .25, VH's slope/intercept variance ratio ranges from
+  .0011 to .206 and the condition number of the true random-effect covariance
+  reaches about 1,259. Lai fixes that variance ratio at .5, 1, or 2; in the Lai
+  cells nearest reliability .25, the condition number is only 2.0--3.7.
+- **The manipulated effect is also much harder in VH.** VH holds the
+  standardized slope effect at .20, .40, or .60, requiring raw paths as large
+  as 20.5 when the calibrated slope SD is tiny. Lai holds the raw path at .40,
+  so its standardized non-null effect is only about .063--.126 in cells near
+  reliability .25.
+- **Internal controls argue against a bookkeeping explanation.** VH oracle
+  coverage remains about 94.5% at all reliability levels. Severe failures are
+  concentrated in non-null proxy-score methods, and the refreshed Lai run uses
+  the same VH estimator bundle, common reporting scale, and VH eligibility
+  screen while retaining near-nominal coverage.
+
+The short answer is therefore **yes, the reliability-versus-ICC manipulation
+matters, but not because posterior reliability is intrinsically a worse design
+factor**. The current calibration changes only the slope variance while holding
+the intercept variance large, and at nonzero random-effect correlation it
+targets a marginal reliability that can mostly come from learning the slope
+through the intercept. That quantity is poorly aligned with the *unique slope
+variation* that identifies the slope coefficient in a dual-predictor stage-2
+model.
+
+# Evidence base and comparable estimands
+
+## Inputs and exact analysis rules
+
+The VH results below reproduce the eligibility path used in
+`vig_hallquist_2026/analysis/vh_2026_study2.Rmd`: status-10 failures are removed,
+legacy dual-OLS eligibility is reconstructed for the existing cache, the
+current method-specific eligibility screen is applied, and the legacy MSEM
+$|\hat\beta|<5$ threshold is retained. Coverage is then the proportion of
+eligible intervals satisfying `ci_low <= truth <= ci_high`.
+
+```{r read-vh-results}
+# Reuse the exact helper functions invoked by the current VH Study 2 report.
+sys.source(file.path(repo_root, "vig_hallquist_2026", "analysis", "data_import.R"), envir = environment())
+sys.source(file.path(repo_root, "vig_hallquist_2026", "vh_study2.R"), envir = environment())
+
+vh_columns <- c(
+  "method", "estimate", "se", "ci_low", "ci_high", "status_code",
+  "mx_issue_class", "mx_info_definite", "mx_condition_number",
+  "stage1_eb_corr", "truth", "condition_id", "num_clus",
+  "mean_clus_size", "target_reliability", "marginal_rho",
+  "standardized_beta_target", "achieved_reliability",
+  "slope_variance_marginal", "tau1", "rep"
+)
+
+vh_rep <- fst::read_fst(
+  vh_cache_path,
+  columns = vh_columns,
+  as.data.table = FALSE
+) |>
+  as_tibble() |>
+  mutate(
+    status10_failure = !is.na(status_code) & status_code == 10L,
+    converged = !status10_failure & !is.na(estimate),
+    bias = estimate - truth,
+    covered = ci_low <= truth & ci_high >= truth
+  ) |>
+  add_study2_legacy_eligibility() |>
+  add_study2_analysis_eligibility() |>
+  add_study2_mplus_legacy_threshold(threshold = 5) |>
+  mutate(
+    analysis_ready = converged & analysis_eligible,
+    interval_ready = analysis_ready & is.finite(ci_low) & is.finite(ci_high)
+  )
+
+vh_cell <- vh_rep |>
+  filter(interval_ready) |>
+  group_by(
+    method, condition_id, num_clus, mean_clus_size, target_reliability,
+    marginal_rho, standardized_beta_target, achieved_reliability,
+    slope_variance_marginal, tau1, truth
+  ) |>
+  summarise(
+    n_retained = n(),
+    coverage = mean(covered),
+    mean_estimate = mean(estimate),
+    bias = mean(bias),
+    mean_se = mean(se),
+    empirical_sd = sd(estimate),
+    se_ratio = mean_se / empirical_sd,
+    .groups = "drop"
+  ) |>
+  mutate(
+    method_label = factor(method, levels = method_order, labels = method_labels)
+  )
+```
+
+The Lai comparison uses the `latent_sd` rows from the refreshed local Study 1
+replication. Those rows use a fixed population latent-slope multiplier for all
+methods and the same VH-primary eligibility rule. A fixed positive multiplier
+applied to estimate, SE, interval, and truth cannot change interval inclusion,
+so this is the cleanest available coverage comparison.
+
+```{r read-lai-results}
+lai <- readr::read_csv(lai_summary_path, show_col_types = FALSE) |>
+  filter(reporting_scale == "latent_sd") |>
+  mutate(
+    method_label = factor(method, levels = method_order, labels = method_labels)
+  )
+
+vh_expected_rows <- 720L * 7L * 1000L
+quality_table <- tibble::tibble(
+  Input = c("VH Study 2 replication cache", "Lai Study 1 aggregate summary"),
+  Grain = c("replication x condition x method", "condition x method x reporting scale"),
+  `Observed rows` = c(nrow(vh_rep), nrow(lai)),
+  `Distinct conditions` = c(n_distinct(vh_rep$condition_id), n_distinct(lai$condition_id)),
+  Check = c(
+    ifelse(nrow(vh_rep) == vh_expected_rows, "Complete expected 5,040,000-row cache", "Unexpected VH row count"),
+    ifelse(n_distinct(lai$condition_id) == 486L, "All 486 Lai conditions present", "Unexpected Lai condition count")
+  )
+)
+
+knitr::kable(quality_table, caption = "Input completeness and analytical grain")
+```
+
+The VH cell summaries contain 1,000 retained rows for methods without
+eligibility failures and fewer for methods with convergence or design
+exclusions. Lai uses 5,000 generated replications per condition, with
+method-specific retained counts. All comparisons below are **condition
+weighted** rather than pooled over retained replications, so a difficult cell
+does not disappear merely because it converges less often.
+
+## The two studies manipulate different objects
+
+In Lai Study 1, the manipulated ICC is the conditional random-intercept ICC,
+
+$$
+\mathrm{ICC}_{\text{Lai}} =
+\frac{\tau_0^2}{\tau_0^2+\sigma^2}\in\{.05,.20,.50\},
+$$
+
+with $\tau_0^2=\mathrm{ICC}$, $\sigma^2=1-\mathrm{ICC}$, and
+$\tau_1^2/\tau_0^2\in\{.5,1,2\}$. Thus, changing ICC moves the intercept
+variance, slope variance, and level-1 residual variance together while keeping
+the random-effect covariance reasonably balanced.
+
+VH Study 2 instead fixes $\tau_0^2=.81$ and $\sigma^2=1$, so the Lai-style
+conditional ICC is constant:
+
+$$
+\mathrm{ICC}_{\text{VH}} = \frac{.81}{.81+1}=.448.
+$$
+
+It solves only for $\tau_1^2$ to obtain marginal posterior slope reliability
+$.25$, $.50$, or $.80$. The quantity called `icc` in the preliminary VH report
+is `slope_variance_marginal / (slope_variance_marginal +
+outcome_residual_variance)`. That denominator uses the *distal outcome's*
+residual variance, not the first-stage level-1 residual variance, and is not
+comparable to Lai's ICC. The corresponding heatmap should therefore not be
+used to conclude that the Lai ICC mechanism has been reproduced.
+
+# Why marginal reliability .25 becomes an extreme cell
+
+## The target nearly equals its correlation-induced lower bound
+
+With centered time, iid residuals, and correlated random intercepts and slopes,
+information about the intercept predicts part of the slope. As
+$\tau_1^2\rightarrow0$, marginal slope reliability therefore approaches
+
+$$
+r_{\min}=\rho^2\frac{m\tau_0^2}{\sigma^2+m\tau_0^2}.
+$$
+
+The project calibration note derives this result and records the same lower
+bounds. At $m=25$ and $|\rho|=.5$, $r_{\min}=.238$; target .25 is only .012
+above that floor.
+
+For a dual-predictor model, however, the coefficient on $u_1$ is identified by
+the part of $u_1$ not linearly predictable from $u_0$. Its population variance
+is
+
+$$
+\operatorname{Var}(u_1\mid u_0)=G_{22}(1-\rho^2).
+$$
+
+For a balanced centered iid design, a useful diagnostic of direct information
+about that unique component is
+
+$$
+r_{\text{unique}}
+=\frac{G_{22}(1-\rho^2)}
+{G_{22}(1-\rho^2)+\sigma^2/S_{xx}}.
+$$
+
+This is not a replacement for the full posterior reliability calculation; it
+is a deliberately targeted signal-to-noise diagnostic for the residualized
+slope variation used by the stage-2 partial coefficient.
+
+```{r geometry-calculations}
+vh_geometry <- vh_cell |>
+  distinct(
+    mean_clus_size, target_reliability, marginal_rho, achieved_reliability,
+    slope_variance_marginal, tau1
+  ) |>
+  mutate(
+    study = "VH Study 2",
+    g00 = 0.9^2,
+    sigma2_y = 1,
+    sxx = mean_clus_size - 1,
+    lower_reliability_bound = marginal_rho^2 *
+      (mean_clus_size * g00) / (sigma2_y + mean_clus_size * g00),
+    conditional_slope_variance = slope_variance_marginal * (1 - marginal_rho^2),
+    unique_signal_ratio = conditional_slope_variance /
+      (conditional_slope_variance + sigma2_y / sxx),
+    slope_intercept_variance_ratio = slope_variance_marginal / g00,
+    g_condition_number = matrix_condition_number(g00, slope_variance_marginal, marginal_rho),
+    rho_label = factor(marginal_rho, levels = c(-0.5, 0, 0.5))
+  )
+
+lai_geometry <- lai |>
+  distinct(
+    clus_size, icc, vr_u1_u0, cor_u0_u1, var_u1, sigma2,
+    dgm_posterior_slope_reliability
+  ) |>
+  mutate(
+    study = "Lai Study 1",
+    g00 = icc,
+    sxx = clus_size, # Lai's RMS scaling makes sum(x^2) = n.
+    lower_reliability_bound = cor_u0_u1^2 *
+      (clus_size * g00 / sigma2) / (1 + clus_size * g00 / sigma2),
+    conditional_slope_variance = var_u1 * (1 - cor_u0_u1^2),
+    unique_signal_ratio = conditional_slope_variance /
+      (conditional_slope_variance + sigma2 / sxx),
+    slope_intercept_variance_ratio = var_u1 / g00,
+    g_condition_number = matrix_condition_number(g00, var_u1, cor_u0_u1),
+    rho_label = factor(cor_u0_u1, levels = c(-0.5, 0, 0.5))
+  )
+
+vh_floor_table <- vh_geometry |>
+  filter(target_reliability == 0.25, abs(marginal_rho) == 0.5) |>
+  distinct(
+    mean_clus_size, lower_reliability_bound, slope_variance_marginal,
+    slope_intercept_variance_ratio, g_condition_number, unique_signal_ratio
+  ) |>
+  arrange(mean_clus_size) |>
+  mutate(
+    `Cluster size` = mean_clus_size,
+    `Reliability floor` = fmt_num(lower_reliability_bound),
+    `Target minus floor` = fmt_num(0.25 - lower_reliability_bound),
+    `Slope variance` = formatC(slope_variance_marginal, digits = 4, format = "fg"),
+    `Slope/intercept variance ratio` = formatC(slope_intercept_variance_ratio, digits = 4, format = "fg"),
+    `Condition number of G` = fmt_num(g_condition_number, 1),
+    `Unique-slope signal ratio` = fmt_pct(unique_signal_ratio)
+  ) |>
+  select(
+    `Cluster size`, `Reliability floor`, `Target minus floor`,
+    `Slope variance`, `Slope/intercept variance ratio`,
+    `Condition number of G`, `Unique-slope signal ratio`
+  )
+
+knitr::kable(
+  vh_floor_table,
+  caption = "VH target .25 with |rho| = .5: larger clusters move the target closer to the marginal-reliability floor"
+)
+```
+
+The apparent paradox is now visible: at fixed marginal reliability .25,
+increasing cluster size makes the calibrated slope variance *smaller*. When the
+random effects are correlated, the larger cluster also estimates the intercept
+better, so more of the nominal slope reliability can be inherited through the
+intercept. By size 25, the unique-slope signal ratio is only about 1.5%, even
+though the reported marginal slope reliability remains 25%.
+
+```{r reliability-vs-unique-signal, fig.width=9.5, fig.height=5.8, fig.cap="Marginal posterior slope reliability versus direct signal for the slope residualized on the random intercept."}
+geometry_plot_df <- bind_rows(
+  vh_geometry |>
+    filter(target_reliability == 0.25) |>
+    transmute(
+      study, cluster_size = mean_clus_size, rho_label,
+      posterior_reliability = achieved_reliability,
+      unique_signal_ratio
+    ),
+  lai_geometry |>
+    filter(dgm_posterior_slope_reliability >= 0.19,
+           dgm_posterior_slope_reliability <= 0.31) |>
+    transmute(
+      study, cluster_size = clus_size, rho_label,
+      posterior_reliability = dgm_posterior_slope_reliability,
+      unique_signal_ratio
+    )
+) |>
+  distinct()
+
+ggplot(
+  geometry_plot_df,
+  aes(
+    x = posterior_reliability,
+    y = unique_signal_ratio,
+    colour = study,
+    shape = rho_label
+  )
+) +
+  geom_abline(intercept = 0, slope = 1, colour = "grey65", linetype = "dashed") +
+  geom_point(aes(size = cluster_size), alpha = 0.85) +
+  scale_colour_manual(values = c("VH Study 2" = "#D95F59", "Lai Study 1" = "#4C78A8")) +
+  scale_shape_manual(values = c("-0.5" = 17, "0" = 16, "0.5" = 15)) +
+  scale_size_continuous(range = c(2.2, 5.2), breaks = c(3, 5, 10, 25)) +
+  scale_x_continuous(labels = label_percent(accuracy = 1), limits = c(0.18, 0.32)) +
+  scale_y_continuous(labels = label_percent(accuracy = 1), limits = c(0, 0.32)) +
+  labs(
+    x = "Marginal posterior slope reliability",
+    y = "Unique-slope signal ratio",
+    colour = NULL,
+    shape = "rho(u0, u1)",
+    size = "Cluster size",
+    title = "Marginal and unique-slope information in low-reliability cells",
+    subtitle = "VH target .25 versus Lai cells with reliability .19--.31; dashed line marks equality"
+  ) +
+  theme_report()
+```
+
+Lai's nearby cells retain unique-slope signal ratios around 16.5%--27.3%.
+VH's correlated cells range from about 1.5% to 8.1%. This is the most direct
+answer to the ICC-versus-reliability question: Lai's ICC manipulation does not
+push the dual-predictor problem into the same near-degenerate conditional
+geometry.
+
+## Effect-size calibration compounds the geometry difference
+
+VH holds the standardized distal-outcome coefficient fixed:
+
+$$
+\beta_{2,\mathrm{raw}}=
+\frac{\beta_{2,\mathrm{std}}}{\sqrt{G_{22}}}.
+$$
+
+When $G_{22}$ is extremely small, the raw coefficient becomes extremely large.
+Lai does the opposite: it fixes $\beta_{2,\mathrm{raw}}=.4$, so the
+standardized effect $\beta_{2,\mathrm{raw}}\sqrt{G_{22}}$ shrinks with the
+slope variance.
+
+```{r dgm-comparison-table}
+vh_dgm_low <- vh_cell |>
+  filter(target_reliability == 0.25, standardized_beta_target > 0) |>
+  distinct(
+    mean_clus_size, marginal_rho, standardized_beta_target,
+    achieved_reliability, slope_variance_marginal, tau1, truth
+  ) |>
+  mutate(
+    g00 = 0.9^2,
+    raw_beta = standardized_beta_target / tau1,
+    z_residual_variance = 1 - (
+      0.4^2 * g00 + standardized_beta_target^2 +
+        2 * 0.4 * standardized_beta_target * marginal_rho * sqrt(g00)
+    ),
+    variance_ratio = slope_variance_marginal / g00,
+    g_condition_number = matrix_condition_number(g00, slope_variance_marginal, marginal_rho),
+    unique_signal_ratio = slope_variance_marginal * (1 - marginal_rho^2) /
+      (slope_variance_marginal * (1 - marginal_rho^2) + 1 / (mean_clus_size - 1))
+  )
+
+lai_dgm_low <- lai |>
+  filter(
+    beta_zu1 > 0,
+    dgm_posterior_slope_reliability >= 0.19,
+    dgm_posterior_slope_reliability <= 0.31
+  ) |>
+  distinct(
+    clus_size, icc, vr_u1_u0, cor_u0_u1, beta_zu1, var_u1,
+    sigma2, dgm_posterior_slope_reliability, truth
+  ) |>
+  mutate(
+    raw_beta = beta_zu1,
+    z_residual_variance = 1 - (
+      0.4^2 * icc + beta_zu1^2 * var_u1 +
+        2 * 0.4 * beta_zu1 * cor_u0_u1 * sqrt(icc * var_u1)
+    ),
+    variance_ratio = var_u1 / icc,
+    g_condition_number = matrix_condition_number(icc, var_u1, cor_u0_u1),
+    unique_signal_ratio = var_u1 * (1 - cor_u0_u1^2) /
+      (var_u1 * (1 - cor_u0_u1^2) + sigma2 / clus_size)
+  )
+
+range_text <- function(x, digits = 3L) {
+  paste0(fmt_num(min(x), digits), "--", fmt_num(max(x), digits))
+}
+
+dgm_comparison <- tibble::tribble(
+  ~Quantity, ~`VH Study 2: target reliability .25`, ~`Lai Study 1: reliability .19--.31`,
+  "Manipulated information factor", "Marginal posterior slope reliability", "Conditional random-intercept ICC",
+  "Lai-style conditional ICC", fmt_num(0.81 / 1.81), ".05 or .20 in the nearby cells",
+  "Slope/intercept variance ratio", range_text(vh_dgm_low$variance_ratio, 4), range_text(lai_dgm_low$variance_ratio, 2),
+  "Condition number of true G", range_text(vh_dgm_low$g_condition_number, 1), range_text(lai_dgm_low$g_condition_number, 2),
+  "Unique-slope signal ratio", paste0(fmt_pct(min(vh_dgm_low$unique_signal_ratio)), "--", fmt_pct(max(vh_dgm_low$unique_signal_ratio))), paste0(fmt_pct(min(lai_dgm_low$unique_signal_ratio)), "--", fmt_pct(max(lai_dgm_low$unique_signal_ratio))),
+  "Non-null standardized truth", range_text(vh_dgm_low$truth, 3), range_text(lai_dgm_low$truth, 3),
+  "Raw slope path", range_text(vh_dgm_low$raw_beta, 3), range_text(lai_dgm_low$raw_beta, 3),
+  "Distal-outcome residual variance", range_text(vh_dgm_low$z_residual_variance, 3), range_text(lai_dgm_low$z_residual_variance, 3)
+)
+
+knitr::kable(
+  dgm_comparison,
+  caption = "Low-information cells differ on covariance geometry, effect size, and outcome noise"
+)
+```
+
+These are not small differences. Near reliability .25, the Lai non-null truth
+is at most about .126 on the common latent-SD scale, whereas VH starts at .20
+and extends to .60. The largest VH raw path is about 20.5. This remains a valid
+population model—the oracle confirms that—but it is a severe test of methods
+that must estimate a tiny latent slope variance and then recover a large raw
+path or an equivalent standardized product.
+
+# Coverage evidence
+
+## Severe undercoverage requires a non-null proxy-score problem
+
+```{r coverage-comparison-calculations}
+summarise_coverage_cells <- function(data, study_label) {
+  data |>
+    group_by(method, method_label) |>
+    summarise(
+      study = study_label,
+      cells = n(),
+      mean_coverage = safe_mean(coverage),
+      median_coverage = safe_median(coverage),
+      minimum_coverage = safe_min(coverage),
+      cells_below_70 = sum(coverage < 0.70, na.rm = TRUE),
+      mean_retained = safe_mean(n_retained),
+      .groups = "drop"
+    )
+}
+
+vh_low_all_effects <- vh_cell |>
+  filter(target_reliability == 0.25, standardized_beta_target > 0) |>
+  summarise_coverage_cells("VH: beta = .2/.4/.6")
+
+vh_low_small_effect <- vh_cell |>
+  filter(target_reliability == 0.25, standardized_beta_target == 0.2) |>
+  summarise_coverage_cells("VH: beta = .2")
+
+vh_low_null <- vh_cell |>
+  filter(target_reliability == 0.25, standardized_beta_target == 0) |>
+  summarise_coverage_cells("VH: beta = 0")
+
+lai_low_nonnull <- lai |>
+  filter(
+    beta_zu1 == 0.4,
+    dgm_posterior_slope_reliability >= 0.19,
+    dgm_posterior_slope_reliability <= 0.31
+  ) |>
+  rename(n_retained = n_analysis_eligible) |>
+  summarise_coverage_cells("Lai: raw beta = .4")
+
+lai_low_null <- lai |>
+  filter(
+    beta_zu1 == 0,
+    dgm_posterior_slope_reliability >= 0.19,
+    dgm_posterior_slope_reliability <= 0.31
+  ) |>
+  rename(n_retained = n_analysis_eligible) |>
+  summarise_coverage_cells("Lai: beta = 0")
+
+coverage_compare <- bind_rows(
+  vh_low_all_effects, vh_low_small_effect, vh_low_null,
+  lai_low_nonnull, lai_low_null
+)
+
+coverage_table <- coverage_compare |>
+  filter(method != "closed_form_dual") |>
+  select(method_label, study, mean_coverage, minimum_coverage, cells_below_70) |>
+  mutate(
+    `Mean coverage` = fmt_pct(mean_coverage),
+    `Minimum cell` = fmt_pct(minimum_coverage),
+    `Cells below 70%` = cells_below_70
+  ) |>
+  select(Method = method_label, Scenario = study, `Mean coverage`, `Minimum cell`, `Cells below 70%`) |>
+  arrange(Method, factor(Scenario, levels = c(
+    "VH: beta = 0", "VH: beta = .2", "VH: beta = .2/.4/.6",
+    "Lai: beta = 0", "Lai: raw beta = .4"
+  )))
+
+knitr::kable(
+  coverage_table,
+  caption = "Condition-weighted coverage in low-information cells; Lai's nearby cells have posterior reliability .19--.31"
+)
+```
+
+The null-effect rows are the most useful negative control. VH oracle, naive
+dual BLUP, uncorrected closed-form OLS, and MSEM are near nominal at
+$\beta=0$; Fuller and 2S-PA are conservative. Coverage then collapses as the
+non-null standardized effect increases. That pattern is inconsistent with a
+simple error in the coverage indicator or common reporting scale.
+
+Even VH's smallest non-null effect, .20, is larger than every non-null Lai
+truth in the nearby reliability band. Still, effect magnitude is not the whole
+story: when $\rho=0$, Fuller and 2S-PA are near nominal at VH $\beta=.20$.
+The largest gap appears when $|\rho|=.5$, exactly where marginal reliability
+can be supplied through the intercept and the unique-slope signal collapses.
+
+```{r vh-coverage-by-effect-rho, fig.width=10.5, fig.height=8.2, fig.cap="VH Study 2 coverage at target reliability .25, averaged equally over cluster counts and within-cluster sizes."}
+coverage_effect_rho <- vh_cell |>
+  filter(
+    target_reliability == 0.25,
+    method %in% c(
+      "oracle_dual", "naive_dual_blup", "fuller_closed_form",
+      "fuller_alpha_stepdown_closed_form", "lai_2spa", "msem"
+    )
+  ) |>
+  group_by(method_label, standardized_beta_target, marginal_rho) |>
+  summarise(coverage = mean(coverage), .groups = "drop") |>
+  mutate(rho_label = factor(marginal_rho, levels = c(-0.5, 0, 0.5)))
+
+ggplot(
+  coverage_effect_rho,
+  aes(
+    x = standardized_beta_target,
+    y = coverage,
+    colour = rho_label,
+    group = rho_label
+  )
+) +
+  geom_hline(yintercept = 0.95, colour = "grey35", linetype = "dashed") +
+  geom_line(linewidth = 0.75) +
+  geom_point(size = 2) +
+  facet_wrap(~ method_label, ncol = 2) +
+  scale_colour_manual(values = rho_palette) +
+  scale_x_continuous(breaks = c(0, 0.2, 0.4, 0.6)) +
+  scale_y_continuous(labels = label_percent(accuracy = 1), limits = c(0, 1)) +
+  labs(
+    x = "Standardized slope effect",
+    y = "Empirical 95% coverage",
+    colour = "rho(u0, u1)",
+    title = "VH coverage by standardized effect and random-effect correlation",
+    subtitle = "Condition-weighted means; dashed line is nominal 95% coverage"
+  ) +
+  theme_report()
+```
+
+## The failure tracks unique slope information better than the marginal label
+
+```{r coverage-vs-unique-signal, fig.width=10.5, fig.height=6.8, fig.cap="Condition-level VH coverage versus the unique-slope signal ratio at target marginal reliability .25."}
+vh_low_geometry_for_join <- vh_geometry |>
+  filter(target_reliability == 0.25) |>
+  select(mean_clus_size, marginal_rho, unique_signal_ratio, g_condition_number)
+
+coverage_signal_df <- vh_cell |>
+  filter(
+    target_reliability == 0.25,
+    standardized_beta_target > 0,
+    method %in% c(
+      "naive_dual_blup", "fuller_closed_form",
+      "fuller_alpha_stepdown_closed_form", "lai_2spa", "msem"
+    )
+  ) |>
+  left_join(
+    vh_low_geometry_for_join,
+    by = c("mean_clus_size", "marginal_rho")
+  ) |>
+  mutate(effect_label = factor(standardized_beta_target))
+
+ggplot(
+  coverage_signal_df,
+  aes(x = unique_signal_ratio, y = coverage, colour = effect_label)
+) +
+  geom_hline(yintercept = 0.95, colour = "grey35", linetype = "dashed") +
+  geom_point(alpha = 0.42, size = 1.4) +
+  geom_smooth(method = "lm", formula = y ~ log10(x), se = FALSE, linewidth = 0.8) +
+  facet_wrap(~ method_label, ncol = 3) +
+  scale_x_log10(
+    labels = label_percent(accuracy = 1),
+    breaks = c(0.015, 0.03, 0.06, 0.12, 0.25)
+  ) +
+  scale_y_continuous(labels = label_percent(accuracy = 1), limits = c(0, 1)) +
+  scale_colour_manual(values = effect_palette) +
+  labs(
+    x = "Unique-slope signal ratio (log scale)",
+    y = "Empirical 95% coverage",
+    colour = "Standardized effect",
+    title = "VH coverage by unique-slope signal ratio",
+    subtitle = "All points are labeled marginal posterior reliability .25"
+  ) +
+  theme_report()
+```
+
+This figure should be interpreted descriptively: the unique-signal diagnostic
+is a deterministic function of cluster size, correlation, and the calibrated
+variance, not a newly randomized factor. Nevertheless, it exposes why the
+single label “reliability .25” hides qualitatively different dual-predictor
+problems.
+
+## Bias and standard-error behavior are method specific
+
+```{r bias-se-table}
+bias_se_table <- vh_cell |>
+  filter(target_reliability == 0.25, standardized_beta_target > 0) |>
+  group_by(method_label) |>
+  summarise(
+    `Mean coverage` = mean(coverage),
+    `Mean bias` = mean(bias),
+    `Mean SE / empirical SD` = mean(se_ratio, na.rm = TRUE),
+    `Median SE / empirical SD` = median(se_ratio, na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  mutate(
+    `Mean coverage` = fmt_pct(`Mean coverage`),
+    `Mean bias` = fmt_num(`Mean bias`),
+    `Mean SE / empirical SD` = fmt_num(`Mean SE / empirical SD`),
+    `Median SE / empirical SD` = fmt_num(`Median SE / empirical SD`)
+  ) |>
+  arrange(method_label) |>
+  rename(Method = method_label)
+
+knitr::kable(
+  bias_se_table,
+  caption = "VH target reliability .25, non-null effects: condition-weighted interval diagnostics"
+)
+```
+
+The naive BLUP interval is too narrow: its mean reported SE is less than half
+the empirical SD in the low-reliability cells. That explains much of its
+undercoverage. Fuller and 2S-PA, by contrast, often have SE ratios above one
+but still undercover because their intervals are centered on negatively biased
+estimates in the near-degenerate correlated cells. MSEM is less biased and
+performs better, but it still deteriorates as the effect grows. The alpha
+stepdown result is particularly poor here and should be treated as an
+implementation-specific failure of this variant, not evidence against all
+Fuller corrections.
+
+# Checks against alternative explanations
+
+## Oracle, scaling, and interval coding
+
+Three checks substantially narrow the explanation.
+
+1. **Oracle coverage is stable.** The oracle uses the true random intercept and
+   slope and stays near nominal across reliability, effect, and correlation.
+   The distal-outcome DGM, target truth, stage-2 sample size, and coverage
+   indicator can therefore produce correct coverage in every VH cell.
+2. **A common scale cannot change coverage.** Multiplying the estimate, SE,
+   confidence limits, and truth by the same positive population slope SD leaves
+   interval inclusion unchanged. This rules out the raw-versus-common-latent-SD
+   distinction as the cause of the VH/Lai coverage gap.
+3. **The refreshed Lai comparison holds code more nearly constant.** The local
+   Lai `latent_sd` view uses the same current estimator helpers and the VH
+   eligibility rule. Published Lai MSEM uses an OpenMx delta-method standardized
+   interval and the historical reporting view has method-specific scaling, so
+   it is not perfectly identical; however, those differences cannot explain
+   why the same VH 2S-PA and MSEM machinery behaves well on the Lai DGM and
+   poorly in the current VH near-floor cells.
+
+## Retention rules do not create the main gap
+
+```{r retention-sensitivity}
+retention_cell <- vh_rep |>
+  filter(target_reliability == 0.25, standardized_beta_target > 0) |>
+  group_by(method, condition_id) |>
+  summarise(
+    n_converged = sum(converged, na.rm = TRUE),
+    n_report = sum(interval_ready, na.rm = TRUE),
+    coverage_converged = mean(covered[converged], na.rm = TRUE),
+    coverage_report = mean(covered[interval_ready], na.rm = TRUE),
+    .groups = "drop"
+  ) |>
+  group_by(method) |>
+  summarise(
+    method_label = factor(first(method), levels = method_order, labels = method_labels),
+    `Mean converged-only coverage` = mean(coverage_converged, na.rm = TRUE),
+    `Mean report-rule coverage` = mean(coverage_report, na.rm = TRUE),
+    `Mean retained fraction` = sum(n_report) / sum(n_converged),
+    .groups = "drop"
+  ) |>
+  mutate(
+    `Mean converged-only coverage` = fmt_pct(`Mean converged-only coverage`),
+    `Mean report-rule coverage` = fmt_pct(`Mean report-rule coverage`),
+    `Mean retained fraction` = fmt_pct(`Mean retained fraction`)
+  ) |>
+  select(Method = method_label, everything(), -method)
+
+knitr::kable(
+  retention_cell,
+  caption = "Sensitivity to the VH report's post-convergence eligibility rule"
+)
+```
+
+For Fuller, 2S-PA, MSEM, and oracle, the current report rule changes little or
+nothing among converged low-reliability non-null replications. The naive BLUP
+screen has a modest effect, but its coverage remains far below nominal under
+either rule. Differential convergence is still a limitation—especially for
+2S-PA—and every coverage statement remains conditional on a usable fit, but it
+does not explain the broad cross-study contrast.
+
+## Source discrepancy: manuscript versus supplement cluster sizes
+
+The local Lai replication follows the archived supplemental code and uses
+cluster sizes 3, 10, and 25. The manuscript PDF states 3, 5, and 10 in its Study
+1 design description. This report compares against the local replication
+requested for the audit, not a reconstructed manuscript-only grid. The
+discrepancy should be resolved before calling any figure an exact paper
+reproduction. It does not account for the present conclusion: VH undercoverage
+is already visible at overlapping sizes, and the strongest mechanism is the
+near-floor calibration with a fixed large intercept variance.
+
+# Conclusions
+
+## What is established
+
+1. **The low-coverage VH cells are genuinely more difficult than Lai's
+   low-ICC cells.** Similar marginal posterior reliabilities mask very different
+   covariance condition numbers, unique-slope signal, standardized effects,
+   and distal-outcome residual variances.
+2. **The current marginal reliability factor is not orthogonal to cluster size
+   and random-effect correlation.** At $|\rho|=.5$, larger clusters raise the
+   reliability floor, so solving for the same .25 target drives the slope
+   variance toward zero and makes the dual-predictor problem less regular.
+3. **The poor coverage is not primarily a CI-counting, common-scale, or oracle
+   problem.** It arises after replacing true random effects with estimated
+   scores or latent variables, and it is strongest for non-null effects.
+4. **Methods fail for different immediate reasons.** Naive BLUP SEs are too
+   small; Fuller and 2S-PA suffer large centering bias in the most extreme
+   cells; MSEM is more robust but not immune; the tested alpha-stepdown variant
+   is unreliable in this region.
+
+## What is not yet established
+
+The existing factorial outputs cannot apportion the gap into a single causal
+percentage for covariance geometry, effect magnitude, software, and interval
+construction because the two studies change all of these jointly. The
+unique-slope signal diagnostic is strongly explanatory but observational
+within the existing design. A bridge simulation is needed for a causal
+decomposition.
+
+# Recommended design and analysis changes
+
+## Decisive next step: Study 5 matched-calibration bridge
+
+The most informative next study is not a contest between posterior reliability
+and ICC as labels. It is a **matched-reliability intervention on the route by
+which low information is created**. Posterior reliability remains an appealing
+design quantity because it incorporates the planned time design, cluster size,
+residual covariance, and the full random-effect covariance. The problem is
+that one scalar reliability value does not determine that covariance geometry.
+In the current Study 2 calibration, fixing $G_{00}=.81$ and $sigma^2=1$ and
+solving only for $G_{22}$ can turn a low-information target into an almost
+degenerate latent predictor. Lai's ICC manipulation does not make that same
+one-coordinate move.
+
+Study 5 therefore holds the data generator, estimators, target reliability,
+cluster count, and structural estimand fixed while comparing three calibration
+arms:
+
+1. **Current $G_{22}$ calibration (`current_g22`).** Fix $G_{00}=.81$ and
+   $sigma=1$, and solve $G_{22}$ for marginal posterior slope reliability
+   $.25$. This exactly represents the mechanism under suspicion.
+2. **Shape-preserving marginal calibration
+   (`shape_preserving_marginal`).** Fix a regular covariance shape with
+   $G_{22}/G_{00}=1$, retain the requested intercept--slope correlation, and
+   solve $sigma$ for the same marginal posterior slope reliability $.25$.
+   This retains posterior reliability as the manipulated factor but prevents
+   reliability from being achieved by collapsing one latent variance.
+3. **Shape-preserving partial calibration
+   (`shape_preserving_partial`).** Use the same regular $G$ shape, but solve
+   $sigma$ for posterior reliability of the latent slope residualized on the
+   random intercept. This tests whether the remaining problem is the
+   *definition* of reliability rather than the route used to attain it.
+
+For the third arm, define
+
+$$
+\eta_i=u_{1i}-\frac{G_{12}}{G_{11}}u_{0i},\qquad
+\mathbf c=\left(-\frac{G_{12}}{G_{11}},1\right)^\mathsf T,
+$$
+
+and calibrate the exact posterior reliability
+
+$$
+R_\eta
+=1-\frac{E\left(\mathbf c^\mathsf T
+V_{i,\mathrm{post}}\mathbf c\right)}
+{\mathbf c^\mathsf T G\mathbf c},\qquad
+V_{i,\mathrm{post}}=\left(G^{-1}+Z_i^\mathsf T
+R_i^{-1}Z_i\right)^{-1}.
+$$
+
+This contrast is not merely a convenient signal ratio. Reparameterizing the
+stage-2 predictors from $(u_0,u_1)$ to $(u_0,\eta)$ leaves the coefficient on
+the focal slope unchanged. $R_\eta$ therefore measures posterior information
+for the latent predictor variation that identifies the partial slope
+coefficient, while still using the full posterior covariance. It also remains
+well defined for unbalanced clusters and non-iid $R_i$, unlike the simple
+balanced-design approximation based only on $S_{xx}$.
+
+The compact confirmatory grid fixes $J=100$ clusters and crosses:
+
+- calibration arm: the three arms above;
+- cluster size: $m=10,25$;
+- marginal intercept--slope correlation: $\rho=0,.5$; and
+- standardized focal slope effect: $0,.2,.4$.
+
+This yields 36 conditions. Each condition should receive 1,000 replications.
+The full seven-method Study 2 implementation is reused unchanged: oracle dual,
+naive dual BLUP, uncorrected closed-form OLS, Fuller, Fuller alpha-stepdown,
+Lai 2S-PA, and MSEM. The confirmatory comparison emphasizes oracle, naive dual
+BLUP, Fuller, Lai 2S-PA, and MSEM; the two additional corrected-score variants
+help localize any failure without introducing a new estimator during the DGM
+experiment. Fixed standardized effects keep the focal coefficient and its
+unique variance contribution comparable across arms; the raw coefficient is
+allowed to change with the latent slope scale, as it must under a standardized
+estimand.
+
+Every condition manifest records both reliability definitions whether or not
+they were targeted, along with $sigma$, $G_{22}/G_{00}$, $kappa(G)$,
+$G_{22}-G_{12}^2/G_{11}$, and a Lai-style conditional slope ICC. These are
+essential manipulation checks. In particular, matching the targeted scalar is
+not enough if the supposedly shape-preserving arms accidentally reproduce the
+same near-singular geometry.
+
+### Prespecified interpretation
+
+The three contrasts resolve different branches of the dilemma:
+
+- If `shape_preserving_marginal` restores coverage while `current_g22` fails,
+  posterior reliability is defensible; the culprit is the one-coordinate
+  calibration that collapses $G_{22}$.
+- If both marginal-reliability arms fail but `shape_preserving_partial`
+  restores coverage, marginal slope reliability is misaligned with the
+  dual-predictor estimand and $R_\eta$ should become the primary information
+  factor.
+- If the two shape-preserving arms perform similarly and both restore
+  coverage, covariance regularity matters more than which of the two posterior
+  reliability definitions is targeted. The simpler marginal definition can be
+  retained, provided covariance-shape guards are imposed.
+- If all proxy methods fail only for non-null or larger effects while oracle
+  coverage remains nominal, the remaining limitation is estimator/interval
+  behavior under measurement error, not the DGM calibration alone.
+- If oracle coverage also fails, the comparison does not adjudicate the
+  reliability question; simulation truth, standardization, and interval
+  construction must be audited first.
+
+Coverage should be interpreted with its Monte Carlo uncertainty. With 1,000
+eligible replications, the approximate 95% binomial fluctuation band around
+nominal .95 coverage is about .936--.964. The primary evidence is the
+within-cell change across arms, accompanied by bias, empirical SD, mean model
+SE, convergence, and the SE-to-empirical-SD ratio. Averaging across effect
+sizes would conceal the null/non-null pattern already visible in Study 2.
+
+The executable Study 5 implementation accompanies this report in
+`vig_hallquist_2026/vh_study5.R`, with its design in
+`vig_hallquist_2026/vh_designs.R` and a results template in
+`vig_hallquist_2026/analysis/vh_2026_study5.Rmd`.
+
+## Redefine the low-information factor for a dual-predictor estimand
+
+For a model in which both random intercept and random slope predict the distal
+outcome, the primary information factor should track the slope variation that
+remains after adjusting for the intercept. One option for balanced iid cells is
+to calibrate
+
+$$
+r_{\text{unique,target}}
+=\frac{G_{22}(1-\rho^2)S_{xx}}
+{\sigma^2+G_{22}(1-\rho^2)S_{xx}},
+$$
+
+and treat the existing full marginal posterior slope reliability as a reported
+derived quantity. A more general implementation could define reliability for
+the residualized latent contrast directly from the full posterior covariance.
+This would align the manipulated information factor with the partial slope
+coefficient actually being evaluated.
+
+If marginal posterior reliability remains the primary factor, impose a design
+guard such as a minimum distance above the correlation-induced floor and a
+maximum covariance condition number. The current $.25$ target at $m=25$,
+$|\rho|=.5$ should be labeled a **near-boundary stress test**, not treated as
+exchangeable with the $\rho=0$ reliability-.25 cell.
+
+## Run a small bridge factorial before changing the main simulation
+
+Study 5 operationalizes the bridge above in a deliberately small first pass.
+It uses two cluster sizes and fixed standardized effects so that the key
+calibration-arm contrast can be estimated with adequate Monte Carlo precision
+before expanding the grid. A second-stage extension should add $m=3$,
+$\rho=-.5$, alternative regular ratios $G_{22}/G_{00}\in\{.5,2\}$, and a fixed
+raw-path arm only if the initial three-arm comparison leaves the mechanism
+ambiguous. Those additions are informative, but including them initially would
+spend simulation effort on effect-scale and symmetry questions before testing
+the central covariance-geometry hypothesis.
+
+## Keep the current cells, but change their interpretation
+
+The current results are scientifically useful as a robustness study. They show
+that marginal slope reliability can be misleading for dual-predictor
+inference when intercept-slope correlation carries most of the marginal
+information. Recommended reporting changes are:
+
+- replace the preliminary `icc` heatmap with the actual Lai-style conditional
+  ICC and label it constant at .448 in VH Study 2;
+- add the reliability floor, target-minus-floor, slope/intercept variance
+  ratio, covariance condition number, and unique-slope signal diagnostic to the
+  condition manifest and figures;
+- stratify low-reliability coverage by null versus non-null effect and by
+  $\rho$, rather than averaging those cells together;
+- retain oracle coverage and SE/empirical-SD ratios beside method coverage;
+- present near-floor cells as a separate stress-test panel; and
+- investigate penalized variance estimation or bootstrap/profile intervals
+  only after the DGM comparison is made explicit, because wider intervals alone
+  will not repair large centering bias.
+
+# Limitations and reproducibility
+
+- VH coverage is based on the existing `vig_hallquist_slurm` cache referenced
+  by the current Study 2 R Markdown file. Newer or partial output directories
+  were not substituted silently.
+- Lai comparisons use condition-level aggregates, while VH calculations start
+  from replication-level output. Both use condition-weighted summaries and the
+  VH-primary eligibility rule, but some replication-level Lai sensitivity
+  checks would require rereading the per-condition compressed files.
+- The simple unique-slope signal ratio used in the retrospective diagnosis is
+  a balanced-iid approximation. Study 5 instead implements $R_\eta$ from the
+  full posterior covariance, which extends directly to arbitrary planned
+  $Z_i$ and positive-definite $R_i$. Whether it is the most useful primary
+  design factor remains an empirical question for the bridge simulation.
+- Coverage is conditional on convergence and eligibility. Joint metrics that
+  count nonconvergence as failure answer a different question and should be
+  reported separately, not substituted for inferential coverage.
+
+The report can be rendered from the repository root with:
+
+```{r reproducibility-command, echo=TRUE, eval=FALSE}
+rmarkdown::render(
+  "reports/vh_study2_lai_coverage_investigation.Rmd",
+  output_file = "vh_study2_lai_coverage_investigation.html"
+)
+```
+
+Primary local sources:
+
+- [`vig_hallquist_2026/analysis/vh_2026_study2.Rmd`](../vig_hallquist_2026/analysis/vh_2026_study2.Rmd)
+- [`vig_hallquist_2026/analysis/vh_2026_study5.Rmd`](../vig_hallquist_2026/analysis/vh_2026_study5.Rmd)
+- [`vig_hallquist_2026/vh_designs.R`](../vig_hallquist_2026/vh_designs.R)
+- [`vig_hallquist_2026/vh_study5.R`](../vig_hallquist_2026/vh_study5.R)
+- [`R/reliability_calibration.R`](../R/reliability_calibration.R)
+- [`lai_study1_replication_vh/designs.R`](../lai_study1_replication_vh/designs.R)
+- [`lai_study1_replication_vh/estimators.R`](../lai_study1_replication_vh/estimators.R)
+- [`lai_study1_replication_vh/README.md`](../lai_study1_replication_vh/README.md)
+- [`documentation/posterior_reliability_to_random_effects.md`](../documentation/posterior_reliability_to_random_effects.md)
+- [`documentation/Lai2026_2SPA.pdf`](../documentation/Lai2026_2SPA.pdf), especially the Study 1 design/results discussion and Figure 3

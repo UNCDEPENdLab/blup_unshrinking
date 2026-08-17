@@ -73,7 +73,11 @@ stopifnot(
       condition$standardized_beta_target
   ) < 0.08,
   results$estimate[results$method == "naive_slope_blup"] >
-    results$estimate[results$method == "naive_dual_blup"]
+    results$estimate[results$method == "naive_dual_blup"],
+  abs(
+    results$stage1_slope_variance -
+      condition$slope_variance_marginal
+  ) < 0.08
 )
 
 failed_results <- make_failed_result(
