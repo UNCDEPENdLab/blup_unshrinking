@@ -1490,10 +1490,33 @@ make_icc_reliability_bridge_design <- function(
   }) %>%
     dplyr::bind_rows()
 
-  dplyr::bind_cols(
+  bridge_design <- dplyr::bind_cols(
     dplyr::select(design, -G_marginal),
     structural_rows
   )
+
+  # Pair the two calibration arms before condition IDs are assigned. The
+  # paired arms share every design factor except `calibration_arm`; using this
+  # stable group in the replication seed gives them common random numbers.
+  # At m = 10 the two calibrated DGMs are identical, so this creates an exact
+  # replication-by-replication anchor check.
+  bridge_design %>%
+    dplyr::mutate(
+      bridge_pair_label = sprintf(
+        "m%02d_rho%+.2f_rel%.2f_beta%.2f",
+        as.integer(mean_clus_size),
+        as.numeric(marginal_rho),
+        as.numeric(posterior_reliability_anchor),
+        as.numeric(standardized_beta_target)
+      ),
+      bridge_pair_id = as.integer(factor(
+        bridge_pair_label,
+        levels = sort(unique(bridge_pair_label))
+      )),
+      # Keep this namespace separate from ordinary condition IDs while
+      # remaining comfortably inside R's integer seed range.
+      simulation_seed_group = 10000L + bridge_pair_id
+    )
 }
 
 #' Build Study 5: a matched-reliability calibration bridge.
@@ -1502,10 +1525,12 @@ make_icc_reliability_bridge_design <- function(
 #' All three arms target reliability .25, but they reach it through different
 #' one-dimensional calibrations:
 #'
-#' - `current_g22` reproduces Study 2 by fixing `G00 = .81` and `sigma = 1`
-#'   and solving for `G22` using marginal slope reliability;
-#' - `shape_preserving_marginal` fixes `G22/G00 = 1` and solves for `sigma`
-#'   using the same marginal reliability;
+#' - `current_g22` reproduces Study 2 by fixing the intercept variance
+#'   `tau0^2 = .81` and `sigma = 1`, then solving only for the slope variance
+#'   `tau1^2` using marginal slope reliability. `current_g22` is retained as
+#'   the old code label for this legacy `solve-G_22` arm;
+#' - `shape_preserving_marginal` fixes `tau1^2/tau0^2 = 1` and solves for
+#'   `sigma` using the same marginal reliability;
 #' - `shape_preserving_partial` fixes the same covariance shape and solves for
 #'   `sigma` using reliability of the slope residualized on the intercept.
 #'

@@ -160,6 +160,12 @@ Rscript tests/test_lai_openmx_inputs.R
 Rscript tests/test_openmx_lai_wrapper.R
 Rscript tests/test_stacked_sandwich_helpers.R
 Rscript tests/test_stage2_estimators.R
+Rscript tests/test_partial_reliability_calibration.R
+Rscript tests/test_vh_v2_designs.R
+Rscript tests/test_fuller_algebra_audit.R
+Rscript tests/test_vh_eligibility_summaries.R
+Rscript tests/test_vh_replication_audit.R
+Rscript tests/test_vh_openmx_failure_rows.R
 Rscript lai_replication/tests/smoke_lai_helpers.R
 ```
 
@@ -172,4 +178,15 @@ Coverage is intentionally focused on shared pipeline pieces:
 - `test_openmx_lai_wrapper.R`: small synthetic check for the Lai structural-slope OpenMx wrapper.
 - `test_stacked_sandwich_helpers.R`: parameter packing, cluster precomputation, likelihood equivalence, corrected scores, and stacked-sandwich covariance output shape.
 - `test_stage2_estimators.R`: formatting of stacked-sandwich HC0-HC3 result rows.
+- `test_partial_reliability_calibration.R` and `test_vh_v2_designs.R`:
+  shape-preserving marginal/residualized reliability calibration, legacy/v2
+  selector separation, and the paired ICC bridge.
+- `test_fuller_algebra_audit.R`: independent reproduction of the corrected
+  Fuller equations, including nonzero predictor--outcome error covariance and
+  the retained finite-sample variants.
+- `test_vh_eligibility_summaries.R` and `test_vh_replication_audit.R`: point
+  versus interval denominators, Monte Carlo summaries, Stage-1 diagnostics,
+  run provenance, and the versioned ICC crosswalk.
+- `test_vh_openmx_failure_rows.R`: failed 2S-PA fits remain explicit one-row
+  results instead of disappearing from a replication.
 - `lai_replication/tests/smoke_lai_helpers.R`: one-replication Study 1 smoke test through the Lai runner.

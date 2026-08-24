@@ -18,6 +18,8 @@ pacman::p_load(tidyverse, ggh4x)
 source_helpers <- function() {
   analysis_dir <- here::here("vig_hallquist_2026", "analysis")
   source(file.path(analysis_dir, "data_import.R"))
+  source(here::here("R", "core_utils.R"))
+  source(here::here("R", "sim_diagnostics.R"))
   source(here::here("vig_hallquist_2026", "vh_study4.R"))
 }
 source_helpers()
@@ -29,17 +31,18 @@ source_helpers()
 ```{r}
 # Load data
 study4 <- read_study_cache("study4", this_run = "vig_hallquist_slurm_7_23_26") %>%
+  add_study4_analysis_eligibility() %>%
   mutate(
+      converged = point_eligible,
       bias = estimate - truth,
       rel_bias = case_when(
           truth == 0 ~ NA_real_,
           TRUE ~ (estimate - truth) / truth
       ),
       sq_error = (estimate - truth)^2,
-      covered = ci_low <= truth & ci_high >= truth,
+      covered = if_else(interval_eligible, ci_low <= truth & ci_high >= truth, NA),
       num_clus_fac = factor(num_clus, levels = c(30, 50, 100, 150, 300))
-  ) %>%
-  add_study2_analysis_eligibility()
+  )
 ```
 
 ```{r}
@@ -47,7 +50,9 @@ study4_method_labels <- c(
   "oracle_dual" = "Oracle with Both",
   "naive_dual_blup" = "OLS with Both BLUPs",
   "closed_form_dual" = "OLS with Both MLEs",
-  "fuller_closed_form" = "Fuller",
+  "fuller_closed_form" = "Fuller (stabilized)",
+  "fuller_book_preliminary_closed_form" = "Fuller (book preliminary)",
+  "fuller_book_closed_form" = "Fuller (book equations)",
   "fuller_alpha_stepdown_closed_form" = "Fuller (alpha stepdown)",
   "fuller_average_measurement" = "Fuller Average",
   "lai_2spa" = "Lai (2-SPA)",

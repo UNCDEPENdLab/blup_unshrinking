@@ -6,7 +6,34 @@
 #' completed condition files.
 
 vh_pipeline_version <- function() {
-  "fuller_study4_diagnostics_v2_20260717"
+  "openmx_one_row_stage1_covariance_v6_20260817"
+}
+
+#' Return the deterministic seed for one simulation replication.
+#'
+#' Ordinary conditions use their stable `condition_id`. ICC-bridge conditions
+#' instead use `simulation_seed_group`, which is shared by the matched
+#' posterior-reliability and ICC arms. The latter implements common random
+#' numbers: the m = 10 anchor has identical data replication by replication,
+#' and non-anchor arm contrasts retain positive Monte Carlo covariance.
+vh_replication_seed <- function(condition, rep_id,
+                                base_seed = 20260612L,
+                                condition_stride = 100000L) {
+  seed_group <- if (
+    "simulation_seed_group" %in% names(condition) &&
+      length(condition$simulation_seed_group) > 0L &&
+      is.finite(condition$simulation_seed_group[[1]])
+  ) {
+    as.numeric(condition$simulation_seed_group[[1]])
+  } else {
+    as.numeric(condition$condition_id[[1]])
+  }
+  seed <- as.numeric(base_seed) + seed_group * as.numeric(condition_stride) +
+    as.numeric(rep_id)
+  if (!is.finite(seed) || seed < 0 || seed > .Machine$integer.max) {
+    stop("Derived replication seed is outside R's supported integer range.")
+  }
+  as.integer(seed)
 }
 
 #' Parse an optional command-line integer argument.
@@ -170,31 +197,137 @@ get_condition_file_paths <- function(out_dir, condition_id) {
   )
 }
 
+# NA-stable helpers for the inferential Monte Carlo summaries below.
+vh_safe_sd <- function(x) {
+  x <- x[is.finite(x)]
+  if (length(x) < 2L) NA_real_ else stats::sd(x)
+}
+
+vh_safe_quantile <- function(x, probability) {
+  x <- x[is.finite(x)]
+  if (length(x) == 0L) {
+    return(NA_real_)
+  }
+  unname(stats::quantile(x, probs = probability, names = FALSE, na.rm = TRUE))
+}
+
+vh_safe_correlation <- function(x, y) {
+  keep <- is.finite(x) & is.finite(y)
+  if (sum(keep) < 2L || stats::sd(x[keep]) <= sqrt(.Machine$double.eps) ||
+      stats::sd(y[keep]) <= sqrt(.Machine$double.eps)) {
+    return(NA_real_)
+  }
+  stats::cor(x[keep], y[keep])
+}
+
+vh_binomial_rate <- function(event, eligible) {
+  keep <- !is.na(eligible) & eligible
+  if (!any(keep) || anyNA(event[keep])) {
+    return(NA_real_)
+  }
+  mean(event[keep])
+}
+
+vh_binomial_mc_se <- function(event, eligible) {
+  keep <- !is.na(eligible) & eligible
+  n <- sum(keep)
+  rate <- vh_binomial_rate(event, eligible)
+  if (n == 0L || !is.finite(rate)) {
+    return(NA_real_)
+  }
+  sqrt(rate * (1 - rate) / n)
+}
+
+vh_binomial_wilson_bound <- function(event, eligible, bound = c("low", "high"),
+                                     confidence = 0.95) {
+  bound <- match.arg(bound)
+  keep <- !is.na(eligible) & eligible
+  n <- sum(keep)
+  rate <- vh_binomial_rate(event, eligible)
+  if (n == 0L || !is.finite(rate)) {
+    return(NA_real_)
+  }
+  z <- stats::qnorm(1 - (1 - confidence) / 2)
+  denominator <- 1 + z^2 / n
+  center <- (rate + z^2 / (2 * n)) / denominator
+  half_width <- z * sqrt(rate * (1 - rate) / n + z^2 / (4 * n^2)) /
+    denominator
+  if (identical(bound, "low")) {
+    max(0, center - half_width)
+  } else {
+    min(1, center + half_width)
+  }
+}
+
+vh_compact_reason_counts <- function(reason, eligible) {
+  excluded <- !is.na(eligible) & !eligible
+  reason <- as.character(reason[excluded])
+  reason[is.na(reason) | !nzchar(reason)] <- "unspecified"
+  if (length(reason) == 0L) {
+    return(NA_character_)
+  }
+  counts <- sort(table(reason), decreasing = TRUE)
+  paste0(names(counts), "=", as.integer(counts), collapse = "; ")
+}
+
 #' Summarize replication-level estimator results.
 #'
 #' @details
 #' The summary is computed at the condition-study-method level while preserving
 #' the design parameters needed to compare rows across the study grids.
-#' OpenMx status-code-10 failures are counted separately and are excluded from
-#' the convergence flag even if an estimate column is present. Bias, RMSE, and
-#' coverage are based on the standardized estimand stored in `truth`.
+#' Point-estimate summaries use `point_eligible`; interval summaries use the
+#' stricter `interval_eligible`. Conditional coverage/rejection rates and joint
+#' success probabilities are both reported so a method cannot appear well
+#' calibrated solely because difficult replications failed to yield intervals.
+#' Bias, RMSE, coverage, Type I error, and power use the standardized estimand
+#' stored in `truth`.
 #'
 #' @param results Replication-level result tibble produced by
 #'   `run_condition_replications()` or loaded from per-condition files. Expected
 #'   columns include `condition_id`, `study`, `method`, `estimate`, `truth`,
-#'   confidence limits, status diagnostics, and the design descriptors.
+#'   confidence limits, status diagnostics, explicit point/interval eligibility,
+#'   and the design descriptors. Older inputs without the explicit fields are
+#'   classified conservatively from their status, estimates, SEs, and limits.
 #'
 #' @return A tibble with one row per condition-study-method combination and
-#'   Monte Carlo summary columns including convergence, mean estimate, MC SE of
-#'   the mean, bias, coverage, RMSE, median and 95th-percentile absolute error,
-#'   successful replications, and status-10 failure counts.
+#'   Monte Carlo summary columns for eligibility, bias and its MC interval,
+#'   empirical-versus-model SE calibration on the common interval-eligible
+#'   subset, interval-width tails, conditional and joint coverage,
+#'   rejection/Type-I error/power, Wilson intervals for binomial rates, and
+#'   estimator diagnostic averages.
 summarize_results_df <- function(results) {
+  required_point_columns <- c("estimate", "truth", "status_code")
+  missing_point_columns <- setdiff(required_point_columns, names(results))
+  if (length(missing_point_columns) > 0L) {
+    stop(
+      "Cannot summarize results without: ",
+      paste(missing_point_columns, collapse = ", ")
+    )
+  }
+  # Point-only diagnostic methods and older fixtures may omit interval fields.
+  # Materialize them as missing so those rows remain available for point
+  # summaries and are transparently excluded from interval summaries.
+  for (column in c("se", "ci_low", "ci_high")) {
+    if (!(column %in% names(results))) {
+      results[[column]] <- rep(NA_real_, nrow(results))
+    }
+  }
+
+  # The explicit fields are written by current Studies 1--4. Reclassifying here
+  # also makes aggregate rebuilds from older condition files conservative and
+  # gives them the same denominator contract.
+  results <- add_vh_analysis_eligibility(results)
+
   design_cols <- intersect(
     c(
       "condition_id", "study", "study_version", "calibration_version",
-      "method", "method_role", "num_clus", "mean_clus_size",
+      "method", "method_role", "fuller_variant",
+      "fuller_preliminary_moment", "fuller_variance_bread",
+      "fuller_predictor_outcome_covariance_source",
+      "num_clus", "mean_clus_size",
       "target_reliability", "achieved_reliability", "marginal_rho",
       "calibration_arm", "calibration_metric", "calibration_target",
+      "bridge_pair_id", "bridge_pair_label", "simulation_seed_group",
       "calibration_target_value", "achieved_calibration_value",
       "covariance_shape_fixed", "posterior_reliability_anchor", "icc_anchor",
       "target_calibration_reliability", "achieved_calibration_reliability",
@@ -246,6 +379,7 @@ summarize_results_df <- function(results) {
       "average_measurement_slope_bias_large",
       "average_measurement_slope_rmse_large",
       "fuller_measurement_weight_used",
+      "fuller_predictor_outcome_covariance_max_abs",
       "fuller_alpha_step1_used", "fuller_alpha_step3_used",
       "fuller_alpha_scaling_used",
       "fuller_correction1", "fuller_correction_c",
@@ -261,38 +395,189 @@ summarize_results_df <- function(results) {
     ),
     names(results)
   )
+  # Automatically retain the expanded replication-level audit fields. Keeping
+  # this prefix-based prevents a newly added matrix entry from silently being
+  # written to condition files but omitted from aggregate summaries.
+  expanded_diagnostic_cols <- grep(
+    paste0(
+      "^stage1(_[yq])?_(lambda|theta|posterior_variance|",
+      "corrected_score_error_covariance|fitted_|true_blup|blup_slope|",
+      "corrected_score_slope|latent_covariance)|",
+      "^mx_(raw_focal|latent_|predictor_latent_|outcome_latent_)|",
+      "^mplus_"
+    ),
+    names(results),
+    value = TRUE
+  )
+  expanded_diagnostic_cols <- expanded_diagnostic_cols[
+    vapply(results[expanded_diagnostic_cols], function(x) {
+      is.numeric(x) || is.integer(x) || is.logical(x)
+    }, logical(1L))
+  ]
+  replication_diagnostic_cols <- unique(c(
+    replication_diagnostic_cols,
+    expanded_diagnostic_cols
+  ))
   results %>%
     dplyr::mutate(
       # Status 10 is an OpenMx optimizer failure class; keep it visible rather
       # than folding it into generic missing-estimate behavior.
       status10_failure = !is.na(status_code) & status_code == 10L,
-      converged = !status10_failure & !is.na(estimate),
-      bias = estimate - truth,
-      abs_error = abs(estimate - truth),
-      sq_error = (estimate - truth)^2,
-      covered = ci_low <= truth & ci_high >= truth
+      converged = point_eligible,
+      signed_error = dplyr::if_else(
+        point_eligible,
+        estimate - truth,
+        NA_real_
+      ),
+      abs_error = abs(signed_error),
+      sq_error = signed_error^2,
+      eligible_estimate = dplyr::if_else(point_eligible, estimate, NA_real_),
+      interval_eligible_estimate = dplyr::if_else(
+        interval_eligible,
+        estimate,
+        NA_real_
+      ),
+      eligible_se = dplyr::if_else(interval_eligible, se, NA_real_),
+      interval_width = dplyr::if_else(
+        interval_eligible,
+        ci_high - ci_low,
+        NA_real_
+      ),
+      standardized_error = dplyr::if_else(
+        interval_eligible,
+        (estimate - truth) / se,
+        NA_real_
+      ),
+      covered = ci_low <= truth & ci_high >= truth,
+      reject_zero = ci_low > 0 | ci_high < 0,
+      reject_positive = ci_low > 0,
+      reject_negative = ci_high < 0,
+      success_and_cover_event = interval_eligible & dplyr::coalesce(covered, FALSE),
+      success_and_reject_event = interval_eligible & dplyr::coalesce(reject_zero, FALSE)
     ) %>%
     dplyr::group_by(dplyr::across(dplyr::all_of(design_cols))) %>%
     dplyr::summarise(
       truth = dplyr::first(truth),
+      null_condition = is.finite(dplyr::first(truth)) &&
+        abs(dplyr::first(truth)) <= sqrt(.Machine$double.eps),
       n_rep = dplyr::n(),
-      convergence = safe_mean(converged),
-      mean_estimate = safe_mean(estimate),
-      mc_se_mean = if (sum(!is.na(estimate)) > 1L) stats::sd(estimate, na.rm = TRUE) / sqrt(sum(!is.na(estimate))) else NA_real_,
-      bias = safe_mean(bias),
-      coverage = safe_mean(covered),
+      n_point_eligible = sum(point_eligible, na.rm = TRUE),
+      n_interval_eligible = sum(interval_eligible, na.rm = TRUE),
+      point_eligibility = safe_mean(point_eligible),
+      interval_eligibility = safe_mean(interval_eligible),
+      point_eligibility_mc_se = vh_binomial_mc_se(point_eligible, rep(TRUE, dplyr::n())),
+      interval_eligibility_mc_se = vh_binomial_mc_se(interval_eligible, rep(TRUE, dplyr::n())),
+      point_exclusion_reasons = vh_compact_reason_counts(
+        point_exclusion_reason,
+        point_eligible
+      ),
+      interval_exclusion_reasons = vh_compact_reason_counts(
+        interval_exclusion_reason,
+        interval_eligible
+      ),
+      # Backward-compatible aliases: "success" and "analysis eligibility"
+      # now unambiguously mean availability of a defensible point estimate.
+      convergence = point_eligibility,
+      n_success = n_point_eligible,
+      n_analysis_eligible = n_point_eligible,
+      analysis_eligibility = point_eligibility,
+      mean_estimate = safe_mean(eligible_estimate),
+      empirical_sd = vh_safe_sd(eligible_estimate),
+      mc_se_mean = if (n_point_eligible > 1L) {
+        empirical_sd / sqrt(n_point_eligible)
+      } else {
+        NA_real_
+      },
+      mc_se_bias = mc_se_mean,
+      bias = safe_mean(signed_error),
+      bias_mc_low = if (is.finite(bias) && is.finite(mc_se_bias)) {
+        bias - stats::qnorm(0.975) * mc_se_bias
+      } else {
+        NA_real_
+      },
+      bias_mc_high = if (is.finite(bias) && is.finite(mc_se_bias)) {
+        bias + stats::qnorm(0.975) * mc_se_bias
+      } else {
+        NA_real_
+      },
       rmse = if (all(is.na(sq_error))) NA_real_ else sqrt(mean(sq_error, na.rm = TRUE)),
-      median_absolute_error = if (all(is.na(abs_error))) {
+      median_absolute_error = vh_safe_quantile(abs_error, 0.50),
+      p95_absolute_error = vh_safe_quantile(abs_error, 0.95),
+      p99_absolute_error = vh_safe_quantile(abs_error, 0.99),
+      empirical_sd_interval_subset = vh_safe_sd(interval_eligible_estimate),
+      mean_se = safe_mean(eligible_se),
+      median_se = vh_safe_quantile(eligible_se, 0.50),
+      p95_se = vh_safe_quantile(eligible_se, 0.95),
+      p99_se = vh_safe_quantile(eligible_se, 0.99),
+      max_se = if (all(is.na(eligible_se))) NA_real_ else max(eligible_se, na.rm = TRUE),
+      mean_se_to_empirical_sd = if (is.finite(empirical_sd_interval_subset) &&
+          empirical_sd_interval_subset > sqrt(.Machine$double.eps)) {
+        mean_se / empirical_sd_interval_subset
+      } else {
+        NA_real_
+      },
+      mean_se_to_interval_empirical_sd = mean_se_to_empirical_sd,
+      mean_interval_width = safe_mean(interval_width),
+      median_interval_width = vh_safe_quantile(interval_width, 0.50),
+      p95_interval_width = vh_safe_quantile(interval_width, 0.95),
+      p99_interval_width = vh_safe_quantile(interval_width, 0.99),
+      max_interval_width = if (all(is.na(interval_width))) {
         NA_real_
       } else {
-        stats::median(abs_error, na.rm = TRUE)
+        max(interval_width, na.rm = TRUE)
       },
-      p95_absolute_error = if (all(is.na(abs_error))) {
-        NA_real_
+      mean_standardized_error = safe_mean(standardized_error),
+      sd_standardized_error = vh_safe_sd(standardized_error),
+      q025_standardized_error = vh_safe_quantile(standardized_error, 0.025),
+      q975_standardized_error = vh_safe_quantile(standardized_error, 0.975),
+      signed_error_se_correlation = vh_safe_correlation(signed_error, eligible_se),
+      absolute_error_se_correlation = vh_safe_correlation(abs_error, eligible_se),
+      coverage = vh_binomial_rate(covered, interval_eligible),
+      coverage_mc_se = vh_binomial_mc_se(covered, interval_eligible),
+      coverage_mc_low = vh_binomial_wilson_bound(covered, interval_eligible, "low"),
+      coverage_mc_high = vh_binomial_wilson_bound(covered, interval_eligible, "high"),
+      success_and_cover = safe_mean(success_and_cover_event),
+      conditional_rejection_rate = vh_binomial_rate(reject_zero, interval_eligible),
+      rejection_rate_mc_se = vh_binomial_mc_se(reject_zero, interval_eligible),
+      rejection_rate_mc_low = vh_binomial_wilson_bound(
+        reject_zero,
+        interval_eligible,
+        "low"
+      ),
+      rejection_rate_mc_high = vh_binomial_wilson_bound(
+        reject_zero,
+        interval_eligible,
+        "high"
+      ),
+      conditional_positive_rejection_rate = vh_binomial_rate(
+        reject_positive,
+        interval_eligible
+      ),
+      conditional_negative_rejection_rate = vh_binomial_rate(
+        reject_negative,
+        interval_eligible
+      ),
+      success_and_reject = safe_mean(success_and_reject_event),
+      type1_error = if (null_condition) conditional_rejection_rate else NA_real_,
+      type1_error_positive = if (null_condition) {
+        conditional_positive_rejection_rate
       } else {
-        unname(stats::quantile(abs_error, probs = 0.95, na.rm = TRUE))
+        NA_real_
       },
-      n_success = sum(converged, na.rm = TRUE),
+      type1_error_negative = if (null_condition) {
+        conditional_negative_rejection_rate
+      } else {
+        NA_real_
+      },
+      type1_error_mc_se = if (null_condition) rejection_rate_mc_se else NA_real_,
+      type1_error_mc_low = if (null_condition) rejection_rate_mc_low else NA_real_,
+      type1_error_mc_high = if (null_condition) rejection_rate_mc_high else NA_real_,
+      operational_type1_error = if (null_condition) success_and_reject else NA_real_,
+      power = if (!null_condition) conditional_rejection_rate else NA_real_,
+      power_mc_se = if (!null_condition) rejection_rate_mc_se else NA_real_,
+      power_mc_low = if (!null_condition) rejection_rate_mc_low else NA_real_,
+      power_mc_high = if (!null_condition) rejection_rate_mc_high else NA_real_,
+      operational_power = if (!null_condition) success_and_reject else NA_real_,
       n_status10_fail = sum(status10_failure, na.rm = TRUE),
       prop_status10_fail = safe_mean(status10_failure),
       dplyr::across(
@@ -324,13 +609,19 @@ summarize_stage1_problem_df <- function(results) {
     return(tibble::tibble())
   }
 
+  results <- add_vh_analysis_eligibility(results)
+
   design_cols <- intersect(
     c(
       "condition_id", "study", "study_version", "calibration_version",
-      "method", "method_role", "stage1_singular_problem",
+      "method", "method_role", "fuller_variant",
+      "fuller_preliminary_moment", "fuller_variance_bread",
+      "fuller_predictor_outcome_covariance_source",
+      "stage1_singular_problem",
       "num_clus", "mean_clus_size", "target_reliability",
       "achieved_reliability", "marginal_rho", "standardized_beta_target",
       "calibration_arm", "calibration_metric", "calibration_target",
+      "bridge_pair_id", "bridge_pair_label", "simulation_seed_group",
       "calibration_target_value", "achieved_calibration_value",
       "covariance_shape_fixed", "posterior_reliability_anchor", "icc_anchor",
       "target_calibration_reliability", "achieved_calibration_reliability",
@@ -353,21 +644,28 @@ summarize_stage1_problem_df <- function(results) {
   results <- results %>%
     dplyr::mutate(
       status10_failure = !is.na(status_code) & status_code == 10L,
-      converged = !status10_failure & !is.na(estimate),
-      bias = estimate - truth,
-      sq_error = (estimate - truth)^2,
-      covered = ci_low <= truth & ci_high >= truth
+      converged = point_eligible,
+      eligible_estimate = dplyr::if_else(point_eligible, estimate, NA_real_),
+      bias = dplyr::if_else(point_eligible, estimate - truth, NA_real_),
+      sq_error = bias^2,
+      covered = ci_low <= truth & ci_high >= truth,
+      success_and_cover_event = interval_eligible & dplyr::coalesce(covered, FALSE)
     ) %>%
     dplyr::group_by(dplyr::across(dplyr::all_of(design_cols))) %>%
     dplyr::summarise(
       truth = dplyr::first(truth),
       n_rep = dplyr::n(),
-      convergence = safe_mean(converged),
-      mean_estimate = safe_mean(estimate),
+      n_point_eligible = sum(point_eligible, na.rm = TRUE),
+      n_interval_eligible = sum(interval_eligible, na.rm = TRUE),
+      point_eligibility = safe_mean(point_eligible),
+      interval_eligibility = safe_mean(interval_eligible),
+      convergence = point_eligibility,
+      n_success = n_point_eligible,
+      mean_estimate = safe_mean(eligible_estimate),
       bias = safe_mean(bias),
-      coverage = safe_mean(covered),
+      coverage = vh_binomial_rate(covered, interval_eligible),
+      success_and_cover = safe_mean(success_and_cover_event),
       rmse = if (all(is.na(sq_error))) NA_real_ else sqrt(mean(sq_error, na.rm = TRUE)),
-      n_success = sum(converged, na.rm = TRUE),
       prop_status10_fail = safe_mean(status10_failure),
       prop_stage1_lmer_singular = safe_mean(stage1_lmer_singular),
       mean_stage1_re_corr = safe_mean(stage1_re_corr),
@@ -462,7 +760,10 @@ summarize_issue_df <- function(results) {
   design_cols <- intersect(
     c(
       "condition_id", "study", "study_version", "calibration_version",
-      "method", "method_role", "mx_issue_class", "num_clus",
+      "method", "method_role", "fuller_variant",
+      "fuller_preliminary_moment", "fuller_variance_bread",
+      "fuller_predictor_outcome_covariance_source",
+      "mx_issue_class", "num_clus",
       "mean_clus_size", "target_reliability", "achieved_reliability",
       "marginal_rho", "standardized_beta_target", "structural_target",
       "calibration_arm", "calibration_metric", "calibration_target",
@@ -530,6 +831,131 @@ write_progress_row <- function(progress_path, row_df) {
   }
 }
 
+#' Collect a complete, one-row provenance record for a simulation invocation.
+#'
+#' The run manifest deliberately separates invocation-level provenance from the
+#' condition manifest and replication rows. This makes it possible to identify
+#' the exact software state that produced a chunk without copying the same
+#' package metadata into every estimator row.
+collect_vh_run_provenance <- function(
+    design, n_sim, study_arg, chunk_meta, n_cores,
+    repo_root_path = if (exists("repo_root", inherits = TRUE)) {
+      get("repo_root", inherits = TRUE)
+    } else {
+      getwd()
+    },
+    started_at = Sys.time()) {
+  git_output <- function(args) {
+    tryCatch(
+      system2(
+        "git",
+        c("-C", shQuote(normalizePath(repo_root_path)), args),
+        stdout = TRUE,
+        stderr = FALSE
+      ),
+      error = function(e) character()
+    )
+  }
+  git_commit <- git_output(c("rev-parse", "HEAD"))
+  git_status <- git_output(c("status", "--porcelain", "--untracked-files=normal"))
+
+  package_names <- c("OpenMx", "MplusAutomation", "lme4", "nlme", "geigen")
+  package_versions <- vapply(package_names, function(package_name) {
+    if (!requireNamespace(package_name, quietly = TRUE)) {
+      return(NA_character_)
+    }
+    as.character(utils::packageVersion(package_name))
+  }, character(1L))
+
+  mplus_executable <- unname(Sys.which("mplus"))
+  mplus_version <- Sys.getenv("MPLUS_VERSION", unset = NA_character_)
+  if (!nzchar(mplus_executable)) {
+    mplus_executable <- NA_character_
+  }
+  if (is.na(mplus_version) && !is.na(mplus_executable)) {
+    executable_strings <- tryCatch(
+      system2(
+        "strings",
+        shQuote(mplus_executable),
+        stdout = TRUE,
+        stderr = FALSE
+      ),
+      error = function(e) character()
+    )
+    version_lines <- grep(
+      "^Mplus VERSION ", executable_strings,
+      value = TRUE, ignore.case = TRUE
+    )
+    if (length(version_lines) > 0L) {
+      mplus_version <- trimws(version_lines[[1L]])
+    }
+  }
+
+  out <- tibble::tibble(
+    metadata_schema_version = "vh_run_provenance_v1",
+    pipeline_version = vh_pipeline_version(),
+    git_commit = if (length(git_commit) > 0L) git_commit[[1L]] else NA_character_,
+    git_dirty = length(git_status) > 0L,
+    git_dirty_entry_count = as.integer(length(git_status)),
+    requested_n_sim = as.integer(n_sim),
+    study_selector = as.character(study_arg[[1L]]),
+    chunk_index = as.integer(chunk_meta$chunk_index),
+    chunk_size = as.integer(chunk_meta$chunk_size),
+    condition_id_start = as.integer(chunk_meta$condition_start),
+    condition_id_end = as.integer(chunk_meta$condition_end),
+    selected_condition_count = as.integer(nrow(design)),
+    requested_cores = as.integer(n_cores),
+    r_version = R.version.string,
+    mplus_executable = mplus_executable,
+    mplus_version = mplus_version,
+    slurm_job_id = Sys.getenv("SLURM_JOB_ID", unset = NA_character_),
+    slurm_array_job_id = Sys.getenv("SLURM_ARRAY_JOB_ID", unset = NA_character_),
+    slurm_array_task_id = Sys.getenv("SLURM_ARRAY_TASK_ID", unset = NA_character_),
+    run_started_at = format(started_at, "%Y-%m-%dT%H:%M:%S%z"),
+    hostname = Sys.info()[["nodename"]]
+  )
+  for (package_name in names(package_versions)) {
+    out[[paste0("package_", tolower(package_name), "_version")]] <-
+      package_versions[[package_name]]
+  }
+  out
+}
+
+#' Atomically write a small CSV artifact.
+#'
+#' Atomic replacement prevents concurrent array tasks from exposing a partial
+#' deterministic crosswalk or provenance file to downstream readers.
+write_vh_csv_atomic <- function(data, path) {
+  dir.create(dirname(path), recursive = TRUE, showWarnings = FALSE)
+  temporary_path <- tempfile(
+    pattern = paste0(".", basename(path), "-"),
+    tmpdir = dirname(path),
+    fileext = ".tmp"
+  )
+  on.exit(unlink(temporary_path, force = TRUE), add = TRUE)
+  utils::write.csv(data, temporary_path, row.names = FALSE)
+  if (!file.rename(temporary_path, path)) {
+    stop("Could not atomically write CSV artifact: ", path)
+  }
+  invisible(path)
+}
+
+#' Save the versioned deterministic ICC/reliability crosswalk.
+save_vh_icc_crosswalk <- function(out_dir) {
+  crosswalk <- make_icc_posterior_reliability_crosswalk() %>%
+    dplyr::mutate(
+      crosswalk_version = "icc_posterior_reliability_crosswalk_v1",
+      pipeline_version = vh_pipeline_version(),
+      .before = 1L
+    )
+  path <- file.path(
+    out_dir,
+    "icc_posterior_reliability_crosswalk_v1.csv"
+  )
+  write_vh_csv_atomic(crosswalk, path)
+  invisible(path)
+}
+
 #' Read and type-normalize a replication result file.
 #'
 #' @details
@@ -549,11 +975,47 @@ read_replication_results_file <- function(path) {
   )
   fuller_integer_cols <- "fuller_auto_search_evaluations"
   fuller_character_cols <- c(
-    "fuller_auto_guard_reason", "fuller_auto_full_weight_guard_reason"
+    "fuller_auto_guard_reason", "fuller_auto_full_weight_guard_reason",
+    "fuller_variant", "fuller_preliminary_moment", "fuller_variance_bread",
+    "fuller_predictor_outcome_covariance_source"
   )
   fuller_numeric_cols <- setdiff(
     grep("^fuller_", names(out), value = TRUE),
     c(fuller_logical_cols, fuller_integer_cols, fuller_character_cols)
+  )
+  expanded_logical_cols <- grep(
+    "^(stage1(_[yq])?|mx(_[a-z]+)?|mplus(_[a-z]+)?)_.*boundary$",
+    names(out),
+    value = TRUE
+  )
+  expanded_integer_cols <- intersect(
+    c(
+      "replication_seed", "bridge_pair_id", "simulation_seed_group",
+      "mplus_warning_count", "mplus_target_parameter_count",
+      "mplus_boundary_variance_count", "mplus_nonpositive_variance_count"
+    ),
+    names(out)
+  )
+  expanded_character_cols <- intersect(
+    c("bridge_pair_label"),
+    names(out)
+  )
+  expanded_numeric_cols <- setdiff(
+    grep(
+      paste0(
+        "^stage1(_[yq])?_(lambda|theta|posterior_variance|",
+        "corrected_score_error_covariance|fitted_|true_blup|blup_slope|",
+        "corrected_score_slope|latent_covariance)|",
+        "^mx_(raw_focal|latent_|predictor_latent_|outcome_latent_)|",
+        "^mplus_"
+      ),
+      names(out),
+      value = TRUE
+    ),
+    c(
+      expanded_logical_cols, expanded_integer_cols,
+      "mplus_critical_warning", "mplus_critical_warning_detail"
+    )
   )
 
   # Keep these casts centralized so aggregate rebuilds do not depend on the
@@ -562,7 +1024,7 @@ read_replication_results_file <- function(path) {
     # TODO: update these columns
     c(
       "estimate", "se", "ci_low", "ci_high", "truth",
-      "mx_condition_number",
+      "mx_condition_number", "mplus_fitted_latent_slope_sd",
       "stage1_re_corr", "stage1_eb_corr", "stage1_design_kappa",
       "stage1_y_re_corr", "stage1_y_eb_corr", "stage1_y_design_kappa",
       "stage1_q_re_corr", "stage1_q_eb_corr", "stage1_q_design_kappa",
@@ -638,7 +1100,7 @@ read_replication_results_file <- function(path) {
       "stage1_q_intercept_slope_correlation"
     ),
     names(out)
-  ), fuller_numeric_cols))
+  ), fuller_numeric_cols, expanded_numeric_cols))
   integer_cols <- intersect(
     c(
       "condition_id", "rep", "num_clus", "mean_clus_size",
@@ -646,7 +1108,8 @@ read_replication_results_file <- function(path) {
       "profile_min_clus_size", "profile_max_clus_size",
       "profile_small_clus_size", "profile_large_clus_size",
       "score_small_cluster_size", "score_large_cluster_size",
-      fuller_integer_cols
+      "mplus_warning_count", "mplus_target_parameter_count",
+      fuller_integer_cols, expanded_integer_cols
     ),
     names(out)
   )
@@ -657,7 +1120,19 @@ read_replication_results_file <- function(path) {
       "stage1_q_singular_problem", "stage1_q_lmer_singular",
       "is_falsification_control", "information_matched",
       "covariance_shape_fixed",
-      fuller_logical_cols
+      "mx_info_definite", "mplus_critical_warning",
+      "point_eligible", "interval_eligible", "analysis_eligible",
+      fuller_logical_cols, expanded_logical_cols
+    ),
+    names(out)
+  )
+  character_cols <- intersect(
+    c(
+      "point_exclusion_reason", "interval_exclusion_reason",
+      "analysis_exclusion_reason", "mx_issue_class", "mx_issue_detail",
+      "mx_status_msg", "mplus_critical_warning_detail",
+      "stage1_problem_detail", fuller_character_cols,
+      expanded_character_cols
     ),
     names(out)
   )
@@ -670,6 +1145,9 @@ read_replication_results_file <- function(path) {
   }
   if (length(logical_cols) > 0L) {
     out <- out %>% dplyr::mutate(dplyr::across(dplyr::all_of(logical_cols), as.logical))
+  }
+  if (length(character_cols) > 0L) {
+    out <- out %>% dplyr::mutate(dplyr::across(dplyr::all_of(character_cols), as.character))
   }
 
   out
@@ -813,10 +1291,15 @@ run_study_rep <- function(condition) {
 vig_hallquist_parallel_exports <- function() {
   candidates <- c(
     "run_study_rep", "run_study1_rep", "run_study2_rep", "run_study3_rep", "run_study4_rep", "run_study5_rep",
-    "vh_pipeline_version",
-    "add_study2_method_roles", "add_study2_analysis_eligibility", "add_study3_analysis_eligibility",
-    "add_study4_method_roles", "add_stage1_estimates",
+    "vh_pipeline_version", "vh_replication_seed",
+    "add_vh_analysis_eligibility",
+    "add_study1_analysis_eligibility",
+    "add_study2_method_roles", "add_study2_analysis_eligibility",
+    "add_study3_analysis_eligibility",
+    "add_study4_method_roles", "add_study4_analysis_eligibility",
+    "add_stage1_estimates", "summarize_stage1_measurement_diagnostics",
     "rescale_fuller_to_population_sd",
+    "add_zero_fuller_predictor_outcome_covariance",
     "prepare_fuller_average_measurement", "fit_fuller_average_measurement",
     "simulate_study1", "simulate_study2", "simulate_study3", "simulate_study4", "simulate_study5",
     "simulate_data_blup_as_outcome", "simulate_data_blup_as_predictor",
@@ -836,7 +1319,8 @@ vig_hallquist_parallel_exports <- function() {
     "fit_lai_stage1", "extract_centered_slope_eb", "fit_tempered_eiv_dual_set", "lai_truth", "make_covu",
     "make_study2_cluster_sizes", "make_study3_cluster_sizes", "fixed_params",
     "study1_methods", "study2_methods", "study3_methods", "study4_methods", "study5_methods",
-    "safe_lmer", "safe_lme", "empty_stage1_diagnostics", "get_stage1_diagnostics",
+    "safe_lmer", "safe_lme", "empty_stage1_diagnostics",
+    "assess_stage1_random_effect_covariance", "get_stage1_diagnostics",
     "normalize_r_spec", "make_R_matrix", "draw_residuals_from_R",
     "make_random_effect_covariance", "posterior_random_effect_covariance",
     "get_closed_form_corrected_scores", "get_stage1_eb_components",
@@ -848,14 +1332,21 @@ vig_hallquist_parallel_exports <- function() {
     "compute_univariate_eb_inputs", "compute_lai_2spa_inputs",
     "assess_dual_ols_design", "fit_observed_single", "fit_observed_dual",
     "finalize_ols_se_variants", "fit_eiv_dual", "fit_ridge_dual", "fit_fuller",
-    "fit_fuller_dual",
+    "fuller_dual_result_columns", "fuller_matrix_diagnostics",
+    "fuller_relative_min_eigen", "fuller_row_max_finite",
+    "fuller_guard_penalty", "score_fuller_auto_candidates",
+    "fuller_reference_dual_se", "fit_fuller_dual_core", "fit_fuller_dual",
+    "fit_fuller_dual_variants",
     "fit_fuller_dual_stepdown", "fit_fuller_dual_alpha_stepdown",
     "fit_lai_2spa", "fit_lai_2spa_observed_outcome", "fit_lai_2spa_disparate",
     "fit_lai_2spa_dual_process",
     "run_mx_safe", "extract_mx_stats", "extract_mx_se_details",
+    "mx_numeric_scalar", "mx_diagnostics_tibble",
+    "mx_latent_covariance_diagnostics",
     "classify_mx_issue", "compact_message", "project_to_pd",
     "run_mplus_modeler_writable_tmp", "fit_mplus_blup_predictor",
     "extract_mplus_stats", "mplus_diagnostics_template", "mplus_message_lines",
+    "populate_mplus_latent_diagnostics",
     "mplus_warning_diagnostics"
   )
   candidates[vapply(candidates, exists, logical(1), mode = "function", inherits = TRUE) |
@@ -866,9 +1357,9 @@ vig_hallquist_parallel_exports <- function() {
 #'
 #' @details
 #' Each replication receives a deterministic seed derived from a fixed base
-#' seed, the condition identifier, and the replication index. This keeps serial,
-#' parallel, and resumed condition runs reproducible as long as the same
-#' condition IDs and replication counts are used.
+#' seed, a condition seed group, and the replication index. The seed group is
+#' normally the condition identifier; paired ICC-bridge arms instead share a
+#' `simulation_seed_group` so their Monte Carlo draws are paired.
 #'
 #' Parallel execution uses `foreach` and expects a registered backend, which is
 #' set up by `run_simulation()` when `n_cores > 1`.
@@ -884,15 +1375,15 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
   rep_ids <- seq_len(n_sim)
 
   run_single_rep <- function(rep_id) {
-    # The large condition multiplier avoids seed collisions across conditions
-    # even for high replication counts.
-    set.seed(20260612 + (as.integer(condition$condition_id) * 100000L) + as.integer(rep_id))
+    replication_seed <- vh_replication_seed(condition, rep_id)
+    set.seed(replication_seed)
     rep_out <- run_study_rep(condition)
     dplyr::bind_cols(
       rep_out,
       condition[rep(1L, nrow(rep_out)), , drop = FALSE] %>% dplyr::select(-study),
       tibble::tibble(
         rep = rep_id,
+        replication_seed = replication_seed,
         pipeline_version = vh_pipeline_version()
       )
     )
@@ -931,6 +1422,8 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
 #'
 #' Output files include:
 #' - A manifest CSV with the selected design rows.
+#' - A run-metadata CSV with code, software, scheduler, and host provenance.
+#' - For ICC-bridge runs, a standalone versioned deterministic crosswalk CSV.
 #' - An append-only progress CSV.
 #' - Per-condition replication, summary, issue-summary, and first-stage
 #'   problem-summary files under `conditions/`.
@@ -968,6 +1461,7 @@ run_simulation <- function(n_sim = 100L,
                            chunk_size = NA_integer_,
                            resume_existing = TRUE,
                            max_aggregate_replication_rows = 2e6) {
+  run_started_at <- Sys.time()
   if (is.na(n_sim) || n_sim < 1L) {
     stop("`n_sim` must be a positive integer.")
   }
@@ -1010,6 +1504,10 @@ run_simulation <- function(n_sim = 100L,
   # Chunk labels keep concurrently run jobs from overwriting each other's
   # aggregate files while preserving condition-level paths shared by resume.
   manifest_path <- file.path(out_dir, sprintf("%s_manifest.csv", file_prefix))
+  run_metadata_path <- file.path(
+    out_dir,
+    sprintf("%s_run_metadata.csv", file_prefix)
+  )
   progress_path <- file.path(out_dir, sprintf("%s_progress.csv", file_prefix))
   aggregate_replications_path <- file.path(out_dir, sprintf("%s_replication_results.csv.gz", file_prefix))
   aggregate_summary_path <- file.path(out_dir, sprintf("%s_summary.csv", file_prefix))
@@ -1021,6 +1519,18 @@ run_simulation <- function(n_sim = 100L,
   )
 
   utils::write.csv(design, file = manifest_path, row.names = FALSE)
+  run_metadata <- collect_vh_run_provenance(
+    design = design,
+    n_sim = n_sim,
+    study_arg = study_arg,
+    chunk_meta = chunk_meta,
+    n_cores = n_cores,
+    started_at = run_started_at
+  )
+  write_vh_csv_atomic(run_metadata, run_metadata_path)
+  if (any(design$study == "iccbridge")) {
+    save_vh_icc_crosswalk(out_dir)
+  }
 
   if (n_cores > 1L) {
     doParallel::registerDoParallel(cores = n_cores)
@@ -1145,6 +1655,7 @@ run_simulation <- function(n_sim = 100L,
   }
 
   message("Saved outputs to: ", normalizePath(out_dir))
+  message("Run provenance: ", run_metadata_path)
   if (materialize_replications) {
     message("Aggregate replication results: ", aggregate_replications_path)
   } else {

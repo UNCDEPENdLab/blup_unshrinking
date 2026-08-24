@@ -453,7 +453,195 @@ add_study_result_context <- function(results, condition, truth) {
   dplyr::mutate(results, study = condition$study, truth = truth)
 }
 
-add_stage1_estimates <- function(results, fit_obj, data, cluster_var, within_var = NULL, R_list = NULL, group = NULL, suffix = NULL) {
+#' Summarize fitted Stage-1 measurement quality within one replication.
+#'
+#' These quantities are deliberately saved before the cluster-level score data
+#' are discarded. They audit the full 2-by-2 Lai loading/residual matrices,
+#' posterior uncertainty, likelihood-only corrected-score uncertainty, and the
+#' empirical relationship between simulated random slopes and their estimated
+#' scores. Posterior reliabilities are computed from the fitted `G`, rather
+#' than copied from the population calibration manifest.
+summarize_stage1_measurement_diagnostics <- function(
+    stage1_scores, G_hat, suffix = NULL, data_prefix = "",
+    true_slope_col = NULL, blup_slope_col = paste0(data_prefix, "u1_eb"),
+    corrected_slope_col = if (nzchar(data_prefix)) {
+      paste0(data_prefix, "corrected_slope")
+    } else {
+      "corrected_slope_full"
+    }) {
+  result_prefix <- paste0(
+    "stage1",
+    if (!is.null(suffix) && nzchar(suffix)) paste0("_", suffix) else "",
+    "_"
+  )
+  named_value <- function(name, value) {
+    stats::setNames(list(value), paste0(result_prefix, name))
+  }
+  finite_values <- function(column) {
+    if (!(column %in% names(stage1_scores))) return(numeric())
+    values <- suppressWarnings(as.numeric(stage1_scores[[column]]))
+    values[is.finite(values)]
+  }
+  finite_mean <- function(x) if (length(x)) mean(x) else NA_real_
+  finite_sd <- function(x) if (length(x) > 1L) stats::sd(x) else NA_real_
+  finite_min <- function(x) if (length(x)) min(x) else NA_real_
+  finite_max <- function(x) if (length(x)) max(x) else NA_real_
+
+  diagnostics <- list()
+  append_summary <- function(label, column) {
+    values <- finite_values(column)
+    diagnostics <<- c(
+      diagnostics,
+      named_value(paste0(label, "_mean"), finite_mean(values)),
+      named_value(paste0(label, "_min"), finite_min(values)),
+      named_value(paste0(label, "_max"), finite_max(values))
+    )
+  }
+
+  for (entry in c("11", "12", "21", "22")) {
+    append_summary(
+      paste0("lambda", entry),
+      paste0(data_prefix, "lambda", entry)
+    )
+  }
+  for (entry in c("11", "12", "22")) {
+    append_summary(
+      paste0("theta", entry),
+      paste0(data_prefix, "theta", entry)
+    )
+    append_summary(
+      paste0("posterior_variance", entry),
+      paste0(data_prefix, "postvar", entry)
+    )
+    corrected_error_column <- paste0(data_prefix, "ols_var", entry)
+    if (!(corrected_error_column %in% names(stage1_scores))) {
+      corrected_error_column <- paste0(data_prefix, "mle_var", entry)
+    }
+    append_summary(
+      paste0("corrected_score_error_covariance", entry),
+      corrected_error_column
+    )
+  }
+
+  marginal_reliability <- residualized_reliability <- rep(
+    NA_real_, nrow(stage1_scores)
+  )
+  if (is.matrix(G_hat) && all(dim(G_hat) >= 2L)) {
+    post11 <- suppressWarnings(as.numeric(
+      stage1_scores[[paste0(data_prefix, "postvar11")]]
+    ))
+    post12 <- suppressWarnings(as.numeric(
+      stage1_scores[[paste0(data_prefix, "postvar12")]]
+    ))
+    post22 <- suppressWarnings(as.numeric(
+      stage1_scores[[paste0(data_prefix, "postvar22")]]
+    ))
+    if (is.finite(G_hat[2L, 2L]) && G_hat[2L, 2L] > 0) {
+      marginal_reliability <- 1 - post22 / G_hat[2L, 2L]
+    }
+    if (is.finite(G_hat[1L, 1L]) && G_hat[1L, 1L] > 0) {
+      residualization <- G_hat[1L, 2L] / G_hat[1L, 1L]
+      residualized_variance <- G_hat[2L, 2L] -
+        G_hat[1L, 2L]^2 / G_hat[1L, 1L]
+      residualized_postvar <- post22 - 2 * residualization * post12 +
+        residualization^2 * post11
+      if (is.finite(residualized_variance) && residualized_variance > 0) {
+        residualized_reliability <-
+          1 - residualized_postvar / residualized_variance
+      }
+    }
+  }
+  for (metric in c("marginal_slope", "residualized_slope")) {
+    values <- if (identical(metric, "marginal_slope")) {
+      marginal_reliability
+    } else {
+      residualized_reliability
+    }
+    values <- values[is.finite(values)]
+    diagnostics <- c(
+      diagnostics,
+      named_value(
+        paste0("fitted_", metric, "_posterior_reliability_mean"),
+        finite_mean(values)
+      ),
+      named_value(
+        paste0("fitted_", metric, "_posterior_reliability_sd"),
+        finite_sd(values)
+      ),
+      named_value(
+        paste0("fitted_", metric, "_posterior_reliability_min"),
+        finite_min(values)
+      ),
+      named_value(
+        paste0("fitted_", metric, "_posterior_reliability_max"),
+        finite_max(values)
+      )
+    )
+  }
+
+  score_diagnostics <- function(score_column, label) {
+    if (is.null(true_slope_col) ||
+        !(true_slope_col %in% names(stage1_scores)) ||
+        !(score_column %in% names(stage1_scores))) {
+      return(c(
+        named_value(paste0(label, "_slope_bias"), NA_real_),
+        named_value(paste0(label, "_slope_rmse"), NA_real_)
+      ))
+    }
+    truth <- suppressWarnings(as.numeric(stage1_scores[[true_slope_col]]))
+    score <- suppressWarnings(as.numeric(stage1_scores[[score_column]]))
+    keep <- is.finite(truth) & is.finite(score)
+    error <- score[keep] - truth[keep]
+    c(
+      named_value(
+        paste0(label, "_slope_bias"),
+        if (length(error)) mean(error) else NA_real_
+      ),
+      named_value(
+        paste0(label, "_slope_rmse"),
+        if (length(error)) sqrt(mean(error^2)) else NA_real_
+      )
+    )
+  }
+  diagnostics <- c(
+    diagnostics,
+    score_diagnostics(blup_slope_col, "blup"),
+    score_diagnostics(corrected_slope_col, "corrected_score")
+  )
+
+  true_blup_correlation <- NA_real_
+  if (!is.null(true_slope_col) &&
+      all(c(true_slope_col, blup_slope_col) %in% names(stage1_scores))) {
+    truth <- suppressWarnings(as.numeric(stage1_scores[[true_slope_col]]))
+    blup <- suppressWarnings(as.numeric(stage1_scores[[blup_slope_col]]))
+    keep <- is.finite(truth) & is.finite(blup)
+    if (sum(keep) >= 3L && stats::sd(truth[keep]) > 0 &&
+        stats::sd(blup[keep]) > 0) {
+      true_blup_correlation <- stats::cor(truth[keep], blup[keep])
+    }
+  }
+  diagnostics <- c(
+    diagnostics,
+    named_value("true_blup_slope_correlation", true_blup_correlation),
+    named_value(
+      "true_blup_slope_r_squared",
+      if (is.finite(true_blup_correlation)) true_blup_correlation^2 else NA_real_
+    )
+  )
+
+  tibble::as_tibble(diagnostics)
+}
+
+add_stage1_estimates <- function(
+    results, fit_obj, data, cluster_var, within_var = NULL, R_list = NULL,
+    group = NULL, suffix = NULL, stage1_scores = NULL,
+    data_prefix = "", true_slope_col = NULL,
+    blup_slope_col = paste0(data_prefix, "u1_eb"),
+    corrected_slope_col = if (nzchar(data_prefix)) {
+      paste0(data_prefix, "corrected_slope")
+    } else {
+      "corrected_slope_full"
+    }) {
   if (is.null(fit_obj)) {
     return(results)
   }
@@ -469,14 +657,51 @@ add_stage1_estimates <- function(results, fit_obj, data, cluster_var, within_var
   if (is.null(G_hat)) {
     return(results)
   } else {
-    dplyr::bind_cols(
-      results,
-      tibble::tibble(
-        stage1_intercept_variance = G_hat[1, 1],
-        stage1_slope_variance = G_hat[2, 2],
-        stage1_intercept_slope_covariance = G_hat[1, 2],
-        stage1_intercept_slope_correlation = G_hat[1, 2] / sqrt(G_hat[1, 1] * G_hat[2, 2])
-      )
+    result_prefix <- paste0(
+      "stage1",
+      if (!is.null(suffix) && nzchar(suffix)) paste0("_", suffix) else "",
+      "_"
     )
+    g_eigenvalues <- tryCatch(
+      eigen((G_hat + t(G_hat)) / 2, symmetric = TRUE, only.values = TRUE)$values,
+      error = function(e) rep(NA_real_, nrow(G_hat))
+    )
+    g_diagnostics <- tibble::tibble(
+      intercept_variance = G_hat[1, 1],
+      slope_variance = G_hat[2, 2],
+      intercept_slope_covariance = G_hat[1, 2],
+      intercept_slope_correlation = if (
+        all(is.finite(G_hat[1:2, 1:2])) &&
+          G_hat[1, 1] > 0 && G_hat[2, 2] > 0
+      ) {
+        G_hat[1, 2] / sqrt(G_hat[1, 1] * G_hat[2, 2])
+      } else {
+        NA_real_
+      },
+      latent_covariance_min_eigenvalue = if (any(is.finite(g_eigenvalues))) {
+        min(g_eigenvalues, na.rm = TRUE)
+      } else {
+        NA_real_
+      },
+      latent_covariance_boundary = any(!is.finite(g_eigenvalues)) ||
+        any(g_eigenvalues <= sqrt(.Machine$double.eps), na.rm = TRUE)
+    )
+    names(g_diagnostics) <- paste0(result_prefix, names(g_diagnostics))
+    if (!is.null(stage1_scores)) {
+      measurement_diagnostics <- summarize_stage1_measurement_diagnostics(
+        stage1_scores = stage1_scores,
+        G_hat = G_hat,
+        suffix = suffix,
+        data_prefix = data_prefix,
+        true_slope_col = true_slope_col,
+        blup_slope_col = blup_slope_col,
+        corrected_slope_col = corrected_slope_col
+      )
+      g_diagnostics <- dplyr::bind_cols(
+        g_diagnostics,
+        measurement_diagnostics
+      )
+    }
+    dplyr::bind_cols(results, g_diagnostics)
   }
 }

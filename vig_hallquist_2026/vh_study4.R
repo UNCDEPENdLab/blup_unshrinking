@@ -6,6 +6,8 @@ study4_methods <- function() {
     "naive_dual_blup",
     "closed_form_dual",
     "fuller_closed_form",
+    "fuller_book_preliminary_closed_form",
+    "fuller_book_closed_form",
     "fuller_average_measurement",
     "fuller_alpha_stepdown_closed_form",
     "lai_2spa",
@@ -26,6 +28,11 @@ add_study4_method_roles <- function(results) {
       TRUE ~ "row_specific_primary"
     )
   )
+}
+
+#' Apply the shared VH point/interval eligibility contract to Study 4.
+add_study4_analysis_eligibility <- function(results) {
+  add_vh_analysis_eligibility(results)
 }
 
 #' Allocate one Study 4 information profile to clusters.
@@ -320,7 +327,8 @@ run_study4_rep <- function(condition) {
   if (is.null(fit_y)) {
     return(
       make_failed_result(condition, study4_methods(), truth) %>%
-        add_study4_method_roles()
+        add_study4_method_roles() %>%
+        add_study4_analysis_eligibility()
     )
   }
 
@@ -347,7 +355,8 @@ run_study4_rep <- function(condition) {
   if (is.null(stage1_y) || is.null(corrected_y)) {
     return(
       make_failed_result(condition, study4_methods(), truth) %>%
-        add_study4_method_roles()
+        add_study4_method_roles() %>%
+        add_study4_analysis_eligibility()
     )
   }
 
@@ -362,9 +371,10 @@ run_study4_rep <- function(condition) {
           ols_var11,
           ols_var12,
           ols_var22
-        ),
+      ),
       by = "id"
-    )
+    ) %>%
+    add_zero_fuller_predictor_outcome_covariance()
   stage1_diag <- get_stage1_diagnostics(fit_y, stage2_df)
   measurement_diag <- study4_measurement_diagnostics(sim, stage2_df)
 
@@ -405,23 +415,37 @@ run_study4_rep <- function(condition) {
         method = "closed_form_dual",
         estimate, se, ci_low, ci_high, status_code
       ),
-    fit_fuller_dual(
+    fit_fuller_dual_variants(
       stage2_df,
       outcome = "z",
       predictor_u0 = "corrected_intercept_full",
       predictor_u1 = "corrected_slope_full",
       meas11 = "ols_var11",
       meas12 = "ols_var12",
-      meas22 = "ols_var22"
+      meas22 = "ols_var22",
+      predictor_outcome_meas_cov_u0 =
+        "fuller_predictor_outcome_meas_cov_u0",
+      predictor_outcome_meas_cov_u1 =
+        "fuller_predictor_outcome_meas_cov_u1"
     ) %>%
       rescale_fuller_to_population_sd(latent_slope_sd) %>%
-      dplyr::mutate(method = "fuller_closed_form") %>%
+      dplyr::mutate(
+        method = unname(c(
+          stabilized = "fuller_closed_form",
+          fuller_preliminary = "fuller_book_preliminary_closed_form",
+          fuller_equations = "fuller_book_closed_form"
+        )[fuller_variant])
+      ) %>%
       dplyr::select(method, dplyr::everything()),
     fit_fuller_average_measurement(
       stage2_df,
       outcome = "z",
       blup_u0 = "u0_eb",
-      blup_u1 = "u1_eb"
+      blup_u1 = "u1_eb",
+      predictor_outcome_meas_cov_u0 =
+        "fuller_predictor_outcome_meas_cov_u0",
+      predictor_outcome_meas_cov_u1 =
+        "fuller_predictor_outcome_meas_cov_u1"
     ) %>%
       rescale_fuller_to_population_sd(latent_slope_sd) %>%
       dplyr::mutate(method = "fuller_average_measurement") %>%
@@ -433,7 +457,11 @@ run_study4_rep <- function(condition) {
       predictor_u1 = "corrected_slope_full",
       meas11 = "ols_var11",
       meas12 = "ols_var12",
-      meas22 = "ols_var22"
+      meas22 = "ols_var22",
+      predictor_outcome_meas_cov_u0 =
+        "fuller_predictor_outcome_meas_cov_u0",
+      predictor_outcome_meas_cov_u1 =
+        "fuller_predictor_outcome_meas_cov_u1"
     ) %>%
       rescale_fuller_to_population_sd(latent_slope_sd) %>%
       dplyr::mutate(method = "fuller_alpha_stepdown_closed_form") %>%
@@ -466,14 +494,17 @@ run_study4_rep <- function(condition) {
       dplyr::mutate(method = "msem") %>%
       dplyr::select(method, dplyr::everything())
   ) %>%
-    add_study4_method_roles()
+    add_study4_method_roles() %>%
+    add_study4_analysis_eligibility()
 
   results <- results %>%
     add_stage1_estimates(
       fit_obj = fit_y,
       data = sim$lv1,
       cluster_var = "cid",
-      within_var = "x"
+      within_var = "x",
+      stage1_scores = stage2_df,
+      true_slope_col = "true_u1"
     )
 
   dplyr::bind_cols(

@@ -206,6 +206,8 @@ locally_required_finite <- c(
   "naive_dual_blup",
   "closed_form_dual",
   "fuller_closed_form",
+  "fuller_book_preliminary_closed_form",
+  "fuller_book_closed_form",
   "fuller_average_measurement",
   "fuller_alpha_stepdown_closed_form",
   "lai_2spa",
@@ -214,6 +216,11 @@ locally_required_finite <- c(
 stopifnot(
   nrow(results) == length(study4_methods()),
   setequal(results$method, study4_methods()),
+  all(c(
+    "point_eligible", "point_exclusion_reason",
+    "interval_eligible", "interval_exclusion_reason"
+  ) %in% names(results)),
+  identical(results$analysis_eligible, results$point_eligible),
   all(results$truth == estimation_condition$standardized_beta_target),
   all(!is.na(results$method_role)),
   all(is.finite(results$estimate[results$method %in% locally_required_finite])),
@@ -237,6 +244,8 @@ stopifnot(
 fuller_results <- results %>%
   dplyr::filter(method %in% c(
     "fuller_closed_form",
+    "fuller_book_preliminary_closed_form",
+    "fuller_book_closed_form",
     "fuller_average_measurement",
     "fuller_alpha_stepdown_closed_form"
   ))
@@ -247,7 +256,9 @@ stopifnot(
   all(is.finite(fuller_results$fuller_alpha_step3_used)),
   all(is.finite(fuller_results$fuller_correction1)),
   all(is.finite(fuller_results$fuller_sx1_star_min_eigen)),
-  all(is.finite(fuller_results$fuller_sx_star_min_eigen))
+  all(is.finite(fuller_results$fuller_sx_star_min_eigen)),
+  all(fuller_results$fuller_predictor_outcome_covariance_source == "supplied"),
+  all(fuller_results$fuller_predictor_outcome_covariance_max_abs == 0)
 )
 
 summary <- summarize_results_df(

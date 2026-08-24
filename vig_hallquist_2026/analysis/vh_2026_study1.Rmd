@@ -18,6 +18,8 @@ pacman::p_load(tidyverse, ggh4x, knitr, kableExtra, effectsize)
 source_helpers <- function() {
   analysis_dir <- here::here("vig_hallquist_2026", "analysis")
   source(file.path(analysis_dir, "data_import.R"))
+  source(here::here("R", "core_utils.R"))
+  source(here::here("R", "sim_diagnostics.R"))
   source(here::here("vig_hallquist_2026", "vh_study2.R"))
 }
 source_helpers()
@@ -28,16 +30,17 @@ source_helpers()
 ```{r}
 # Load data
 study1 <- read_study_cache("study1", this_run = "vig_hallquist_slurm_7_23_26") %>%
+  add_vh_analysis_eligibility() %>%
   mutate(
       status10_failure = !is.na(status_code) & status_code == 10L,
-      converged = !status10_failure & !is.na(estimate),
+      converged = point_eligible,
       bias = estimate - truth,
       rel_bias = case_when(
           truth == 0 ~ NA_real_,
           TRUE ~ (estimate - truth) / truth
       ),
       sq_error = (estimate - truth)^2,
-      covered = ci_low <= truth & ci_high >= truth,
+      covered = if_else(interval_eligible, ci_low <= truth & ci_high >= truth, NA),
       num_clus_fac = factor(num_clus, levels = c(30, 50, 100, 150, 300)),
       is_two_step = !(method %in% c("direct_mlm"))
   )
@@ -45,7 +48,9 @@ study1 <- read_study_cache("study1", this_run = "vig_hallquist_slurm_7_23_26") %
 
 ```{r}  
 study1_method_labels <- c(
-  "fuller_closed_form" = "Fuller",
+  "fuller_closed_form" = "Fuller (stabilized)",
+  "fuller_book_preliminary_closed_form" = "Fuller (book preliminary)",
+  "fuller_book_closed_form" = "Fuller (book equations)",
   "lai_2spa" = "Lai (2-SPA)",
   "naive_blup" = "OLS w/ BLUP",
   "fuller_alpha_stepdown_closed_form" = "Fuller (alpha stepdown)",
@@ -56,6 +61,8 @@ study1_method_labels <- c(
 )
 study1_point_est_methods <- c(
   "fuller_closed_form",
+  "fuller_book_preliminary_closed_form",
+  "fuller_book_closed_form",
   "lai_2spa",
   "naive_blup",
   "direct_mlm",
@@ -230,7 +237,7 @@ When faceting by slope-intercept correlation, zero correlation conditions showed
 
 ```{r}
 coverage_blup <- study1 %>%
-  filter(converged) %>%
+  filter(interval_eligible) %>%
   mutate(covered = as.numeric(covered)) %>%
   filter(method == "naive_blup") %>%
   mutate(effect_label = "Effect Size", cor_label = "Slope-Intercept Correlation") %>%
@@ -252,7 +259,7 @@ Naive BLUP showed severe undercoverage in non-zero effect size conditions. Low s
 ```{r coverage}
 # naive blups led to severe undercoverage, so remove them to see the other methods more clearly
 coverage <- study1 %>%
-  filter(converged) %>%
+  filter(interval_eligible) %>%
   mutate(covered = as.numeric(covered)) %>%
   filter(method != "naive_blup" & method != "oracle") %>%
   mutate(num_clus_label = "Number of Clusters", cor_label = "Slope-Intercept Correlation") %>%
@@ -277,7 +284,7 @@ Fuller (with and without alpha-stepdown) tended to show overcoverage (though thi
 
 ```{r}
 se_table <- study1 %>%
-  filter(converged) %>%
+  filter(interval_eligible) %>%
   filter(method != "naive_blup" & method != "oracle") %>%
   group_by(method, num_clus_fac, target_reliability, marginal_rho, mean_clus_size, standardized_beta_target) %>%
   summarize(
@@ -355,6 +362,3 @@ print(convergence); print(convergence2)
 ```
 
 The vast majority of convergence problems were isolated to the first stage, specifically cases of singularity. Removing these cases leaves nearly 100\% convergence for all conditions. Thus, Fuller/Fuller variants do not show a noticeable convergence advantage in the random-effect-as-outcome scenario.
-
-
-

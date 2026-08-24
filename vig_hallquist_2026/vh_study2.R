@@ -6,6 +6,8 @@ study2_methods <- function() {
     "naive_dual_blup",
     "closed_form_dual",
     "fuller_closed_form",
+    "fuller_book_preliminary_closed_form",
+    "fuller_book_closed_form",
     "fuller_alpha_stepdown_closed_form",
     "lai_2spa",
     "msem"
@@ -23,95 +25,13 @@ add_study2_method_roles <- function(results) {
   )
 }
 
-#' Classify Study-2 rows for primary performance summaries.
+#' Apply the shared VH point/interval eligibility contract to Study 2.
 #'
-#' The raw estimate is never altered here. `analysis_eligible` records whether
-#' prespecified method-specific diagnostics support including the row in bias,
-#' variance, RMSE, or coverage summaries, while `analysis_exclusion_reason`
-#' retains the first applicable reason for exclusion.
+#' The explicit point and interval fields distinguish a usable estimate from a
+#' usable Wald interval. Legacy `analysis_*` columns remain point-eligibility
+#' aliases; raw estimates are never altered.
 add_study2_analysis_eligibility <- function(results) {
-  get_column <- function(name, default) {
-    if (name %in% names(results)) results[[name]] else rep(default, nrow(results))
-  }
-  set_reason <- function(reason, when, value) {
-    index <- is.na(reason) & !is.na(when) & when
-    if (length(value) == 1L) {
-      reason[index] <- value
-    } else {
-      reason[index] <- value[index]
-    }
-    reason
-  }
-
-  method <- as.character(get_column("method", NA_character_))
-  status_code <- suppressWarnings(as.integer(get_column("status_code", NA_integer_)))
-  estimate <- suppressWarnings(as.numeric(get_column("estimate", NA_real_)))
-  se <- suppressWarnings(as.numeric(get_column("se", NA_real_)))
-  dual_eligible <- as.logical(get_column("analysis_eligible", NA))
-  dual_reason <- as.character(get_column("analysis_exclusion_reason", NA_character_))
-  # fuller_guard_pass <- as.logical(get_column("fuller_auto_guard_pass", NA))
-  # fuller_guard_reason <- as.character(get_column("fuller_auto_guard_reason", NA_character_))
-  mx_issue_class <- as.character(get_column("mx_issue_class", NA_character_))
-  mx_info_definite <- as.logical(get_column("mx_info_definite", NA))
-  mx_condition_number <- suppressWarnings(as.numeric(get_column("mx_condition_number", NA_real_)))
-  mplus_critical_warning <- as.logical(get_column("mplus_critical_warning", NA))
-  mplus_target_parameter_count <- suppressWarnings(as.integer(get_column("mplus_target_parameter_count", NA_integer_)))
-
-  reason <- rep(NA_character_, nrow(results))
-  reason <- set_reason(reason, is.na(status_code) | is.na(estimate), "estimation_unavailable")
-  reason <- set_reason(reason, !is.na(status_code) & status_code != 0L, "estimation_status_nonzero")
-  reason <- set_reason(reason, !is.finite(estimate), "nonfinite_estimate")
-  reason <- set_reason(reason, !is.finite(se) | se <= 0, "invalid_standard_error")
-
-  dual_ols_methods <- c("oracle_dual", "naive_dual_blup", "closed_form_dual")
-  dual_bad <- method %in% dual_ols_methods & !is.na(dual_eligible) & !dual_eligible
-  reason <- set_reason(
-    reason,
-    dual_bad,
-    ifelse(is.na(dual_reason), "stage2_design_ineligible", dual_reason)
-  )
-
-  # ZV: the auto guard was from the previous implementation of the stepdown so this incorrectly filters
-  # all rows with alpha_stepdown as the method
-  # alpha_fuller <- method == "fuller_alpha_stepdown_closed_form"
-  # reason <- set_reason(
-  #   reason,
-  #   alpha_fuller & (is.na(fuller_guard_pass) | !fuller_guard_pass),
-  #   ifelse(
-  #     is.na(fuller_guard_reason) | fuller_guard_reason == "",
-  #     "fuller_guard_failed",
-  #     paste0("fuller_guard_", fuller_guard_reason)
-  #   )
-  # )
-
-  lai <- method == "lai_2spa"
-  reason <- set_reason(reason, lai & !is.na(mx_issue_class) & mx_issue_class != "ok", "openmx_issue")
-  reason <- set_reason(reason, lai & !is.na(mx_info_definite) & !mx_info_definite, "openmx_information_not_definite")
-  # OpenMx reports this diagnostic only for some fits; when available, 1e12 is
-  # a deliberately conservative predeclared condition-number cap.
-  reason <- set_reason(
-    reason,
-    lai & is.finite(mx_condition_number) & mx_condition_number > 1e12,
-    "openmx_condition_number_excessive"
-  )
-
-  msem <- method == "msem"
-  reason <- set_reason(
-    reason,
-    msem & !is.na(mplus_critical_warning) & mplus_critical_warning,
-    "mplus_critical_warning"
-  )
-  reason <- set_reason(
-    reason,
-    msem & !is.na(mplus_target_parameter_count) & mplus_target_parameter_count != 1L,
-    "mplus_target_parameter_not_unique"
-  )
-
-  dplyr::mutate(
-    results,
-    analysis_eligible = is.na(reason),
-    analysis_exclusion_reason = reason
-  )
+  add_vh_analysis_eligibility(results)
 }
 
 simulate_study2 <- function(condition) {
@@ -136,6 +56,7 @@ run_study2_rep <- function(condition) {
           analysis_eligible = FALSE,
           analysis_exclusion_reason = "estimation_unavailable"
         ) %>%
+        add_study2_analysis_eligibility() %>%
         add_study2_method_roles()
     )
   }
@@ -168,6 +89,7 @@ run_study2_rep <- function(condition) {
           analysis_eligible = FALSE,
           analysis_exclusion_reason = "estimation_unavailable"
         ) %>%
+        add_study2_analysis_eligibility() %>%
         add_study2_method_roles()
     )
   }
@@ -203,7 +125,8 @@ run_study2_rep <- function(condition) {
         ),
       by = "id"
     ) %>%
-    dplyr::left_join(centered_u1, by = "id")
+    dplyr::left_join(centered_u1, by = "id") %>%
+    add_zero_fuller_predictor_outcome_covariance()
   stage1_diag <- get_stage1_diagnostics(fit_y, stage2_df)
 
   results <- dplyr::bind_rows(
@@ -243,17 +166,27 @@ run_study2_rep <- function(condition) {
         method = "closed_form_dual",
         estimate, se, ci_low, ci_high, status_code
       ),
-    fit_fuller_dual(
+    fit_fuller_dual_variants(
       stage2_df,
       outcome = "z",
       predictor_u0 = "corrected_intercept_full",
       predictor_u1 = "corrected_slope_full",
       meas11 = "ols_var11",
       meas12 = "ols_var12",
-      meas22 = "ols_var22"
+      meas22 = "ols_var22",
+      predictor_outcome_meas_cov_u0 =
+        "fuller_predictor_outcome_meas_cov_u0",
+      predictor_outcome_meas_cov_u1 =
+        "fuller_predictor_outcome_meas_cov_u1"
     ) %>%
       rescale_fuller_to_population_sd(latent_slope_sd) %>%
-      dplyr::mutate(method = "fuller_closed_form") %>%
+      dplyr::mutate(
+        method = unname(c(
+          stabilized = "fuller_closed_form",
+          fuller_preliminary = "fuller_book_preliminary_closed_form",
+          fuller_equations = "fuller_book_closed_form"
+        )[fuller_variant])
+      ) %>%
       dplyr::select(method, dplyr::everything()),
     fit_fuller_dual_alpha_stepdown(
       stage2_df,
@@ -262,7 +195,11 @@ run_study2_rep <- function(condition) {
       predictor_u1 = "corrected_slope_full",
       meas11 = "ols_var11",
       meas12 = "ols_var12",
-      meas22 = "ols_var22"
+      meas22 = "ols_var22",
+      predictor_outcome_meas_cov_u0 =
+        "fuller_predictor_outcome_meas_cov_u0",
+      predictor_outcome_meas_cov_u1 =
+        "fuller_predictor_outcome_meas_cov_u1"
     ) %>%
       rescale_fuller_to_population_sd(latent_slope_sd) %>%
       dplyr::mutate(method = "fuller_alpha_stepdown_closed_form") %>%
@@ -293,7 +230,9 @@ run_study2_rep <- function(condition) {
       fit_obj = fit_y,
       data = sim$lv1,
       cluster_var = "cid",
-      within_var = "x"
+      within_var = "x",
+      stage1_scores = stage2_df,
+      true_slope_col = "true_u1"
     ) %>%
     add_study2_analysis_eligibility() %>%
     add_study2_method_roles()

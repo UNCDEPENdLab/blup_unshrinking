@@ -18,6 +18,8 @@ pacman::p_load(tidyverse, ggh4x)
 source_helpers <- function() {
   analysis_dir <- here::here("vig_hallquist_2026", "analysis")
   source(file.path(analysis_dir, "data_import.R"))
+  source(here::here("R", "core_utils.R"))
+  source(here::here("R", "sim_diagnostics.R"))
   source(here::here("vig_hallquist_2026", "vh_study2.R"))
 }
 source_helpers()
@@ -30,21 +32,22 @@ source_helpers()
 study2 <- read_study_cache("study2", this_run = "vig_hallquist_slurm") %>%
   mutate(
       status10_failure = !is.na(status_code) & status_code == 10L,
-      converged = !status10_failure & !is.na(estimate),
-      estimate = estimate,
       bias = estimate - truth,
       rel_bias = case_when(
           truth == 0 ~ NA_real_,
           TRUE ~ (estimate - truth) / truth
       ),
       sq_error = (estimate - truth)^2,
-      covered = ci_low <= truth & ci_high >= truth,
       num_clus_fac = factor(num_clus, levels = c(30, 50, 100, 150, 300))
   ) %>%
   add_study2_legacy_eligibility() %>% # for older cached runs
-  add_study2_analysis_eligibility() %>% # for all cached runs
   add_study2_mplus_legacy_threshold(threshold = 5) %>% # for older cached runs
-  mutate(analysis_ready = converged & analysis_eligible)
+  add_study2_analysis_eligibility() %>% # for all cached runs
+  mutate(
+    converged = point_eligible,
+    analysis_ready = point_eligible,
+    covered = if_else(interval_eligible, ci_low <= truth & ci_high >= truth, NA)
+  )
 
 manifest <- get_manifest(study_arg = "all", this_run = "vig_hallquist_slurm")
 
@@ -59,7 +62,9 @@ study2_wide <- study2 %>%
 
 ```{r}
 study2_method_labels <- c(
-  "fuller_closed_form" = "Fuller",
+  "fuller_closed_form" = "Fuller (stabilized)",
+  "fuller_book_preliminary_closed_form" = "Fuller (book preliminary)",
+  "fuller_book_closed_form" = "Fuller (book equations)",
   "lai_2spa" = "Lai (2-SPA)",
   "naive_dual_blup" = "OLS with Both BLUPs",
   "fuller_alpha_stepdown_closed_form" = "Fuller (alpha stepdown)",
@@ -230,7 +235,7 @@ OLS with BLUPs showed generally high RMSE, especially in the zero slope-intercep
 
 ```{r}
 coverage <- study2 %>%
-  filter(analysis_ready) %>%
+  filter(interval_eligible) %>%
   mutate(covered = as.numeric(covered)) %>%
   filter(method != "closed_form_dual" & method != "oracle_dual") %>%
   mutate(num_clus_label = "Number of Clusters", cor_label = "Slope-Intercept Correlation") %>%
@@ -254,7 +259,7 @@ All methods show undercoverage, sometimes noticeably, for low reliability, nonze
 
 ```{r}
 se_table <- study2 %>%
-  filter(analysis_ready) %>%
+  filter(interval_eligible) %>%
   filter(method != "closed_form_dual" & method != "oracle") %>%
   group_by(method, num_clus_fac, target_reliability, marginal_rho, mean_clus_size, standardized_beta_target) %>%
   summarize(
@@ -331,4 +336,3 @@ convergence2 <- plot_convergence(
 )
 print(convergence); print(convergence2)
 ```
-

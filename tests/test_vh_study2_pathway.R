@@ -46,11 +46,15 @@ condition <- design %>%
 
 set.seed(20260615)
 results <- run_study2_rep(condition)
+fuller_results <- dplyr::filter(results, grepl("^fuller_", method))
+fuller_algebra_variants <- dplyr::filter(results, !is.na(fuller_variant))
 primary_dual_methods <- c(
   "oracle_dual",
   "naive_dual_blup",
   "closed_form_dual",
   "fuller_closed_form",
+  "fuller_book_preliminary_closed_form",
+  "fuller_book_closed_form",
   "fuller_alpha_stepdown_closed_form",
   "lai_2spa",
   "msem"
@@ -58,6 +62,11 @@ primary_dual_methods <- c(
 
 stopifnot(
   setequal(results$method, study2_methods()),
+  all(c(
+    "point_eligible", "point_exclusion_reason",
+    "interval_eligible", "interval_exclusion_reason"
+  ) %in% names(results)),
+  identical(results$analysis_eligible, results$point_eligible),
   all(results$truth == condition$standardized_beta_target),
   all(primary_dual_methods %in% results$method),
   all(
@@ -77,7 +86,21 @@ stopifnot(
   abs(
     results$stage1_slope_variance -
       condition$slope_variance_marginal
-  ) < 0.08
+  ) < 0.08,
+  all(fuller_results$fuller_predictor_outcome_covariance_source == "supplied"),
+  all(fuller_results$fuller_predictor_outcome_covariance_max_abs == 0),
+  identical(
+    fuller_algebra_variants$fuller_variant,
+    c("stabilized", "fuller_preliminary", "fuller_equations")
+  ),
+  identical(
+    fuller_algebra_variants$fuller_preliminary_moment,
+    c("modified", "fuller", "fuller")
+  ),
+  identical(
+    fuller_algebra_variants$fuller_variance_bread,
+    c("modified", "modified", "fuller")
+  )
 )
 
 failed_results <- make_failed_result(
@@ -101,8 +124,12 @@ summary <- summarize_results_df(
 )
 stopifnot(
   nrow(summary) == length(study2_methods()),
-  all(c("mean_clus_size", "standardized_beta_target", "structural_target") %in%
-    names(summary))
+  all(c(
+    "mean_clus_size", "standardized_beta_target", "structural_target",
+    "n_point_eligible", "n_interval_eligible", "empirical_sd", "mean_se",
+    "mean_se_to_empirical_sd", "p99_interval_width", "coverage_mc_low",
+    "success_and_cover", "conditional_rejection_rate", "power"
+  ) %in% names(summary))
 )
 
 cat("VH Study 2 pathway test ok\n")

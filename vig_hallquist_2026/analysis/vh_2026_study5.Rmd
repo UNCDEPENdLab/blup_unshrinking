@@ -71,7 +71,9 @@ method_labels <- c(
   oracle_dual = "Oracle dual",
   naive_dual_blup = "Naive dual BLUP",
   closed_form_dual = "Uncorrected closed-form OLS",
-  fuller_closed_form = "Fuller",
+  fuller_closed_form = "Fuller (stabilized)",
+  fuller_book_preliminary_closed_form = "Fuller (book preliminary)",
+  fuller_book_closed_form = "Fuller (book equations)",
   fuller_alpha_stepdown_closed_form = "Fuller alpha-stepdown",
   lai_2spa = "Lai 2S-PA",
   msem = "MSEM"
@@ -84,7 +86,7 @@ bias_plot_methods <- c("oracle_dual", corrected_methods)
 method_palette <- c(
   "Oracle dual" = "#4D4D4D",
   "Naive dual BLUP" = "#E15759",
-  "Fuller" = "#4E79A7",
+  "Fuller (stabilized)" = "#4E79A7",
   "Lai 2S-PA" = "#B07AA1",
   "MSEM" = "#59A14F"
 )
@@ -348,8 +350,8 @@ for $\tau_1^2$, not adopting a mixed mathematical subscript convention.
 
 The repaired DGM does **not** make all methods inferentially equivalent. Under
 fixed-shape marginal and partial reliability, respectively, mean conditional
-coverage is `r percent(arm_stat("Fixed G shape: marginal R", "Fuller", "mean_coverage"), accuracy = .1)`
-and `r percent(arm_stat("Fixed G shape: partial R", "Fuller", "mean_coverage"), accuracy = .1)`
+coverage is `r percent(arm_stat("Fixed G shape: marginal R", "Fuller (stabilized)", "mean_coverage"), accuracy = .1)`
+and `r percent(arm_stat("Fixed G shape: partial R", "Fuller (stabilized)", "mean_coverage"), accuracy = .1)`
 for Fuller, `r percent(arm_stat("Fixed G shape: marginal R", "Lai 2S-PA", "mean_coverage"), accuracy = .1)`
 and `r percent(arm_stat("Fixed G shape: partial R", "Lai 2S-PA", "mean_coverage"), accuracy = .1)`
 for 2S-PA, and `r percent(arm_stat("Fixed G shape: marginal R", "MSEM", "mean_coverage"), accuracy = .1)`

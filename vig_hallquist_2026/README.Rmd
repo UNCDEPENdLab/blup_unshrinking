@@ -90,7 +90,11 @@ The original Study 1--4 selectors are intentionally preserved:
 - `iccbridge` selects a 108-condition Study-2-like bridge. Its posterior-R and
   ICC arms are identical at reference cluster size $m=10$; away from $m=10$,
   one arm holds posterior reliability constant and the other holds ICC
-  constant.
+  constant. Matched arms share `bridge_pair_id` and
+  `simulation_seed_group`, so their replication streams use common random
+  numbers. The $m=10$ anchor therefore produces identical simulated samples
+  replication by replication; away from the anchor, pairing reduces Monte
+  Carlo noise in the between-arm contrast.
 
 The original builder names remain callable. Explicit aliases
 `make_study1_legacy_design()` through `make_study4_legacy_design()` make legacy
@@ -100,18 +104,50 @@ use unambiguous. The amended builders are `make_study1_v2_design()` through
 `make_icc_posterior_reliability_crosswalk()` returns the deterministic VH-v2
 and Lai-style ICC/reliability crosswalk.
 
-Study 5 reuses the Study 2 BLUP-as-predictor generator and all seven Study 2
-estimators. It is a matched-calibration bridge with three arms: the current
-solve-for-`G22` marginal-reliability calibration, a shape-preserving
-solve-for-`sigma` marginal-reliability calibration, and a shape-preserving
-solve-for-`sigma` residualized-slope-reliability calibration. The 36 conditions
-hold `num_clus = 100` and cross cluster size (10, 25), correlation (0, .5), and
-standardized focal effect (0, .2, .4) at target reliability .25.
+Study 5 reuses the Study 2 BLUP-as-predictor generator and estimator bundle. It
+is a matched-calibration bridge with three arms: the legacy
+one-coordinate calibration that fixes `sigma = 1` and solves only for
+$\tau_1^2$, a shape-preserving solve-for-`sigma` marginal-reliability
+calibration, and a shape-preserving solve-for-`sigma`
+residualized-slope-reliability calibration. The old code and output label for
+the first arm is `current_g22` or `solve-G_22`; here $G_{22}=\tau_1^2$, the
+random-slope variance. The 36 conditions hold `num_clus = 100` and cross
+cluster size (10, 25), correlation (0, .5), and standardized focal effect
+(0, .2, .4) at target reliability .25.
 
 All five studies manipulate `standardized_beta_target`. Study 1 uses
 `structural_r2 = standardized_beta_target^2` internally to partition the
 marginal slope variance. Studies 2--4 retain total structural R-squared and
 focal unique R-squared only as derived diagnostics.
+
+# Estimator corrections shared by legacy and v2 designs
+
+The design selector controls the DGM, not the estimator implementation. A new
+run of either a legacy or v2 selector therefore uses the following corrected
+shared estimators:
+
+- The Fuller predictor--outcome correction uses the predictor--outcome
+  measurement-error covariance vector, not the outcome measurement-error
+  variance. Studies 1--4 create and pass named zero covariance columns because
+  their relevant measurement errors arise from separate processes (or the
+  Stage-2 outcome is observed). The zero assumption is consequently visible in
+  every replication rather than implicit in the estimator.
+- `fuller_closed_form` is the corrected, finite-sample-stabilized VH estimator.
+  `fuller_book_preliminary_closed_form` substitutes Fuller's fully corrected
+  preliminary moment, and `fuller_book_closed_form` additionally substitutes
+  Fuller's variance bread. These nested variants identify which stabilization
+  controls the upper tail of the standard errors; they do not change the
+  assumed measurement-error covariance.
+- The Lai 2S-PA wrappers reorder the four $\Lambda$ entries from the Stage-1
+  row/column convention to the column-major order required by OpenMx
+  `unique.bivariate` paths. A unit test inspects the actual RAM `A` matrix with
+  unequal off-diagonal entries, so a silent $\lambda_{12}/\lambda_{21}$
+  transposition cannot recur.
+
+The `pipeline_version` in replication files identifies this corrected
+implementation. Results produced by an older pipeline should not be pooled
+with a resumed corrected run; the completion check deliberately reruns those
+conditions.
 
 # Production execution
 
@@ -175,16 +211,53 @@ version, contains the complete expected method set, and has exactly the
 requested replication IDs. Older files or files produced with a different
 `n_sim` are rerun rather than silently reused.
 
+Every run also writes a chunk-specific `*_run_metadata.csv`. This one-row file
+records the Git commit and dirty-worktree flag, pipeline version, requested
+replications and cores, selector and condition range, R and key package
+versions, Mplus executable/version, SLURM job/array identifiers, start time,
+and host. Bridge runs additionally write the deterministic, standalone
+`icc_posterior_reliability_crosswalk_v1.csv` beside the other outputs. Each
+replication row stores `replication_seed`, making paired-stream reconstruction
+and audit possible without relying on undocumented seed arithmetic.
+
 After an array completes, run one unchunked resume pass to rebuild aggregate
 files from all completed condition files without rerunning valid conditions:
 
 ```bash
 Rscript vig_hallquist_2026/random_effects_structural_simulation.R \
-  1000 all outputs/vig_hallquist_slurm 1 NA NA NA 1
+  1000 allv2 outputs/vig_hallquist_v2 1 NA NA NA 1
 ```
 
 The aggregation pass must use the same `n_sim`, study selector, and output
-directory as the array run.
+directory as the array run. For the bridge, replace `allv2` and its output
+directory with `iccbridge` and `outputs/vig_hallquist_icc_bridge`.
+
+Each replication row now carries separate `point_eligible` and
+`interval_eligible` flags, their exclusion reasons, and the legacy
+`analysis_eligible` alias (which always means point eligibility). Condition
+summaries use the point denominator for bias, empirical SD, and RMSE, and the
+stricter interval denominator for SE and coverage calculations. They report
+both conditional coverage/rejection and the corresponding joint probability
+over all attempted replications (`success_and_cover` and
+`success_and_reject`). The same files also include Monte Carlo uncertainty for
+bias and binomial rates; mean/median and tail SEs and interval widths;
+mean-SE/empirical-SD calibration; standardized-error diagnostics; directional
+and total Type I error in null cells; and power in non-null cells. This makes
+numerical failures visible rather than silently changing the denominator.
+
+Replication rows also retain diagnostics that cannot be reconstructed from
+condition summaries after the cluster-level data are discarded. For each
+Stage-1 process these include fitted marginal and intercept-residualized slope
+reliability; the true-slope/BLUP correlation and $R^2$; BLUP and corrected-score
+bias/RMSE; means and ranges for all four entries of $\Lambda$, all unique
+entries of $\Theta$, posterior covariance, and corrected-score error
+covariance; and fitted-$G$ boundary diagnostics. The 2S-PA rows additionally
+store the unscaled focal path/SE and fitted latent intercept/slope covariance,
+correlation, minimum eigenvalue, and boundary flag. MSEM rows carry analogous
+raw-path, latent-variance, covariance, and boundary diagnostics. Condition
+summaries average these replication-level audit quantities so overcoverage can
+be separated into fitted latent-variance inflation, structural-SE inflation,
+or a small boundary-adjacent subset.
 
 At 1,000 replications, the combined design produces approximately 19.8 million
 method rows. The runner therefore does not load or materialize one monolithic

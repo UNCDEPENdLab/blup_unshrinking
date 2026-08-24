@@ -398,11 +398,54 @@ run_mx_safe <- function(mx_mod, max_tries = 5L, warning_log = NULL) {
 
 #' Extract an OpenMx standard error and related diagnostics.
 #'
+#' Normalize a value expected to be one numeric scalar.
+#'
+#' Failed OpenMx fits can leave algebras as `NULL` or `numeric(0)`. Converting
+#' those values without checking their length can silently create zero-row
+#' tibbles later in the result pipeline. This helper maps any non-scalar value
+#' to an explicit missing value.
+mx_numeric_scalar <- function(x, default = NA_real_) {
+  value <- suppressWarnings(as.numeric(x))
+  if (length(value) != 1L) default else value[[1L]]
+}
+
+#' Convert OpenMx audit diagnostics to an exactly one-row tibble.
+#'
+#' OpenMx can return `NULL`/length-zero algebra values for failed fits. A
+#' length-zero list element makes `tibble::as_tibble()` produce zero rows,
+#' which previously caused the entire 2S-PA method row to disappear. This
+#' normalizer preserves logical boundary fields and converts every other
+#' malformed scalar to `NA_real_` before constructing the tibble.
+mx_diagnostics_tibble <- function(diagnostics) {
+  for (name in names(diagnostics)) {
+    value <- diagnostics[[name]]
+    if (grepl("_boundary$", name)) {
+      diagnostics[[name]] <- if (length(value) == 1L) {
+        as.logical(value[[1L]])
+      } else {
+        NA
+      }
+    } else {
+      diagnostics[[name]] <- mx_numeric_scalar(value)
+    }
+  }
+  out <- tibble::as_tibble(diagnostics)
+  if (nrow(out) != 1L) {
+    stop("Internal error: OpenMx diagnostics must contain exactly one row.")
+  }
+  out
+}
+
+#' Safely extract an OpenMx algebra standard error.
+#'
 #' @details
 #' `OpenMx::mxSE(..., details = TRUE)` can warn or error when the information
 #' matrix is indefinite or the repeated-sampling covariance cannot be computed.
-#' This helper normalizes those outcomes into a small list so
-#' `extract_mx_stats()` can classify them without interrupting a simulation.
+#' In addition, `mxSE()` calls `vcov.MxModel()` internally; older OpenMx
+#' versions print an uncaught error when a failed fit has no scalar `fitUnits`.
+#' The preflight checks here avoid that noisy call and normalize the failure
+#' into fields that `extract_mx_stats()` can classify without interrupting or
+#' dropping a simulation row.
 #'
 #' @param algebra_name Character scalar naming an OpenMx algebra to pass to
 #' `mxSE()`.
@@ -410,6 +453,25 @@ run_mx_safe <- function(mx_mod, max_tries = 5L, warning_log = NULL) {
 #'
 #' @return A list with `se`, `cov`, `warning`, and `error` entries.
 extract_mx_se_details <- function(algebra_name, mx_fit) {
+  fit_units <- tryCatch(mx_fit$output$fitUnits, error = function(e) NULL)
+  parameter_vcov <- tryCatch(mx_fit$output[["vcov"]], error = function(e) NULL)
+  if (length(fit_units) != 1L || is.na(fit_units) ||
+      !(fit_units %in% c("-2lnL", "r'Wr", "r'wr"))) {
+    return(list(
+      se = NA_real_,
+      cov = matrix(NA_real_, nrow = 1L, ncol = 1L),
+      warning = NA_character_,
+      error = "OpenMx fit units were unavailable; algebra SE was not requested."
+    ))
+  }
+  if (is.null(parameter_vcov) || length(parameter_vcov) == 0L) {
+    return(list(
+      se = NA_real_,
+      cov = matrix(NA_real_, nrow = 1L, ncol = 1L),
+      warning = NA_character_,
+      error = "OpenMx parameter covariance was unavailable; algebra SE was not requested."
+    ))
+  }
   se_warnings <- character()
 
   se_details <- withCallingHandlers(
@@ -433,7 +495,7 @@ extract_mx_se_details <- function(algebra_name, mx_fit) {
   }
 
   list(
-    se = tryCatch(as.numeric(se_details$SE), error = function(e) NA_real_),
+    se = tryCatch(mx_numeric_scalar(se_details$SE), error = function(e) NA_real_),
     cov = tryCatch(as.matrix(se_details$Cov), error = function(e) matrix(NA_real_, nrow = 1L, ncol = 1L)),
     warning = compact_message(se_warnings),
     error = NA_character_
@@ -522,30 +584,129 @@ classify_mx_issue <- function(code, status_msg, est, se, info_definite, se_warni
 #' @param ci_multiplier Multiplier used for Wald confidence limits. Defaults to
 #' normal 1.96-style limits; callers can pass a `t` multiplier when matching a
 #' specific simulation convention.
+#' @param raw_algebra_name Optional algebra naming the focal structural path
+#'   before any reporting-scale multiplication. Its estimate and SE are saved
+#'   as `mx_raw_focal_estimate` and `mx_raw_focal_se`.
+#' @param latent_covariance_blocks Named list of two-element character vectors.
+#'   Each vector gives the fitted latent intercept and slope names whose RAM
+#'   `S` block is audited. The default records `u0`/`u1`; dual-process callers
+#'   request separate predictor and outcome blocks.
 #'
+#' Extract fitted latent covariance and unscaled focal-path diagnostics.
+mx_latent_covariance_diagnostics <- function(
+    mx_fit, raw_algebra_name = NULL,
+    latent_covariance_blocks = list(latent = c("u0", "u1")),
+    boundary_tolerance = sqrt(.Machine$double.eps)) {
+  diagnostics <- list(
+    mx_raw_focal_estimate = NA_real_,
+    mx_raw_focal_se = NA_real_
+  )
+  if (!is.null(mx_fit) && !is.null(raw_algebra_name)) {
+    diagnostics$mx_raw_focal_estimate <- tryCatch(
+      mx_numeric_scalar(OpenMx::mxEvalByName(raw_algebra_name, mx_fit)),
+      error = function(e) NA_real_
+    )
+    diagnostics$mx_raw_focal_se <- tryCatch(
+      mx_numeric_scalar(extract_mx_se_details(raw_algebra_name, mx_fit)$se),
+      error = function(e) NA_real_
+    )
+  }
+
+  block_prefix <- function(block_name) {
+    if (identical(block_name, "latent") || !nzchar(block_name)) {
+      "mx_latent_"
+    } else {
+      paste0("mx_", block_name, "_latent_")
+    }
+  }
+  for (block_name in names(latent_covariance_blocks)) {
+    prefix <- block_prefix(block_name)
+    for (metric in c(
+      "intercept_variance", "slope_variance",
+      "intercept_slope_covariance", "intercept_slope_correlation",
+      "covariance_min_eigenvalue", "covariance_condition_number"
+    )) {
+      diagnostics[[paste0(prefix, metric)]] <- NA_real_
+    }
+    diagnostics[[paste0(prefix, "covariance_boundary")]] <- NA
+  }
+
+  if (is.null(mx_fit) || length(latent_covariance_blocks) == 0L) {
+    return(mx_diagnostics_tibble(diagnostics))
+  }
+  fitted_s <- tryCatch(OpenMx::mxEval(S, mx_fit), error = function(e) NULL)
+  if (is.null(fitted_s) || !is.matrix(fitted_s) ||
+      any(dim(fitted_s) == 0L)) {
+    return(mx_diagnostics_tibble(diagnostics))
+  }
+  variable_names <- c(mx_fit$manifestVars, mx_fit$latentVars)
+  for (block_name in names(latent_covariance_blocks)) {
+    latent_names <- latent_covariance_blocks[[block_name]]
+    indices <- match(latent_names, variable_names)
+    if (length(indices) != 2L || anyNA(indices)) next
+    covariance <- as.matrix(fitted_s[indices, indices, drop = FALSE])
+    covariance <- (covariance + t(covariance)) / 2
+    eigenvalues <- tryCatch(
+      eigen(covariance, symmetric = TRUE, only.values = TRUE)$values,
+      error = function(e) rep(NA_real_, 2L)
+    )
+    prefix <- block_prefix(block_name)
+    diagnostics[[paste0(prefix, "intercept_variance")]] <- covariance[1L, 1L]
+    diagnostics[[paste0(prefix, "slope_variance")]] <- covariance[2L, 2L]
+    diagnostics[[paste0(prefix, "intercept_slope_covariance")]] <- covariance[1L, 2L]
+    diagnostics[[paste0(prefix, "intercept_slope_correlation")]] <- if (
+      all(is.finite(covariance)) && all(diag(covariance) > 0)
+    ) {
+      covariance[1L, 2L] / sqrt(covariance[1L, 1L] * covariance[2L, 2L])
+    } else {
+      NA_real_
+    }
+    diagnostics[[paste0(prefix, "covariance_min_eigenvalue")]] <- if (
+      all(is.finite(eigenvalues))
+    ) min(eigenvalues) else NA_real_
+    diagnostics[[paste0(prefix, "covariance_condition_number")]] <- tryCatch(
+      kappa(covariance, exact = TRUE),
+      error = function(e) NA_real_
+    )
+    diagnostics[[paste0(prefix, "covariance_boundary")]] <-
+      any(!is.finite(eigenvalues)) || any(eigenvalues <= boundary_tolerance) ||
+      any(diag(covariance) <= boundary_tolerance)
+  }
+  mx_diagnostics_tibble(diagnostics)
+}
+
 #' @return A one-row tibble with estimator columns (`estimate`, `se`, `ci_low`,
 #' `ci_high`, `status_code`) plus OpenMx diagnostic columns.
-extract_mx_stats <- function(mx_fit, algebra_name = "xstd_u1", ci_multiplier = stats::qnorm(0.975)) {
+extract_mx_stats <- function(
+    mx_fit, algebra_name = "xstd_u1", ci_multiplier = stats::qnorm(0.975),
+    raw_algebra_name = NULL,
+    latent_covariance_blocks = list(latent = c("u0", "u1"))) {
+  extended_diagnostics <- mx_latent_covariance_diagnostics(
+    mx_fit,
+    raw_algebra_name = raw_algebra_name,
+    latent_covariance_blocks = latent_covariance_blocks
+  )
   if (is.null(mx_fit)) {
-    return(tibble::tibble(
+    return(dplyr::bind_cols(tibble::tibble(
       estimate = NA_real_, se = NA_real_, ci_low = NA_real_, ci_high = NA_real_,
       status_code = NA_integer_, mx_status_msg = NA_character_, mx_info_definite = NA,
       mx_condition_number = NA_real_, mx_issue_class = "mx_fit_null",
       mx_issue_detail = "OpenMx fit object was NULL."
-    ))
+    ), extended_diagnostics))
   }
 
-  code <- if (length(mx_fit$output$status$code) == 0L) NA_integer_ else as.integer(mx_fit$output$status$code)
+  code_value <- suppressWarnings(as.integer(mx_fit$output$status$code))
+  code <- if (length(code_value) == 1L) code_value[[1L]] else NA_integer_
   status_msg <- compact_message(mx_fit$output$status$statusMsg)
   info_definite <- if (is.null(mx_fit$output$infoDefinite) || length(mx_fit$output$infoDefinite) == 0L) {
     NA
   } else {
-    as.logical(mx_fit$output$infoDefinite)
+    as.logical(mx_fit$output$infoDefinite[[1L]])
   }
   condition_number <- if (is.null(mx_fit$output$conditionNumber) || length(mx_fit$output$conditionNumber) == 0L) {
     NA_real_
   } else {
-    suppressWarnings(as.numeric(mx_fit$output$conditionNumber))
+    mx_numeric_scalar(mx_fit$output$conditionNumber)
   }
 
   # Nonzero status codes are treated as estimator failures before attempting
@@ -567,17 +728,17 @@ extract_mx_stats <- function(mx_fit, algebra_name = "xstd_u1", ci_multiplier = s
       if (identical(issue_class, "indefinite_hessian_status6")) "OpenMx reported an uncertain solution / indefinite Hessian." else NA_character_
     ))
 
-    return(tibble::tibble(
+    return(dplyr::bind_cols(tibble::tibble(
       estimate = NA_real_, se = NA_real_, ci_low = NA_real_, ci_high = NA_real_,
       status_code = code, mx_status_msg = status_msg, mx_info_definite = info_definite,
       mx_condition_number = condition_number, mx_issue_class = issue_class,
       mx_issue_detail = issue_detail
-    ))
+    ), extended_diagnostics))
   }
 
   est_error <- NA_character_
   est <- tryCatch(
-    as.numeric(OpenMx::mxEvalByName(algebra_name, mx_fit)),
+    mx_numeric_scalar(OpenMx::mxEvalByName(algebra_name, mx_fit)),
     error = function(e) {
       est_error <<- compact_message(conditionMessage(e))
       NA_real_
@@ -603,7 +764,7 @@ extract_mx_stats <- function(mx_fit, algebra_name = "xstd_u1", ci_multiplier = s
   est_out <- if (identical(issue_class, "ok")) est else NA_real_
   se_out <- if (identical(issue_class, "ok")) se else NA_real_
 
-  tibble::tibble(
+  dplyr::bind_cols(tibble::tibble(
     estimate = est_out,
     se = se_out,
     ci_low = if (is.finite(est_out) && is.finite(se_out)) est_out - ci_multiplier * se_out else NA_real_,
@@ -614,7 +775,7 @@ extract_mx_stats <- function(mx_fit, algebra_name = "xstd_u1", ci_multiplier = s
     mx_condition_number = condition_number,
     mx_issue_class = issue_class,
     mx_issue_detail = issue_detail
-  )
+  ), extended_diagnostics)
 }
 
 #' Fit a Lai 2S-PA model for `x -> latent random slope`.
@@ -682,13 +843,16 @@ fit_lai_2spa <- function(stage2_df, use_average = FALSE) {
       labels = c("var_u0", "cov_u0_u1", "var_u1")
     ),
     OpenMx::mxPath(from = "one", to = c("x", "u0", "u1"), free = TRUE, values = c(mean(stage2_df$x), 0, 0)),
+    OpenMx::mxAlgebra(A[5, 1], name = "raw_focal_path"),
     OpenMx::mxAlgebra(A[5, 1], name = "gamma_hat")
   )
 
   extract_mx_stats(
     run_mx_safe(mx_mod),
     algebra_name = "gamma_hat",
-    ci_multiplier = stats::qt(0.975, nrow(stage2_df) - 2L)
+    ci_multiplier = stats::qt(0.975, nrow(stage2_df) - 2L),
+    raw_algebra_name = "raw_focal_path",
+    latent_covariance_blocks = list(latent = c("u0", "u1"))
   )
 }
 
@@ -776,11 +940,16 @@ fit_lai_2spa_observed_outcome <- function(
     ), theta_arg)),
     OpenMx::mxPath(from = c("u0", "u1"), connect = "unique.pairs", arrows = 2, free = TRUE, values = c(0.5, 0.1, 0.5)),
     OpenMx::mxPath(from = "one", to = c("u0", "u1", "z"), free = TRUE, values = c(0, 0, mean(stage2_df$z, na.rm = TRUE))),
+    OpenMx::mxAlgebra(A[3, 5], name = "raw_focal_path"),
     target_algebra
   )
 
   mx_fit <- run_mx_safe(mx_mod)
-  out <- extract_mx_stats(mx_fit)
+  out <- extract_mx_stats(
+    mx_fit,
+    raw_algebra_name = "raw_focal_path",
+    latent_covariance_blocks = list(latent = c("u0", "u1"))
+  )
 
   # Preserve the model-estimated latent slope SD even when the caller requests
   # a fixed reporting scale.  Lai Study 1 multiplied the 2S-PA path by this
@@ -851,10 +1020,15 @@ fit_lai_2spa_disparate <- function(stage2_df, use_average = FALSE) {
     do.call(OpenMx::mxPath, c(list(from = "z_u0_eb", arrows = 2, free = FALSE), z_theta_arg)),
     OpenMx::mxPath(from = c("u0", "u1"), connect = "unique.pairs", arrows = 2, free = TRUE, values = c(0.5, 0.1, 0.5)),
     OpenMx::mxPath(from = "one", to = c("u0", "u1", "z_lat"), free = TRUE, values = c(0, 0, fixed_params$z_intercept)),
+    OpenMx::mxAlgebra(A[6, 5], name = "raw_focal_path"),
     OpenMx::mxAlgebra(A[6, 5] * sqrt(S[5, 5]), name = "xstd_u1")
   )
 
-  extract_mx_stats(run_mx_safe(mx_mod))
+  extract_mx_stats(
+    run_mx_safe(mx_mod),
+    raw_algebra_name = "raw_focal_path",
+    latent_covariance_blocks = list(latent = c("u0", "u1"))
+  )
 }
 
 #' Fit Lai 2S-PA/2S-PAA for two random-intercept/random-slope processes.
@@ -966,8 +1140,16 @@ fit_lai_2spa_dual_process <- function(
         2 * A[8, 5] * A[8, 6] * S[5, 6],
       name = "q1_variance"
     ),
+    OpenMx::mxAlgebra(A[8, 6], name = "raw_focal_path"),
     target_algebra
   )
 
-  extract_mx_stats(run_mx_safe(mx_mod))
+  extract_mx_stats(
+    run_mx_safe(mx_mod),
+    raw_algebra_name = "raw_focal_path",
+    latent_covariance_blocks = list(
+      predictor = c("y_u0", "y_u1"),
+      outcome = c("q_u0", "q_u1")
+    )
+  )
 }
