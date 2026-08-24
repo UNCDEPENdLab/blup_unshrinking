@@ -6,11 +6,18 @@ study1_methods <- function() {
     "naive_blup",
     "closed_form",
     "fuller_closed_form",
+    "fuller_book_preliminary_closed_form",
+    "fuller_book_closed_form",
     "fuller_alpha_stepdown_closed_form",
     "single_subject_ols",
     "lai_2spa",
     "direct_mlm"
   )
+}
+
+#' Apply the shared VH point/interval eligibility contract to Study 1.
+add_study1_analysis_eligibility <- function(results) {
+  add_vh_analysis_eligibility(results)
 }
 
 simulate_study1 <- function(condition) {
@@ -31,7 +38,10 @@ run_study1_rep <- function(condition) {
     cluster_var = "cid"
   )
   if (is.null(fit_y)) {
-    return(make_failed_result(condition, study1_methods(), truth))
+    return(
+      make_failed_result(condition, study1_methods(), truth) %>%
+        add_study1_analysis_eligibility()
+    )
   }
 
   stage1_y <- tryCatch(
@@ -55,7 +65,10 @@ run_study1_rep <- function(condition) {
     error = function(e) NULL
   )
   if (is.null(stage1_y) || is.null(corrected_y)) {
-    return(make_failed_result(condition, study1_methods(), truth))
+    return(
+      make_failed_result(condition, study1_methods(), truth) %>%
+        add_study1_analysis_eligibility()
+    )
   }
 
   individual_slopes <- sim$lv1 %>%
@@ -78,11 +91,19 @@ run_study1_rep <- function(condition) {
     dplyr::left_join(stage1_y, by = "id") %>%
     dplyr::left_join(
       corrected_y %>%
-        dplyr::select(id, corrected_slope_full, ols_var22),
+        dplyr::select(
+          id,
+          corrected_intercept_full,
+          corrected_slope_full,
+          ols_var11,
+          ols_var12,
+          ols_var22
+        ),
       by = "id"
     ) %>%
     dplyr::left_join(individual_slopes, by = "id") %>%
-    dplyr::mutate(zero = 0)
+    dplyr::mutate(zero = 0) %>%
+    add_zero_fuller_predictor_outcome_covariance(include_u0 = FALSE)
   stage1_diag <- get_stage1_diagnostics(fit_y, stage2_df)
 
   direct_data <- sim$lv1 %>%
@@ -149,15 +170,23 @@ run_study1_rep <- function(condition) {
       dplyr::transmute(
         method = "closed_form", estimate, se, ci_low, ci_high, status_code
       ),
-    fit_fuller(
+    fit_fuller_dual_variants(
       stage2_df,
       outcome = "corrected_slope_full",
       predictor_u1 = "w",
       meas22 = "zero",
-      outcome_meas_var = "ols_var22"
+      outcome_meas_var = "ols_var22",
+      predictor_outcome_meas_cov_u1 =
+        "fuller_predictor_outcome_meas_cov_u1"
     ) %>%
       rescale_fuller_to_population_sd(1) %>%
-      dplyr::mutate(method = "fuller_closed_form") %>%
+      dplyr::mutate(
+        method = unname(c(
+          stabilized = "fuller_closed_form",
+          fuller_preliminary = "fuller_book_preliminary_closed_form",
+          fuller_equations = "fuller_book_closed_form"
+        )[fuller_variant])
+      ) %>%
       dplyr::select(method, dplyr::everything()),
     fit_fuller_dual_alpha_stepdown(
       stage2_df,
@@ -167,7 +196,9 @@ run_study1_rep <- function(condition) {
       meas11 = NULL,
       meas12 = NULL,
       meas22 = "zero",
-      outcome_meas_var = "ols_var22"
+      outcome_meas_var = "ols_var22",
+      predictor_outcome_meas_cov_u1 =
+        "fuller_predictor_outcome_meas_cov_u1"
     ) %>%
       rescale_fuller_to_population_sd(1) %>%
       dplyr::mutate(method = "fuller_alpha_stepdown_closed_form") %>%
@@ -200,8 +231,11 @@ run_study1_rep <- function(condition) {
       fit_obj = fit_y,
       data = sim$lv1,
       cluster_var = "cid",
-      within_var = "x"
-    )
+      within_var = "x",
+      stage1_scores = stage2_df,
+      true_slope_col = "true_u1"
+    ) %>%
+    add_study1_analysis_eligibility()
 
   dplyr::bind_cols(
     results,

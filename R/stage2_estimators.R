@@ -851,6 +851,9 @@ fuller_dual_result_columns <- function() {
     "fuller_correction_scaling",
     "fuller_measurement_weight_requested",
     "fuller_measurement_weight_used",
+    "fuller_preliminary_moment", "fuller_variance_bread",
+    "fuller_predictor_outcome_covariance_source",
+    "fuller_predictor_outcome_covariance_max_abs",
     "fuller_alpha_step1_requested", "fuller_alpha_step1_used",
     "fuller_alpha_step3_requested", "fuller_alpha_step3_used",
     "fuller_alpha_scaling_requested", "fuller_alpha_scaling_used",
@@ -948,10 +951,25 @@ fuller_guard_penalty <- function(value, floor) {
 #' If `predictor_u0` is `NULL`, the regression uses `(intercept, predictor_u1)`.
 #' The intercept is treated as measured without error. The supplied predictor
 #' measurement-error variances and covariance (`meas11`, `meas12`, `meas22`)
-#' populate only the predictor block. Outcome measurement error is supplied via
-#' `outcome_meas_var` and is assumed uncorrelated with predictor measurement
-#' error (i.e., the outcome and predictors come from separate first-stage mixed
-#' models).
+#' populate the predictor block. Outcome measurement error is supplied via
+#' `outcome_meas_var`. Predictor--outcome measurement-error covariances may be
+#' supplied explicitly via `predictor_outcome_meas_cov_u0` and
+#' `predictor_outcome_meas_cov_u1`. Omitted covariance columns are represented
+#' by exact zeros. This is the appropriate VH Studies 1--4 default because the
+#' Stage-1 predictor and outcome errors arise from separate processes (or the
+#' Stage-2 outcome is observed without error).
+#'
+#' There are two independent algebra switches; neither changes the assumed
+#' measurement-error model. `preliminary_moment` controls the preliminary
+#' coefficient used to estimate the structural residual variance and case
+#' weights. `variance_bread` controls the matrix inverted in the final Wald
+#' variance. The final point estimator always uses Fuller's lambda/alpha-modified
+#' weighted moment equation. The VH primary estimator uses `"modified"` for
+#' both switches. `fit_fuller_dual_variants()` exposes a nested comparison that
+#' first replaces the preliminary moment with Fuller (1987, Eq. 3.1.19) and
+#' then replaces the variance bread with Eq. 3.1.28. This ordering identifies
+#' whether preliminary-weight regularization or bread regularization controls
+#' the extreme-SE tail.
 #'
 #' The returned estimate and standard error are scaled by an estimated latent
 #' SD for `predictor_u1`, computed by subtracting the aggregate predictor
@@ -975,6 +993,22 @@ fuller_guard_penalty <- function(value, floor) {
 #' @param outcome_meas_var Optional character scalar naming an outcome
 #' measurement-error variance column. If `NULL`, outcome measurement error is
 #' treated as zero.
+#' @param predictor_outcome_meas_cov_u0 Optional character scalar naming the
+#' measurement-error covariance between `predictor_u0` and the outcome. It must
+#' be omitted when `predictor_u0` is `NULL`. If omitted, this covariance is zero.
+#' @param predictor_outcome_meas_cov_u1 Optional character scalar naming the
+#' measurement-error covariance between `predictor_u1` and the outcome. If
+#' omitted, this covariance is zero.
+#' @param preliminary_moment Either `"modified"` (the VH default), which uses
+#' the lambda/alpha-modified Step-1 moments, or `"fuller"`, which uses the
+#' fully measurement-error-subtracted preliminary moments in Fuller (1987,
+#' Eq. 3.1.19). Both choices use the predictor--outcome covariance in the
+#' corrected cross-moment; outcome error variance is never substituted for it.
+#' @param variance_bread Either `"modified"` (the VH default), which uses the
+#' lambda/alpha-modified final predictor moment as the sandwich bread, or
+#' `"fuller"`, which uses the fully measurement-error-subtracted weighted
+#' predictor moment in Fuller (1987, Eq. 3.1.28). The two switches expose the
+#' stabilizations identified in the Fuller algebra audit as method variants.
 #' @param alpha_step1 Optional numeric Step 1 correction factor. Defaults to
 #' `p + 1` after data-dependent `p` is known.
 #' @param alpha_step3 Optional numeric Step 3 correction factor. Defaults to
@@ -996,17 +1030,37 @@ fit_fuller_dual_core <- function(stage2_df,
                                  meas12 = NULL,
                                  meas22,
                                  outcome_meas_var = NULL,
+                                 predictor_outcome_meas_cov_u0 = NULL,
+                                 predictor_outcome_meas_cov_u1 = NULL,
                                  measurement_weight = 1,
                                  alpha_step1 = NULL,
                                  alpha_step3 = NULL,
                                  skip_internal_scaling = TRUE,
                                  alpha_scaling = NULL,
+                                 preliminary_moment = c("modified", "fuller"),
+                                 variance_bread = c("modified", "fuller"),
                                  auto_tempered = FALSE) {
   if (!requireNamespace("geigen", quietly = TRUE)) {
     stop(
       "The `geigen` package is required for Fuller EIV estimation (generalized eigenvalues). ",
       "Install it with `install.packages(\"geigen\")`."
     )
+  }
+
+  preliminary_moment <- match.arg(preliminary_moment)
+  variance_bread <- match.arg(variance_bread)
+
+  # Record whether the caller supplied predictor--outcome error covariance.
+  # Missing columns mean exact zero covariance, never a request to reuse
+  # `outcome_meas_var`. VH Studies 1--4 pass named zero columns so that this
+  # assumption remains visible in saved replication results.
+  covariance_source <- if (
+    is.null(predictor_outcome_meas_cov_u0) &&
+      is.null(predictor_outcome_meas_cov_u1)
+  ) {
+    "zero_default"
+  } else {
+    "supplied"
   }
 
   out_fail <- tibble::tibble(
@@ -1030,6 +1084,10 @@ fit_fuller_dual_core <- function(stage2_df,
     fuller_correction_scaling = NA_real_,
     fuller_measurement_weight_requested = measurement_weight,
     fuller_measurement_weight_used = measurement_weight,
+    fuller_preliminary_moment = preliminary_moment,
+    fuller_variance_bread = variance_bread,
+    fuller_predictor_outcome_covariance_source = covariance_source,
+    fuller_predictor_outcome_covariance_max_abs = NA_real_,
     fuller_alpha_step1_requested = NA_real_,
     fuller_alpha_step1_used = NA_real_,
     fuller_alpha_step3_requested = NA_real_,
@@ -1077,6 +1135,11 @@ fit_fuller_dual_core <- function(stage2_df,
   if (!has_u0 && (!is.null(meas11) || !is.null(meas12))) {
     stop("`meas11` and `meas12` should be omitted when `predictor_u0` is NULL.")
   }
+  if (!has_u0 && !is.null(predictor_outcome_meas_cov_u0)) {
+    stop(
+      "`predictor_outcome_meas_cov_u0` should be omitted when `predictor_u0` is NULL."
+    )
+  }
 
   cols_needed <- c(outcome, predictor_u1, meas22)
   if (has_u0) {
@@ -1093,6 +1156,13 @@ fit_fuller_dual_core <- function(stage2_df,
   if (!is.null(outcome_meas_var)) {
     cols_needed <- c(cols_needed, outcome_meas_var)
   }
+  if (!is.null(predictor_outcome_meas_cov_u0)) {
+    cols_needed <- c(cols_needed, predictor_outcome_meas_cov_u0)
+  }
+  if (!is.null(predictor_outcome_meas_cov_u1)) {
+    cols_needed <- c(cols_needed, predictor_outcome_meas_cov_u1)
+  }
+  cols_needed <- unique(cols_needed)
 
   dat <- stage2_df[, cols_needed, drop = FALSE]
   dat <- dat[stats::complete.cases(dat), , drop = FALSE]
@@ -1162,14 +1232,19 @@ fit_fuller_dual_core <- function(stage2_df,
     fuller_alpha_scaling_used = alpha_scaling
   )
 
-  # Extract observed scores.
+  # Extract observed scores. `has_u0` changes only the dimension and ordering of
+  # the predictor vector; it is unrelated to the modified-versus-Fuller algebra
+  # choices controlled by `preliminary_moment` and `variance_bread`.
   y_vec <- dat[[outcome]]
   u1_vec <- dat[[predictor_u1]]
   u0_vec <- if (has_u0) dat[[predictor_u0]] else NULL
   x_mat <- if (has_u0) cbind(1, u0_vec, u1_vec) else cbind(1, u1_vec)
   pred_block_idx <- if (has_u0) 2:3 else 2:2
 
-  # Predictor measurement-error covariances; clamp variances at zero.
+  # Build the predictor error block Omega_xj. The dual-predictor path uses
+  # (intercept, u0, u1); the single-predictor path uses (intercept, u1).
+  # The design-matrix intercept is measured without error in both paths. Clamp
+  # variances at zero, but retain the signed u0--u1 covariance.
   if (has_u0) {
     s11 <- measurement_weight * pmax(dat[[meas11]], 0)
     s12 <- measurement_weight * dat[[meas12]]
@@ -1180,10 +1255,39 @@ fit_fuller_dual_core <- function(stage2_df,
     s22 <- measurement_weight * pmax(dat[[meas22]], 0)
   }
 
-  # y error isn't necessary but the machinery is here
+  # Build the remaining pieces of the full measurement-error covariance:
+  # outcome variance omega_yj and predictor--outcome vector omega_xyj. These
+  # are distinct: positive outcome error variance does not imply nonzero
+  # predictor--outcome covariance.
+  # `measurement_weight` tempers every predictor-involving correction together;
+  # it is one in the primary and algebra-comparison estimators.
   omega_y <- if (!is.null(outcome_meas_var)) pmax(dat[[outcome_meas_var]], 0) else rep(0, m)
+  omega_xy_u0 <- if (!is.null(predictor_outcome_meas_cov_u0)) {
+    measurement_weight * dat[[predictor_outcome_meas_cov_u0]]
+  } else {
+    rep(0, m)
+  }
+  omega_xy_u1 <- if (!is.null(predictor_outcome_meas_cov_u1)) {
+    measurement_weight * dat[[predictor_outcome_meas_cov_u1]]
+  } else {
+    rep(0, m)
+  }
+  # Stack each cross-covariance vector in x_mat order. The leading zero belongs
+  # to the error-free design-matrix intercept.
+  omega_xy_mat <- if (has_u0) {
+    cbind(0, omega_xy_u0, omega_xy_u1)
+  } else {
+    cbind(0, omega_xy_u1)
+  }
+  omega_xy_sum <- colSums(omega_xy_mat)
   omega_y_sum <- sum(omega_y)
+  out_fail <- dplyr::mutate(
+    out_fail,
+    fuller_predictor_outcome_covariance_max_abs = max(abs(omega_xy_mat))
+  )
 
+  # Sum Omega_xj in x_mat order. These branches are dimensional bookkeeping for
+  # dual versus single predictors, not competing Fuller estimators.
   if (has_u0) {
     omega_x_sum <- matrix(
       c(
@@ -1243,19 +1347,37 @@ fit_fuller_dual_core <- function(stage2_df,
   bb_sum <- crossprod(b_mat)
   omega_sum <- matrix(0, nrow = p + 1L, ncol = p + 1L)
   omega_sum[1, 1] <- omega_y_sum
+  omega_sum[1, 2:(p + 1L)] <- omega_xy_sum
+  omega_sum[2:(p + 1L), 1] <- omega_xy_sum
   omega_sum[2:(p + 1L), 2:(p + 1L)] <- omega_x_sum
 
   lambda1_hat <- smallest_det_root(bb_sum, omega_sum)
 
-  # Step 1: modified method-of-moments estimate (S1*).
+  # Step 1 obtains the lambda/alpha correction used by the stabilized
+  # preliminary path (and retained in the diagnostics for either path).
   alpha_step1_scaled <- alpha_step1 / m
   c_correction1 <- if (!is.na(lambda1_hat) && is.finite(lambda1_hat) && lambda1_hat <= 1 + 1 / m) {
     lambda1_hat - 1 / m - alpha_step1_scaled
   } else {
     1 - alpha_step1_scaled
   }
-  a0_mat <- crossprod(x_mat) - c_correction1 * omega_x_sum
-  b0_vec <- as.vector(crossprod(x_mat, y_vec) - c_correction1 * omega_y_sum)
+
+  # PRELIMINARY-MOMENT SWITCH
+  # * "modified" (VH primary) uses S1* and subtracts c1 times the full
+  #   predictor/cross-error moments. This regularizes gamma0_hat, which then
+  #   enters the residual-variance estimate, case weights, and variance meat.
+  # * "fuller" uses the unmodified moment equation in Fuller (1987),
+  #   Eq. 3.1.19, with coefficient 1 on those same error moments.
+  # Both paths subtract omega_xy; neither substitutes outcome variance omega_y.
+  if (identical(preliminary_moment, "modified")) {
+    a0_mat <- crossprod(x_mat) - c_correction1 * omega_x_sum
+    b0_vec <- as.vector(
+      crossprod(x_mat, y_vec) - c_correction1 * omega_xy_sum
+    )
+  } else {
+    a0_mat <- crossprod(x_mat) - omega_x_sum
+    b0_vec <- as.vector(crossprod(x_mat, y_vec) - omega_xy_sum)
+  }
 
   sx1_observed <- crossprod(x_mat) / m
   sx1_observed_diag <- fuller_matrix_diagnostics(sx1_observed[pred_block_idx, pred_block_idx, drop = FALSE])
@@ -1276,19 +1398,21 @@ fit_fuller_dual_core <- function(stage2_df,
   if (is.null(gamma0_hat) || any(!is.finite(gamma0_hat))) {
     return(fuller_fail(1L, "fuller_gamma0_solve_failed"))
   }
-  gamma0_u0 <- gamma0_hat[2]
-  gamma0_u1 <- if (has_u0) gamma0_hat[3] else 0
+  gamma0_u0 <- if (has_u0) gamma0_hat[2] else 0
+  gamma0_u1 <- gamma0_hat[p]
 
   # Regression error variance estimate: SSE/(M-P) minus average measurement
   # error in the composite residual (u_y - gamma0' u_x).
   resid0 <- y_vec - as.vector(x_mat %*% gamma0_hat)
   sigma2_ols <- sum(resid0^2) / max(1, m - p)
-  sigma2_corr <- mean(
-    omega_y +
-      (gamma0_u0^2) * s11 +
-      2 * gamma0_u0 * gamma0_u1 * s12 +
-      (gamma0_u1^2) * s22
-  )
+  predictor_outcome_cross <- gamma0_u0 * omega_xy_u0 +
+    gamma0_u1 * omega_xy_u1
+  quad_x <- (gamma0_u0^2) * s11 +
+    2 * gamma0_u0 * gamma0_u1 * s12 +
+    (gamma0_u1^2) * s22
+  composite_measurement_variance <- omega_y -
+    2 * predictor_outcome_cross + quad_x
+  sigma2_corr <- mean(composite_measurement_variance)
 
   sigma2_hat <- if (!is.na(lambda1_hat) && is.finite(lambda1_hat) && lambda1_hat < 1) {
     0
@@ -1301,10 +1425,7 @@ fit_fuller_dual_core <- function(stage2_df,
   sigma2_hat <- max(0, sigma2_hat)
 
   # Step 3: weights, lambda_2, corrected S* matrix, and final gamma.
-  quad_x <- (gamma0_u0^2) * s11 +
-    2 * gamma0_u0 * gamma0_u1 * s12 +
-    (gamma0_u1^2) * s22
-  w_j <- sigma2_hat + omega_y + quad_x # assume x-y error cov is zero
+  w_j <- sigma2_hat + composite_measurement_variance
   out_fail <- dplyr::mutate(
     out_fail,
     fuller_lambda1 = lambda1_hat,
@@ -1344,6 +1465,9 @@ fit_fuller_dual_core <- function(stage2_df,
   }
   omega_sum_w <- matrix(0, nrow = p + 1L, ncol = p + 1L)
   omega_sum_w[1, 1] <- sum(w_inv * omega_y)
+  omega_xy_sum_w <- colSums(omega_xy_mat * w_inv)
+  omega_sum_w[1, 2:(p + 1L)] <- omega_xy_sum_w
+  omega_sum_w[2:(p + 1L), 1] <- omega_xy_sum_w
   omega_sum_w[2:(p + 1L), 2:(p + 1L)] <- omega_x_sum_w
 
   lambda2_hat <- smallest_det_root(bw_sum, omega_sum_w)
@@ -1362,7 +1486,7 @@ fit_fuller_dual_core <- function(stage2_df,
   out_fail <- dplyr::mutate(
     out_fail,
     fuller_lambda2 = lambda2_hat,
-    fuller_c_correction = c_correction,
+    fuller_correction_c = c_correction,
     fuller_sx_star_condition = sx_star_diag$condition_number,
     fuller_sx_star_min_eigen = sx_star_diag$min_eigen
   )
@@ -1383,21 +1507,39 @@ fit_fuller_dual_core <- function(stage2_df,
     fuller_sx_star_relative_min_eigen = sx_star_relative_min_eigen,
     fuller_sx_observed_max_eigen = sx_observed_diag$max_eigen
   )
-  s_x_star_scaled <- s_x_star / m
-  s_x_inv <- tryCatch(solve(s_x_star_scaled), error = function(e) NULL)
+  # VARIANCE-BREAD SWITCH
+  # * "modified" (VH primary) inverts the lambda/alpha-modified final Sx*.
+  #   This is the second stabilization and is intended to tame the extreme-SE
+  #   tail when the corrected predictor moment is nearly singular.
+  # * "fuller" uses the unmodified corrected bread from Fuller (1987),
+  #   Eq. 3.1.28: sum(w_j x_j x_j') - sum(w_j Omega_xj).
+  # Holding `preliminary_moment` fixed, this switch changes Wald SEs only; the
+  # final point estimate above always comes from the same modified equation.
+  variance_bread_mat <- if (identical(variance_bread, "modified")) {
+    s_x_star
+  } else {
+    xw_sum - omega_x_sum_w
+  }
+  variance_bread_scaled <- variance_bread_mat / m
+  s_x_inv <- tryCatch(solve(variance_bread_scaled), error = function(e) NULL)
   if (is.null(s_x_inv) || any(!is.finite(s_x_inv))) {
     return(fuller_fail(1L, "fuller_sx_star_solve_failed"))
   }
 
-  # tilde_omega_j = omega_xyj - Omega_xj gamma0, with omega_xyj assumed 0.
+  # Fuller's variance meat uses
+  #   tilde_omega_j = omega_xyj - Omega_xj gamma0.
+  # The first component is exactly zero because the design-matrix intercept is
+  # measured without error. The branches below only expand this expression for
+  # dual (u0, u1) versus slope-only (u1) predictors; they are not distinct
+  # estimator variants.
   if (has_u0) {
     tilde_mat <- cbind(
       0,
-      -(s11 * gamma0_u0 + s12 * gamma0_u1),
-      -(s12 * gamma0_u0 + s22 * gamma0_u1)
+      omega_xy_u0 - (s11 * gamma0_u0 + s12 * gamma0_u1),
+      omega_xy_u1 - (s12 * gamma0_u0 + s22 * gamma0_u1)
     )
   } else {
-    tilde_mat <- cbind(0, -(s22 * gamma0_u1))
+    tilde_mat <- cbind(0, omega_xy_u1 - s22 * gamma0_u1)
   }
 
   meat_sum <- xw_sum + crossprod(tilde_mat * w_inv) # w_inv is actually squared here
@@ -1508,6 +1650,10 @@ fit_fuller_dual_core <- function(stage2_df,
     fuller_correction_scaling = c_correction_scaling,
     fuller_measurement_weight_requested = measurement_weight,
     fuller_measurement_weight_used = measurement_weight,
+    fuller_preliminary_moment = preliminary_moment,
+    fuller_variance_bread = variance_bread,
+    fuller_predictor_outcome_covariance_source = covariance_source,
+    fuller_predictor_outcome_covariance_max_abs = max(abs(omega_xy_mat)),
     fuller_alpha_step1_requested = alpha_step1,
     fuller_alpha_step1_used = alpha_step1,
     fuller_alpha_step3_requested = alpha_step3,
@@ -1640,7 +1786,13 @@ fuller_reference_dual_se <- function(stage2_df,
   NA_real_
 }
 
-#' Fit the traditional full-correction Fuller EIV estimator.
+#' Fit the corrected, stabilized VH Fuller EIV estimator.
+#'
+#' @details
+#' By default this uses the correct predictor--outcome covariance together with
+#' the two finite-sample stabilizations selected for the VH primary method.
+#' Set `preliminary_moment = "fuller"` and/or `variance_bread = "fuller"`, or
+#' use [fit_fuller_dual_variants()], for the prespecified algebra comparisons.
 #'
 #' @inheritParams fit_fuller_dual_core
 #'
@@ -1653,7 +1805,13 @@ fit_fuller_dual <- function(stage2_df,
                             meas12 = NULL,
                             meas22,
                             outcome_meas_var = NULL,
+                            predictor_outcome_meas_cov_u0 = NULL,
+                            predictor_outcome_meas_cov_u1 = NULL,
+                            preliminary_moment = c("modified", "fuller"),
+                            variance_bread = c("modified", "fuller"),
                             skip_internal_scaling = TRUE) {
+  preliminary_moment <- match.arg(preliminary_moment)
+  variance_bread <- match.arg(variance_bread)
   out <- fit_fuller_dual_core(
     stage2_df,
     outcome = outcome,
@@ -1663,11 +1821,104 @@ fit_fuller_dual <- function(stage2_df,
     meas12 = meas12,
     meas22 = meas22,
     outcome_meas_var = outcome_meas_var,
+    predictor_outcome_meas_cov_u0 = predictor_outcome_meas_cov_u0,
+    predictor_outcome_meas_cov_u1 = predictor_outcome_meas_cov_u1,
     measurement_weight = 1,
+    preliminary_moment = preliminary_moment,
+    variance_bread = variance_bread,
     auto_tempered = FALSE,
     skip_internal_scaling = skip_internal_scaling
   )
   dplyr::select(out, dplyr::any_of(fuller_dual_result_columns()))
+}
+
+#' Add explicit zero predictor--outcome error covariances for VH simulations.
+#'
+#' @details
+#' The corrected Fuller equations allow a nonzero covariance between the
+#' measurement error in each predictor score and the measurement error in the
+#' Stage-2 outcome. VH Studies 1--4 currently generate these errors from
+#' separate processes (or observe the outcome without measurement error), so
+#' their covariance matrix is exactly zero. Keeping named zero columns in each
+#' Stage-2 data set makes that design assumption auditable and prevents an
+#' outcome variance from being mistaken for a predictor--outcome covariance.
+#'
+#' @param stage2_df Stage-2 data frame.
+#' @param include_u0 Whether to add the intercept-like predictor covariance.
+#'
+#' @return `stage2_df` with the shared Fuller covariance columns added.
+add_zero_fuller_predictor_outcome_covariance <- function(stage2_df,
+                                                         include_u0 = TRUE) {
+  if (isTRUE(include_u0)) {
+    stage2_df$fuller_predictor_outcome_meas_cov_u0 <- 0
+  }
+  stage2_df$fuller_predictor_outcome_meas_cov_u1 <- 0
+  stage2_df
+}
+
+#' Fit the prespecified Fuller algebra-comparison variants.
+#'
+#' @details
+#' `"stabilized"` is the corrected VH primary estimator: it uses the
+#' lambda/alpha-modified preliminary moment and modified variance bread.
+#' `"fuller_preliminary"` replaces only the preliminary moment with Fuller's
+#' fully subtracted moment. `"fuller_equations"` additionally uses Fuller's
+#' fully subtracted variance bread. This nested sequence identifies whether the
+#' preliminary or bread stabilization is responsible for taming an SE tail.
+#' All variants use the correct predictor--outcome measurement-error covariance.
+#'
+#' @inheritParams fit_fuller_dual
+#' @param variants Character vector containing any of `"stabilized"`,
+#' `"fuller_preliminary"`, and `"fuller_equations"`.
+#'
+#' @return One row per requested variant, identified by `fuller_variant`.
+fit_fuller_dual_variants <- function(
+    stage2_df,
+    outcome,
+    predictor_u0 = NULL,
+    predictor_u1,
+    meas11 = NULL,
+    meas12 = NULL,
+    meas22,
+    outcome_meas_var = NULL,
+    predictor_outcome_meas_cov_u0 = NULL,
+    predictor_outcome_meas_cov_u1 = NULL,
+    variants = c("stabilized", "fuller_preliminary", "fuller_equations"),
+    skip_internal_scaling = TRUE) {
+  allowed <- c("stabilized", "fuller_preliminary", "fuller_equations")
+  if (length(variants) == 0L || any(!variants %in% allowed)) {
+    stop("`variants` must contain only: ", paste(allowed, collapse = ", "))
+  }
+  variants <- unique(variants)
+  purrr::map_dfr(variants, function(variant) {
+    # These are deliberately nested comparisons rather than a full 2 x 2
+    # factorial. The second row changes only the preliminary moment relative to
+    # the VH primary method; the third then also changes the variance bread.
+    # This one-component-at-a-time sequence identifies which stabilization
+    # controls the SE tail while retaining the book equations as an endpoint.
+    settings <- switch(
+      variant,
+      stabilized = c(preliminary = "modified", bread = "modified"),
+      fuller_preliminary = c(preliminary = "fuller", bread = "modified"),
+      fuller_equations = c(preliminary = "fuller", bread = "fuller")
+    )
+    out <- fit_fuller_dual(
+      stage2_df = stage2_df,
+      outcome = outcome,
+      predictor_u0 = predictor_u0,
+      predictor_u1 = predictor_u1,
+      meas11 = meas11,
+      meas12 = meas12,
+      meas22 = meas22,
+      outcome_meas_var = outcome_meas_var,
+      predictor_outcome_meas_cov_u0 = predictor_outcome_meas_cov_u0,
+      predictor_outcome_meas_cov_u1 = predictor_outcome_meas_cov_u1,
+      preliminary_moment = unname(settings[["preliminary"]]),
+      variance_bread = unname(settings[["bread"]]),
+      skip_internal_scaling = skip_internal_scaling
+    )
+    dplyr::mutate(out, fuller_variant = variant, .before = 1L)
+  })
 }
 
 #' Convert an average BLUP measurement model to Fuller's additive-error form.
@@ -1771,6 +2022,11 @@ prepare_fuller_average_measurement <- function(
 #'
 #' @inheritParams prepare_fuller_average_measurement
 #' @param outcome Column name for the observed Stage-2 outcome.
+#' @param predictor_outcome_meas_cov_u0,predictor_outcome_meas_cov_u1 Optional
+#' columns containing the outcome covariance with the intercept- and
+#' slope-like BLUP measurement errors. The wrapper premultiplies this
+#' covariance vector by `solve(Lambda_bar)` so it is on the transformed Fuller
+#' predictor scale. Omitted columns are zero.
 #' @param skip_internal_scaling Passed to [fit_fuller_dual()].
 #'
 #' @return A one-row tibble using the traditional Fuller result schema.
@@ -1779,6 +2035,9 @@ fit_fuller_average_measurement <- function(
     outcome,
     blup_u0 = "u0_eb",
     blup_u1 = "u1_eb",
+    outcome_meas_var = NULL,
+    predictor_outcome_meas_cov_u0 = NULL,
+    predictor_outcome_meas_cov_u1 = NULL,
     skip_internal_scaling = TRUE) {
   tryCatch(
     {
@@ -1787,6 +2046,29 @@ fit_fuller_average_measurement <- function(
         blup_u0 = blup_u0,
         blup_u1 = blup_u1
       )
+      average_cov_u0 <- NULL
+      average_cov_u1 <- NULL
+      if (!is.null(predictor_outcome_meas_cov_u0) ||
+        !is.null(predictor_outcome_meas_cov_u1)) {
+        raw_covariance <- cbind(
+          if (!is.null(predictor_outcome_meas_cov_u0)) {
+            stage2_df[[predictor_outcome_meas_cov_u0]]
+          } else {
+            0
+          },
+          if (!is.null(predictor_outcome_meas_cov_u1)) {
+            stage2_df[[predictor_outcome_meas_cov_u1]]
+          } else {
+            0
+          }
+        )
+        transformed_covariance <- raw_covariance %*%
+          t(solve(prepared$lambda_bar))
+        average_cov_u0 <- "fuller_average_predictor_outcome_meas_cov_u0"
+        average_cov_u1 <- "fuller_average_predictor_outcome_meas_cov_u1"
+        prepared$data[[average_cov_u0]] <- transformed_covariance[, 1L]
+        prepared$data[[average_cov_u1]] <- transformed_covariance[, 2L]
+      }
       fit_fuller_dual(
         prepared$data,
         outcome = outcome,
@@ -1795,6 +2077,9 @@ fit_fuller_average_measurement <- function(
         meas11 = "fuller_average_meas11",
         meas12 = "fuller_average_meas12",
         meas22 = "fuller_average_meas22",
+        outcome_meas_var = outcome_meas_var,
+        predictor_outcome_meas_cov_u0 = average_cov_u0,
+        predictor_outcome_meas_cov_u1 = average_cov_u1,
         skip_internal_scaling = skip_internal_scaling
       )
     },
@@ -1813,6 +2098,9 @@ fit_fuller_average_measurement <- function(
         meas11 = "fuller_average_meas11",
         meas12 = "fuller_average_meas12",
         meas22 = "fuller_average_meas22",
+        outcome_meas_var = outcome_meas_var,
+        predictor_outcome_meas_cov_u0 = predictor_outcome_meas_cov_u0,
+        predictor_outcome_meas_cov_u1 = predictor_outcome_meas_cov_u1,
         skip_internal_scaling = skip_internal_scaling
       )
       dplyr::mutate(
@@ -1867,6 +2155,8 @@ fit_fuller_dual_stepdown <- function(stage2_df,
                                      meas12,
                                      meas22,
                                      outcome_meas_var = NULL,
+                                     predictor_outcome_meas_cov_u0 = NULL,
+                                     predictor_outcome_meas_cov_u1 = NULL,
                                      candidate_weights = NULL,
                                      coarse_grid_size = 9L,
                                      search_tolerance = 0.005,
@@ -1904,6 +2194,8 @@ fit_fuller_dual_stepdown <- function(stage2_df,
         meas12 = meas12,
         meas22 = meas22,
         outcome_meas_var = outcome_meas_var,
+        predictor_outcome_meas_cov_u0 = predictor_outcome_meas_cov_u0,
+        predictor_outcome_meas_cov_u1 = predictor_outcome_meas_cov_u1,
         measurement_weight = weight,
         auto_tempered = TRUE, 
         skip_internal_scaling = skip_internal_scaling
@@ -2011,6 +2303,8 @@ fit_fuller_dual_stepdown <- function(stage2_df,
     meas12 = meas12,
     meas22 = meas22,
     outcome_meas_var = outcome_meas_var,
+    predictor_outcome_meas_cov_u0 = predictor_outcome_meas_cov_u0,
+    predictor_outcome_meas_cov_u1 = predictor_outcome_meas_cov_u1,
     measurement_weight = chosen_weight,
     auto_tempered = TRUE, 
     skip_internal_scaling = skip_internal_scaling
@@ -2089,6 +2383,8 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
                                            meas12,
                                            meas22,
                                            outcome_meas_var = NULL,
+                                           predictor_outcome_meas_cov_u0 = NULL,
+                                           predictor_outcome_meas_cov_u1 = NULL,
                                            candidate_alphas = NULL,
                                            coarse_grid_size = 9L,
                                            search_tolerance = 0.005,
@@ -2116,6 +2412,13 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
   if (!is.null(outcome_meas_var)) {
     cols_needed <- c(cols_needed, outcome_meas_var)
   }
+  if (!is.null(predictor_outcome_meas_cov_u0)) {
+    cols_needed <- c(cols_needed, predictor_outcome_meas_cov_u0)
+  }
+  if (!is.null(predictor_outcome_meas_cov_u1)) {
+    cols_needed <- c(cols_needed, predictor_outcome_meas_cov_u1)
+  }
+  cols_needed <- unique(cols_needed)
   dat <- stage2_df[, cols_needed, drop = FALSE]
   dat <- dat[stats::complete.cases(dat), , drop = FALSE]
   m <- nrow(dat)
@@ -2256,6 +2559,8 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
         meas12 = meas12,
         meas22 = meas22,
         outcome_meas_var = outcome_meas_var,
+        predictor_outcome_meas_cov_u0 = predictor_outcome_meas_cov_u0,
+        predictor_outcome_meas_cov_u1 = predictor_outcome_meas_cov_u1,
         measurement_weight = 1,
         alpha_step1 = alpha,
         alpha_step3 = alpha_lower,
@@ -2275,6 +2580,8 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
     meas12 = meas12,
     meas22 = meas22,
     outcome_meas_var = outcome_meas_var,
+    predictor_outcome_meas_cov_u0 = predictor_outcome_meas_cov_u0,
+    predictor_outcome_meas_cov_u1 = predictor_outcome_meas_cov_u1,
     measurement_weight = 1,
     alpha_step1 = alpha_lower,
     alpha_step3 = alpha_lower,
@@ -2352,6 +2659,8 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
         meas12 = meas12,
         meas22 = meas22,
         outcome_meas_var = outcome_meas_var,
+        predictor_outcome_meas_cov_u0 = predictor_outcome_meas_cov_u0,
+        predictor_outcome_meas_cov_u1 = predictor_outcome_meas_cov_u1,
         measurement_weight = 1,
         alpha_step1 = chosen_alpha_step1,
         alpha_step3 = alpha,
@@ -2371,6 +2680,8 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
     meas12 = meas12,
     meas22 = meas22,
     outcome_meas_var = outcome_meas_var,
+    predictor_outcome_meas_cov_u0 = predictor_outcome_meas_cov_u0,
+    predictor_outcome_meas_cov_u1 = predictor_outcome_meas_cov_u1,
     measurement_weight = 1,
     alpha_step1 = chosen_alpha_step1,
     alpha_step3 = alpha_lower,
@@ -2446,6 +2757,8 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
           meas12 = meas12,
           meas22 = meas22,
           outcome_meas_var = outcome_meas_var,
+          predictor_outcome_meas_cov_u0 = predictor_outcome_meas_cov_u0,
+          predictor_outcome_meas_cov_u1 = predictor_outcome_meas_cov_u1,
           measurement_weight = 1,
           alpha_step1 = chosen_alpha_step1,
           alpha_step3 = chosen_alpha_step3,
@@ -2466,6 +2779,8 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
       meas12 = meas12,
       meas22 = meas22,
       outcome_meas_var = outcome_meas_var,
+      predictor_outcome_meas_cov_u0 = predictor_outcome_meas_cov_u0,
+      predictor_outcome_meas_cov_u1 = predictor_outcome_meas_cov_u1,
       measurement_weight = 1,
       alpha_step1 = chosen_alpha_step1,
       alpha_step3 = chosen_alpha_step3,
@@ -2510,6 +2825,8 @@ fit_fuller_dual_alpha_stepdown <- function(stage2_df,
     meas12 = meas12,
     meas22 = meas22,
     outcome_meas_var = outcome_meas_var,
+    predictor_outcome_meas_cov_u0 = predictor_outcome_meas_cov_u0,
+    predictor_outcome_meas_cov_u1 = predictor_outcome_meas_cov_u1,
     measurement_weight = 1,
     alpha_step1 = chosen_alpha_step1,
     alpha_step3 = chosen_alpha_step3,

@@ -161,17 +161,40 @@ study3_runner_condition <- study3_design %>%
   dplyr::slice(1L)
 set.seed(20260617)
 study3_results <- run_study3_rep(study3_runner_condition)
+study1_fuller <- dplyr::filter(study1_results, grepl("^fuller_", method))
+study3_fuller <- dplyr::filter(study3_results, grepl("^fuller_", method))
+study1_algebra_variants <- dplyr::filter(study1_results, !is.na(fuller_variant))
 
 stopifnot(
   setequal(study1_results$method, study1_methods()),
+  all(c(
+    "point_eligible", "point_exclusion_reason",
+    "interval_eligible", "interval_exclusion_reason"
+  ) %in% names(study1_results)),
+  identical(study1_results$analysis_eligible, study1_results$point_eligible),
   all(study1_results$truth == study1_condition$standardized_beta_target),
+  all(study1_fuller$fuller_predictor_outcome_covariance_source == "supplied"),
+  all(study1_fuller$fuller_predictor_outcome_covariance_max_abs == 0),
+  max(abs(
+    study1_algebra_variants$estimate - study1_algebra_variants$estimate[[1L]]
+  )) < 1e-10,
+  max(abs(
+    study1_algebra_variants$se - study1_algebra_variants$se[[1L]]
+  )) < 1e-10,
   abs(
     study1_results$estimate[study1_results$method == "oracle"] -
       study1_condition$standardized_beta_target
   ) < 0.10,
   setequal(study3_results$method, study3_methods()),
+  all(c(
+    "point_eligible", "point_exclusion_reason",
+    "interval_eligible", "interval_exclusion_reason"
+  ) %in% names(study3_results)),
+  identical(study3_results$analysis_eligible, study3_results$point_eligible),
   all(study3_results$truth ==
     study3_runner_condition$standardized_beta_target),
+  all(study3_fuller$fuller_predictor_outcome_covariance_source == "supplied"),
+  all(study3_fuller$fuller_predictor_outcome_covariance_max_abs == 0),
   all(c(
     "stage1_y_singular_problem",
     "stage1_q_singular_problem",

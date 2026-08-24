@@ -4,7 +4,31 @@ mplus_diagnostics_template <- function() {
     mplus_critical_warning = NA,
     mplus_critical_warning_detail = NA_character_,
     mplus_target_parameter_count = NA_integer_,
-    mplus_fitted_latent_slope_sd = NA_real_
+    mplus_raw_focal_estimate = NA_real_,
+    mplus_raw_focal_se = NA_real_,
+    mplus_fitted_latent_slope_variance = NA_real_,
+    mplus_fitted_latent_slope_sd = NA_real_,
+    mplus_min_reported_variance = NA_real_,
+    mplus_boundary_variance_count = NA_integer_,
+    mplus_nonpositive_variance_count = NA_integer_,
+    mplus_latent_intercept_variance = NA_real_,
+    mplus_latent_slope_variance = NA_real_,
+    mplus_latent_intercept_slope_covariance = NA_real_,
+    mplus_latent_intercept_slope_correlation = NA_real_,
+    mplus_latent_covariance_min_eigenvalue = NA_real_,
+    mplus_latent_covariance_boundary = NA,
+    mplus_predictor_latent_intercept_variance = NA_real_,
+    mplus_predictor_latent_slope_variance = NA_real_,
+    mplus_predictor_latent_intercept_slope_covariance = NA_real_,
+    mplus_predictor_latent_intercept_slope_correlation = NA_real_,
+    mplus_predictor_latent_covariance_min_eigenvalue = NA_real_,
+    mplus_predictor_latent_covariance_boundary = NA,
+    mplus_outcome_latent_intercept_variance = NA_real_,
+    mplus_outcome_latent_slope_variance = NA_real_,
+    mplus_outcome_latent_intercept_slope_covariance = NA_real_,
+    mplus_outcome_latent_intercept_slope_correlation = NA_real_,
+    mplus_outcome_latent_covariance_min_eigenvalue = NA_real_,
+    mplus_outcome_latent_covariance_boundary = NA
   )
 }
 
@@ -89,20 +113,118 @@ mplus_warning_diagnostics <- function(warnings) {
     collapse = "|"
   )
   critical <- grepl(critical_pattern, warning_lines, ignore.case = TRUE, perl = TRUE)
-  tibble::tibble(
-    mplus_warning_count = as.integer(length(warning_lines)),
-    mplus_critical_warning = any(critical),
-    mplus_critical_warning_detail = if (any(critical)) {
+  diagnostics <- mplus_diagnostics_template()
+  diagnostics$mplus_warning_count <- as.integer(length(warning_lines))
+  diagnostics$mplus_critical_warning <- any(critical)
+  diagnostics$mplus_critical_warning_detail <- if (any(critical)) {
       paste(warning_lines[critical], collapse = "\n")
     } else {
       NA_character_
-    },
-    mplus_target_parameter_count = NA_integer_
-  )
+    }
+  diagnostics
 }
 
+#' Add fitted Mplus latent covariance and boundary diagnostics.
+populate_mplus_latent_diagnostics <- function(
+    diagnostics, pars, xvar,
+    latent_covariance_blocks = list(),
+    boundary_tolerance = sqrt(.Machine$double.eps)) {
+  param_header <- toupper(as.character(pars$paramHeader))
+  param <- toupper(as.character(pars$param))
+  estimates <- suppressWarnings(as.numeric(pars$est))
+  # Mplus reports exogenous latent variances under `Variances` and variances
+  # of endogenous latent variables under `Residual.Variances`. Both are model
+  # variance parameters and both can reveal a boundary-adjacent solution.
+  variance_parameter <- grepl("VARIANCES$", param_header)
+
+  variance_rows <- which(variance_parameter)
+  variance_values <- estimates[variance_rows]
+  finite_variances <- variance_values[is.finite(variance_values)]
+  diagnostics$mplus_min_reported_variance <- if (length(finite_variances)) {
+    min(finite_variances)
+  } else {
+    NA_real_
+  }
+  diagnostics$mplus_boundary_variance_count <- as.integer(sum(
+    is.finite(variance_values) & variance_values <= boundary_tolerance
+  ))
+  diagnostics$mplus_nonpositive_variance_count <- as.integer(sum(
+    is.finite(variance_values) & variance_values <= 0
+  ))
+
+  xvar <- toupper(xvar)
+  slope_rows <- which(variance_parameter & param == xvar)
+  if (length(slope_rows) == 1L) {
+    slope_variance <- estimates[slope_rows]
+    diagnostics$mplus_fitted_latent_slope_variance <- slope_variance
+    diagnostics$mplus_fitted_latent_slope_sd <- if (
+      is.finite(slope_variance) && slope_variance > 0
+    ) sqrt(slope_variance) else NA_real_
+  }
+
+  for (block_name in names(latent_covariance_blocks)) {
+    variables <- toupper(latent_covariance_blocks[[block_name]])
+    if (length(variables) != 2L || anyNA(variables)) next
+    intercept <- variables[[1L]]
+    slope <- variables[[2L]]
+    intercept_rows <- which(
+      variance_parameter & param == intercept
+    )
+    block_slope_rows <- which(
+      variance_parameter & param == slope
+    )
+    covariance_rows <- which(
+      (param_header == paste0(intercept, ".WITH") & param == slope) |
+        (param_header == paste0(slope, ".WITH") & param == intercept)
+    )
+    if (length(intercept_rows) != 1L || length(block_slope_rows) != 1L ||
+        length(covariance_rows) != 1L) next
+    covariance <- matrix(
+      c(
+        estimates[intercept_rows], estimates[covariance_rows],
+        estimates[covariance_rows], estimates[block_slope_rows]
+      ),
+      nrow = 2L,
+      byrow = TRUE
+    )
+    eigenvalues <- tryCatch(
+      eigen(covariance, symmetric = TRUE, only.values = TRUE)$values,
+      error = function(e) rep(NA_real_, 2L)
+    )
+    prefix <- if (identical(block_name, "latent") || !nzchar(block_name)) {
+      "mplus_latent_"
+    } else {
+      paste0("mplus_", block_name, "_latent_")
+    }
+    diagnostics[[paste0(prefix, "intercept_variance")]] <- covariance[1L, 1L]
+    diagnostics[[paste0(prefix, "slope_variance")]] <- covariance[2L, 2L]
+    diagnostics[[paste0(prefix, "intercept_slope_covariance")]] <- covariance[1L, 2L]
+    diagnostics[[paste0(prefix, "intercept_slope_correlation")]] <- if (
+      all(is.finite(covariance)) && all(diag(covariance) > 0)
+    ) {
+      covariance[1L, 2L] / sqrt(covariance[1L, 1L] * covariance[2L, 2L])
+    } else {
+      NA_real_
+    }
+    diagnostics[[paste0(prefix, "covariance_min_eigenvalue")]] <- if (
+      all(is.finite(eigenvalues))
+    ) min(eigenvalues) else NA_real_
+    diagnostics[[paste0(prefix, "covariance_boundary")]] <-
+      any(!is.finite(eigenvalues)) || any(eigenvalues <= boundary_tolerance) ||
+      any(diag(covariance) <= boundary_tolerance)
+  }
+  diagnostics
+}
+
+#' Extract a focal Mplus regression and nonrecoverable fit diagnostics.
+#'
+#' The reported estimate/SE are multiplied by `reporting_scale`; their raw
+#' counterparts are retained separately. Named latent covariance blocks parse
+#' both Mplus `Variances` and `Residual.Variances` parameter headers, since an
+#' endogenous latent slope is listed under the latter.
 extract_mplus_stats <- function(output_file, yvar, xvar, ci_multiplier = stats::qnorm(0.975),
-                                reporting_scale = NULL, type = "reg") {
+                                reporting_scale = NULL, type = "reg",
+                                latent_covariance_blocks = list()) {
   if (type != "reg") {
     stop("`extract_mplus_stats` is only set up for regressions currently")
   }
@@ -160,15 +282,12 @@ extract_mplus_stats <- function(output_file, yvar, xvar, ci_multiplier = stats::
     )
     rows <- which(pars$paramHeader == paste0(yvar, operator) & pars$param == xvar)
     warning_diagnostics$mplus_target_parameter_count <- as.integer(length(rows))
-    slope_variance_rows <- which(
-      pars$paramHeader == "Variances" & pars$param == xvar
+    warning_diagnostics <- populate_mplus_latent_diagnostics(
+      warning_diagnostics,
+      pars = pars,
+      xvar = xvar,
+      latent_covariance_blocks = latent_covariance_blocks
     )
-    if (length(slope_variance_rows) == 1L) {
-      slope_variance <- suppressWarnings(as.numeric(pars[slope_variance_rows, "est"]))
-      warning_diagnostics$mplus_fitted_latent_slope_sd <- if (
-        is.finite(slope_variance) && slope_variance > 0
-      ) sqrt(slope_variance) else NA_real_
-    }
     if (length(rows) != 1L) {
       return(dplyr::bind_cols(tibble::tibble(
         estimate = NA_real_,
@@ -180,8 +299,12 @@ extract_mplus_stats <- function(output_file, yvar, xvar, ci_multiplier = stats::
         mx_issue_detail = sprintf("Expected one target parameter; found %d.", length(rows))
       ), warning_diagnostics))
     }
-    est <- pars[rows, "est"] * scale_u1
-    se <- pars[rows, "se"] * scale_u1
+    raw_est <- suppressWarnings(as.numeric(pars[rows, "est"]))
+    raw_se <- suppressWarnings(as.numeric(pars[rows, "se"]))
+    warning_diagnostics$mplus_raw_focal_estimate <- raw_est
+    warning_diagnostics$mplus_raw_focal_se <- raw_se
+    est <- raw_est * scale_u1
+    se <- raw_se * scale_u1
     if (!is.finite(est) || !is.finite(se) || se <= 0) {
       return(dplyr::bind_cols(tibble::tibble(
         estimate = NA_real_,
@@ -259,7 +382,10 @@ fit_mplus_blup_predictor <- function(level1_data, level2_data, join_by = dplyr::
       output_file,
       xvar = random_slope_label,
       yvar = between_component,
-      reporting_scale = reporting_scale
+      reporting_scale = reporting_scale,
+      latent_covariance_blocks = list(
+        latent = c(outcome_variable, random_slope_label)
+      )
     )
   }
   
@@ -358,7 +484,11 @@ fit_mplus_dual_process <- function(proc1_data, proc2_data, title = "dual_process
       output_file,
       xvar = "s1",
       yvar = "s2",
-      reporting_scale = reporting_scale
+      reporting_scale = reporting_scale,
+      latent_covariance_blocks = list(
+        predictor = c("i1", "s1"),
+        outcome = c("i2", "s2")
+      )
     )
   }
   

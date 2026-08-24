@@ -156,6 +156,11 @@ stopifnot(
   is.finite(fuller_out$estimate),
   is.finite(fuller_out$se),
   fuller_out$se > 0,
+  identical(
+    fuller_out$fuller_predictor_outcome_covariance_source,
+    "zero_default"
+  ),
+  fuller_out$fuller_predictor_outcome_covariance_max_abs == 0,
   abs(fuller_out$estimate - beta2) < 0.20
 )
 
