@@ -11,11 +11,11 @@ vh_pipeline_version <- function() {
 
 #' Return the deterministic seed for one simulation replication.
 #'
-#' Ordinary conditions use their stable `condition_id`. ICC-bridge conditions
-#' instead use `simulation_seed_group`, which is shared by the matched
-#' posterior-reliability and ICC arms. The latter implements common random
-#' numbers: the m = 10 anchor has identical data replication by replication,
-#' and non-anchor arm contrasts retain positive Monte Carlo covariance.
+#' Ordinary conditions use their stable `condition_id`. Matched bridge and
+#' sensitivity conditions instead use `simulation_seed_group`, which is shared
+#' by the arms being compared. This implements common random numbers: the ICC
+#' bridge has identical samples at its m = 10 anchor, and variance-ratio arms
+#' reuse the same underlying random draws after their covariance-scale changes.
 vh_replication_seed <- function(condition, rep_id,
                                 base_seed = 20260612L,
                                 condition_stride = 100000L) {
@@ -321,6 +321,10 @@ summarize_results_df <- function(results) {
   design_cols <- intersect(
     c(
       "condition_id", "study", "study_version", "calibration_version",
+      "simulation_module", "sensitivity_block", "sensitivity_block_label",
+      "variance_ratio_arm", "variance_ratio_pair_id",
+      "variance_ratio_pair_label", "sensitivity_reference_ratio",
+      "sensitivity_is_low_reliability_stress",
       "method", "method_role", "fuller_variant",
       "fuller_preliminary_moment", "fuller_variance_bread",
       "fuller_predictor_outcome_covariance_source",
@@ -614,6 +618,10 @@ summarize_stage1_problem_df <- function(results) {
   design_cols <- intersect(
     c(
       "condition_id", "study", "study_version", "calibration_version",
+      "simulation_module", "sensitivity_block", "sensitivity_block_label",
+      "variance_ratio_arm", "variance_ratio_pair_id",
+      "variance_ratio_pair_label", "sensitivity_reference_ratio",
+      "sensitivity_is_low_reliability_stress",
       "method", "method_role", "fuller_variant",
       "fuller_preliminary_moment", "fuller_variance_bread",
       "fuller_predictor_outcome_covariance_source",
@@ -760,6 +768,10 @@ summarize_issue_df <- function(results) {
   design_cols <- intersect(
     c(
       "condition_id", "study", "study_version", "calibration_version",
+      "simulation_module", "sensitivity_block", "sensitivity_block_label",
+      "variance_ratio_arm", "variance_ratio_pair_id",
+      "variance_ratio_pair_label", "sensitivity_reference_ratio",
+      "sensitivity_is_low_reliability_stress",
       "method", "method_role", "fuller_variant",
       "fuller_preliminary_moment", "fuller_variance_bread",
       "fuller_predictor_outcome_covariance_source",
@@ -990,14 +1002,19 @@ read_replication_results_file <- function(path) {
   )
   expanded_integer_cols <- intersect(
     c(
-      "replication_seed", "bridge_pair_id", "simulation_seed_group",
+      "replication_seed", "bridge_pair_id", "variance_ratio_pair_id",
+      "simulation_seed_group",
       "mplus_warning_count", "mplus_target_parameter_count",
       "mplus_boundary_variance_count", "mplus_nonpositive_variance_count"
     ),
     names(out)
   )
   expanded_character_cols <- intersect(
-    c("bridge_pair_label"),
+    c(
+      "bridge_pair_label", "simulation_module", "sensitivity_block",
+      "sensitivity_block_label", "variance_ratio_arm",
+      "variance_ratio_pair_label"
+    ),
     names(out)
   )
   expanded_numeric_cols <- setdiff(
@@ -1034,6 +1051,7 @@ read_replication_results_file <- function(path) {
       "target_calibration_reliability", "achieved_calibration_reliability",
       "achieved_partial_reliability", "slope_variance_marginal",
       "residualized_slope_variance", "slope_intercept_variance_ratio",
+      "sensitivity_reference_ratio",
       "G_condition_number", "intercept_icc", "marginal_slope_icc",
       "conditional_slope_icc", "calibration_tau0", "calibration_tau0_sq",
       "calibration_tau1_sq", "sigma",
@@ -1119,6 +1137,7 @@ read_replication_results_file <- function(path) {
       "stage1_y_singular_problem", "stage1_y_lmer_singular",
       "stage1_q_singular_problem", "stage1_q_lmer_singular",
       "is_falsification_control", "information_matched",
+      "sensitivity_is_low_reliability_stress",
       "covariance_shape_fixed",
       "mx_info_definite", "mplus_critical_warning",
       "point_eligible", "interval_eligible", "analysis_eligible",
@@ -1256,7 +1275,8 @@ condition_output_is_complete <- function(
 #' Dispatch one replication to the correct study module.
 #'
 #' @param condition One-row condition tibble with a `study` column equal to
-#'  a legacy, amended-v2, Study 5, or ICC-bridge study key.
+#'  a legacy, amended-v2, Study 5, or ICC-bridge study key. Covariance-shape
+#'  sensitivity rows retain the amended-v2 key of their source DGM.
 #'
 #' @return A replication-level result tibble from the corresponding
 #'   `run_study*_rep()` function.
@@ -1358,8 +1378,9 @@ vig_hallquist_parallel_exports <- function() {
 #' @details
 #' Each replication receives a deterministic seed derived from a fixed base
 #' seed, a condition seed group, and the replication index. The seed group is
-#' normally the condition identifier; paired ICC-bridge arms instead share a
-#' `simulation_seed_group` so their Monte Carlo draws are paired.
+#' normally the condition identifier; paired ICC-bridge and variance-ratio
+#' sensitivity arms instead share a `simulation_seed_group` so their Monte
+#' Carlo draws are paired.
 #'
 #' Parallel execution uses `foreach` and expects a registered backend, which is
 #' set up by `run_simulation()` when `n_cores > 1`.
@@ -1433,7 +1454,8 @@ run_condition_replications <- function(condition, n_sim, n_cores = 1L) {
 #' @param n_sim Positive integer number of replications per condition.
 #' @param study_arg Study selector passed to `select_design()`, typically
 #'   `"all"` for legacy Studies 1--5, `"allv2"` for amended Studies
-#'   1--4, an individual legacy/v2 key, or `"iccbridge"`.
+#'   1--4, an individual legacy/v2 key, `"iccbridge"`, or the compact
+#'   `"ratiosensitivity"` module.
 #' @param out_dir Root output directory. Defaults to
 #'   `file.path(vig_hallquist_dir, "outputs", "vig_hallquist")`.
 #' @param n_cores Positive integer number of worker cores. Values greater than

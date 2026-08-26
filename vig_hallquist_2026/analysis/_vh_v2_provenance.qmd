@@ -1,0 +1,58 @@
+## Production artifact provenance
+
+The table describes the recorded environment that generated the condition
+artifacts, not merely the environment used to render this report.
+
+```{r production-provenance}
+metadata_files <- list.files(
+  output_dir,
+  pattern = "_run_metadata[.]csv$",
+  full.names = TRUE
+)
+if (length(metadata_files) == 0L) {
+  stop("No production run metadata found in: ", output_dir)
+}
+metadata <- data.table::rbindlist(
+  lapply(metadata_files, data.table::fread),
+  fill = TRUE,
+  use.names = TRUE
+) %>%
+  tibble::as_tibble() %>%
+  filter(
+    .data$condition_id_end >= min(expected_ids),
+    .data$condition_id_start <= max(expected_ids)
+  )
+metadata_condition_ids <- unique(unlist(Map(
+  seq.int,
+  metadata$condition_id_start,
+  metadata$condition_id_end
+)))
+missing_metadata_ids <- setdiff(expected_ids, metadata_condition_ids)
+if (nrow(metadata) == 0L || length(missing_metadata_ids) > 0L) {
+  stop(
+    "Production metadata do not cover ", length(missing_metadata_ids),
+    " expected condition IDs."
+  )
+}
+
+metadata %>%
+  distinct(
+    .data$pipeline_version, .data$git_commit, .data$git_dirty,
+    .data$requested_n_sim, .data$r_version, .data$mplus_version,
+    .data$package_openmx_version,
+    .data$package_mplusautomation_version, .data$package_lme4_version
+  ) %>%
+  kable(
+    col.names = c(
+      "Pipeline", "Git commit", "Dirty worktree", "Requested replications",
+      "R", "Mplus", "OpenMx", "MplusAutomation", "lme4"
+    ),
+    caption = paste(
+      "Distinct production environments recorded for condition IDs",
+      paste(range(expected_ids), collapse = "--"),
+      sprintf("(%s metadata files).", nrow(metadata))
+    )
+  )
+```
+
+`r if (any(metadata$git_dirty %in% TRUE)) "**Reproducibility note.** The production metadata record a dirty worktree. The commit hashes are therefore base references, not complete snapshots of the source that generated every artifact. The artifact-level v2, method, replication, and design contracts above still protect this report from legacy or structurally incompatible inputs, but a publication freeze should regenerate the final archive from a clean, tagged commit." else "All production runs in this artifact set record a clean Git worktree."`

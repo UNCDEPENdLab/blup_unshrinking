@@ -95,6 +95,14 @@ The original Study 1--4 selectors are intentionally preserved:
   numbers. The $m=10$ anchor therefore produces identical simulated samples
   replication by replication; away from the anchor, pairing reduces Monte
   Carlo noise in the between-arm contrast.
+- `ratiosensitivity` selects a separate 30-condition covariance-shape
+  robustness bridge. It uses one moderate-information sentinel DGM from each
+  amended Study 1--4 plus one low-reliability Study-2 stress DGM. Within each
+  DGM it crosses only the slope/intercept variance ratios 0.5, 1, and 2 with a
+  null and standardized-.4 effect. Marginal posterior slope reliability is
+  recalibrated at every ratio. The three ratio arms share
+  `variance_ratio_pair_id` and `simulation_seed_group`, so ratio-one is rerun
+  as a paired internal reference without modifying the primary-v2 outputs.
 
 The original builder names remain callable. Explicit aliases
 `make_study1_legacy_design()` through `make_study4_legacy_design()` make legacy
@@ -165,6 +173,7 @@ The current condition counts are:
 - Amended Study 4v2: 111 conditions
 - Amended Studies 1v2-4v2 combined: 2,415 conditions
 - ICC/posterior-reliability bridge: 108 conditions
+- Covariance-shape sensitivity bridge: 30 conditions
 
 With the default SLURM chunk size of five conditions, the corresponding array
 sizes are 144, 144, 173, 23, 8, and 491 tasks. The bundled SLURM script defaults
@@ -192,6 +201,17 @@ sbatch --array=1-22%22 \
   --export=ALL,VIG_HALLQUIST_STUDY=iccbridge,VIG_HALLQUIST_OUT_DIR=outputs/vig_hallquist_icc_bridge \
   vig_hallquist_2026/slurm/vig_hallquist_condition_array.sbatch
 ```
+
+The covariance-shape sensitivity bridge has a dedicated one-condition-per-task
+submission script with a 48-hour limit:
+
+```bash
+sbatch vig_hallquist_2026/slurm/vig_hallquist_variance_ratio_sensitivity.sbatch
+```
+
+It writes to `outputs/vig_hallquist_variance_ratio_sensitivity` by default.
+The primary v2 and ICC-bridge directories are never read as resume targets or
+overwritten by this module.
 
 Use separate output directories for legacy, v2, and bridge runs. Their
 condition identifiers do not overlap, but separate directories also keep
@@ -229,8 +249,15 @@ Rscript vig_hallquist_2026/random_effects_structural_simulation.R \
 ```
 
 The aggregation pass must use the same `n_sim`, study selector, and output
-directory as the array run. For the bridge, replace `allv2` and its output
-directory with `iccbridge` and `outputs/vig_hallquist_icc_bridge`.
+directory as the array run. For the ICC bridge, replace `allv2` and its output
+directory with `iccbridge` and `outputs/vig_hallquist_icc_bridge`. For the
+covariance-shape sensitivity bridge, use:
+
+```bash
+Rscript vig_hallquist_2026/random_effects_structural_simulation.R \
+  1000 ratiosensitivity outputs/vig_hallquist_variance_ratio_sensitivity \
+  1 NA NA NA 1
+```
 
 Each replication row now carries separate `point_eligible` and
 `interval_eligible` flags, their exclusion reasons, and the legacy

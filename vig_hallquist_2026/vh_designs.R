@@ -916,11 +916,17 @@ make_study2_v2_design <- function(
 }
 
 #' Build amended Study 3 using the common calibration independently twice.
+#'
+#' The reliability and effect arguments retain the published v2 grid as their
+#' defaults.  They are exposed so focused sensitivity modules can reuse the
+#' exact Study-3 DGM without adding new levels to the primary factorial design.
 make_study3_v2_design <- function(
-    slope_intercept_variance_ratio = 1) {
+    slope_intercept_variance_ratio = 1,
+    target_reliabilities = c(0.25, 0.8),
+    standardized_beta_targets = c(0, 0.2, 0.5)) {
   first_stage <- tidyr::crossing(
     mean_clus_size = c(3L, 5L, 10L),
-    target_reliability = c(0.25, 0.8),
+    target_reliability = target_reliabilities,
     marginal_rho = c(0, 0.5),
     balance_mode = "balanced",
     min_clus_size = 2L,
@@ -979,10 +985,10 @@ make_study3_v2_design <- function(
     num_clus = c(50L, 100L, 150L, 300L),
     mean_clus_size_y = c(3L, 5L, 10L),
     mean_clus_size_q = c(3L, 5L, 10L),
-    target_reliability_y = c(0.25, 0.8),
-    target_reliability_q = c(0.25, 0.8),
+    target_reliability_y = target_reliabilities,
+    target_reliability_q = target_reliabilities,
     marginal_rho = c(0, 0.5),
-    standardized_beta_target = c(0, 0.2, 0.5),
+    standardized_beta_target = standardized_beta_targets,
     structural_target = "intercept_slope",
     study_label = "BLUP as Predictor and Outcome (v2 fixed shape)",
     study_structure = "dual_process"
@@ -1693,6 +1699,235 @@ make_study5_design <- function() {
   )
 }
 
+#' Build the compact covariance-shape robustness bridge.
+#'
+#' This module deliberately does not cross the variance ratio with every
+#' factor in Studies 1--4.  Instead, it reuses five pre-specified sentinel
+#' DGMs: one moderate-information cell from each amended study and one
+#' low-information Study-2 stress cell.  Within a sentinel, only the marginal
+#' slope/intercept variance ratio and the null/non-null structural effect vary.
+#' The Level-1 residual scale is recalibrated at every ratio, so marginal
+#' posterior slope reliability remains fixed and the contrast isolates
+#' covariance shape rather than measurement-information level.
+#'
+#' Ratio-one conditions are intentionally rerun.  All three ratio arms within
+#' a DGM/effect pair share `simulation_seed_group`, providing common random
+#' numbers for direct replication-level comparisons without touching the
+#' completed primary-v2 output directories.
+make_variance_ratio_sensitivity_design <- function(
+    variance_ratios = c(0.5, 1, 2),
+    standardized_beta_targets = c(0, 0.4),
+    simulation_seed_group_offset = 12000L) {
+  variance_ratios <- sort(unique(as.numeric(variance_ratios)))
+  standardized_beta_targets <- sort(unique(as.numeric(
+    standardized_beta_targets
+  )))
+  if (
+    length(variance_ratios) == 0L ||
+      any(!is.finite(variance_ratios)) ||
+      any(variance_ratios <= 0)
+  ) {
+    stop("`variance_ratios` must contain positive finite values.")
+  }
+  if (
+    length(standardized_beta_targets) == 0L ||
+      any(!is.finite(standardized_beta_targets))
+  ) {
+    stop("`standardized_beta_targets` must contain finite values.")
+  }
+  if (
+    length(simulation_seed_group_offset) != 1L ||
+      !is.finite(simulation_seed_group_offset) ||
+      simulation_seed_group_offset < 1L
+  ) {
+    stop("`simulation_seed_group_offset` must be a positive finite scalar.")
+  }
+
+  block_levels <- c(
+    "study1_outcome_moderate",
+    "study2_predictor_moderate",
+    "study3_dual_moderate",
+    "study4_heterogeneous_moderate",
+    "study2_predictor_low_reliability"
+  )
+  block_labels <- c(
+    study1_outcome_moderate =
+      "Study 1: slope outcome, moderate information",
+    study2_predictor_moderate =
+      "Study 2: slope predictor, moderate information",
+    study3_dual_moderate =
+      "Study 3: slope predictor and outcome, moderate information",
+    study4_heterogeneous_moderate =
+      "Study 4: severe heterogeneous information, moderate mean reliability",
+    study2_predictor_low_reliability =
+      "Study 2: slope predictor, low-information stress"
+  )
+
+  tag_block <- function(data, block) {
+    dplyr::mutate(
+      data,
+      sensitivity_block = block,
+      sensitivity_block_label = unname(block_labels[[block]])
+    )
+  }
+
+  build_ratio <- function(variance_ratio) {
+    study1 <- make_study1_v2_design(
+      slope_intercept_variance_ratio = variance_ratio
+    ) %>%
+      dplyr::filter(
+        .data$num_clus == 50L,
+        .data$mean_clus_size == 3L,
+        .data$target_reliability == 0.5,
+        .data$marginal_rho == 0.5,
+        .data$standardized_beta_target %in% standardized_beta_targets
+      ) %>%
+      tag_block("study1_outcome_moderate")
+
+    study2_base <- make_study2_v2_design(
+      slope_intercept_variance_ratio = variance_ratio
+    )
+    study2_moderate <- study2_base %>%
+      dplyr::filter(
+        .data$num_clus == 50L,
+        .data$mean_clus_size == 3L,
+        .data$target_reliability == 0.5,
+        .data$marginal_rho == -0.5,
+        .data$standardized_beta_target %in% standardized_beta_targets
+      ) %>%
+      tag_block("study2_predictor_moderate")
+    study2_low <- study2_base %>%
+      dplyr::filter(
+        .data$num_clus == 50L,
+        .data$mean_clus_size == 3L,
+        .data$target_reliability == 0.25,
+        .data$marginal_rho == -0.5,
+        .data$standardized_beta_target %in% standardized_beta_targets
+      ) %>%
+      tag_block("study2_predictor_low_reliability")
+
+    study3 <- make_study3_v2_design(
+      slope_intercept_variance_ratio = variance_ratio,
+      target_reliabilities = 0.5,
+      standardized_beta_targets = standardized_beta_targets
+    ) %>%
+      dplyr::filter(
+        .data$num_clus == 50L,
+        .data$mean_clus_size_y == 3L,
+        .data$mean_clus_size_q == 3L,
+        .data$target_reliability_y == 0.5,
+        .data$target_reliability_q == 0.5,
+        .data$marginal_rho == 0.5
+      ) %>%
+      dplyr::mutate(
+        mean_clus_size = .data$mean_clus_size_y,
+        target_reliability = .data$target_reliability_y,
+        achieved_reliability = .data$achieved_reliability_y,
+        achieved_partial_reliability =
+          .data$achieved_partial_reliability_y,
+        intercept_icc = .data$intercept_icc_y,
+        marginal_slope_icc = .data$marginal_slope_icc_y,
+        conditional_slope_icc = .data$conditional_slope_icc_y,
+        sigma = .data$sigma_y
+      ) %>%
+      tag_block("study3_dual_moderate")
+
+    study4 <- make_study4_v2_design(
+      slope_intercept_variance_ratio = variance_ratio
+    ) %>%
+      dplyr::filter(
+        .data$num_clus == 50L,
+        .data$target_reliability == 0.5,
+        .data$information_profile == "severe",
+        .data$marginal_rho == 0.5,
+        !.data$is_falsification_control,
+        .data$standardized_beta_target %in% standardized_beta_targets
+      ) %>%
+      tag_block("study4_heterogeneous_moderate")
+
+    dplyr::bind_rows(
+      study1,
+      study2_moderate,
+      study3,
+      study4,
+      study2_low
+    ) %>%
+      dplyr::mutate(
+        simulation_module = "variance_ratio_sensitivity_v1",
+        variance_ratio_arm = paste0(
+          "tau1_sq_over_tau0_sq_",
+          format(variance_ratio, trim = TRUE, scientific = FALSE)
+        ),
+        sensitivity_reference_ratio = 1,
+        sensitivity_is_low_reliability_stress =
+          .data$sensitivity_block ==
+            "study2_predictor_low_reliability"
+      )
+  }
+
+  design <- lapply(variance_ratios, build_ratio) %>%
+    dplyr::bind_rows()
+  expected_per_ratio <- length(block_levels) *
+    length(standardized_beta_targets)
+  observed_per_ratio <- design %>%
+    dplyr::count(.data$slope_intercept_variance_ratio, name = "n")
+  if (
+    nrow(design) != length(variance_ratios) * expected_per_ratio ||
+      any(observed_per_ratio$n != expected_per_ratio)
+  ) {
+    stop(
+      "Variance-ratio sensitivity sentinel selection is incomplete: expected ",
+      expected_per_ratio, " rows per ratio."
+    )
+  }
+
+  pair_index <- design %>%
+    dplyr::distinct(
+      .data$sensitivity_block,
+      .data$standardized_beta_target
+    ) %>%
+    dplyr::mutate(
+      block_order = match(.data$sensitivity_block, block_levels)
+    ) %>%
+    dplyr::arrange(
+      .data$block_order,
+      .data$standardized_beta_target
+    ) %>%
+    dplyr::mutate(
+      variance_ratio_pair_id = dplyr::row_number(),
+      variance_ratio_pair_label = paste0(
+        .data$sensitivity_block,
+        "__beta_",
+        format(
+          .data$standardized_beta_target,
+          trim = TRUE,
+          scientific = FALSE
+        )
+      )
+    ) %>%
+    dplyr::select(-"block_order")
+
+  design %>%
+    dplyr::left_join(
+      pair_index,
+      by = c("sensitivity_block", "standardized_beta_target")
+    ) %>%
+    dplyr::mutate(
+      sensitivity_block = factor(
+        .data$sensitivity_block,
+        levels = block_levels
+      ),
+      simulation_seed_group = as.integer(
+        simulation_seed_group_offset + .data$variance_ratio_pair_id
+      )
+    ) %>%
+    dplyr::arrange(
+      .data$sensitivity_block,
+      .data$standardized_beta_target,
+      .data$slope_intercept_variance_ratio
+    )
+}
+
 # Explicit legacy aliases make it possible to call the original one-coordinate
 # solve directly even after the amended wrappers become the preferred designs.
 make_study1_legacy_design <- make_study1_design
@@ -1712,7 +1947,8 @@ study_condition_counts <- function() {
     study2v2 = 4L * 3L * 3L * 5L * 4L,
     study3v2 = 4L * 3L * 3L * 2L * 2L * 2L * 3L,
     study4v2 = (3L * 3L * 3L * 2L * 2L) + 3L,
-    iccbridge = 2L * 3L * 3L * 3L * 2L
+    iccbridge = 2L * 3L * 3L * 3L * 2L,
+    ratiosensitivity = 5L * 3L * 2L
   )
 }
 
@@ -1748,6 +1984,12 @@ select_design <- function(study_arg = "all", max_conditions = NA_integer_) {
           `4v2` = "study4v2",
           bridge = "iccbridge",
           iccbridge = "iccbridge",
+          sensitivity = "ratiosensitivity",
+          ratiosensitivity = "ratiosensitivity",
+          ratio_sensitivity = "ratiosensitivity",
+          variance_ratio = "ratiosensitivity",
+          variance_ratio_sensitivity = "ratiosensitivity",
+          shapebridge = "ratiosensitivity",
           NA_character_
         )
       }, character(1L))
@@ -1757,7 +1999,7 @@ select_design <- function(study_arg = "all", max_conditions = NA_integer_) {
     stop(paste0(
       "No study conditions selected. Use `all` for the original Studies 1--5, ",
       "`allv2` for amended Studies 1--4, `1`--`5`, `1v2`--`4v2`, ",
-      "`iccbridge`, or a comma-separated combination."
+      "`iccbridge`, `ratiosensitivity`, or a comma-separated combination."
     ))
   }
 
@@ -1772,7 +2014,8 @@ select_design <- function(study_arg = "all", max_conditions = NA_integer_) {
     study2v2 = make_study2_v2_design,
     study3v2 = make_study3_v2_design,
     study4v2 = make_study4_v2_design,
-    iccbridge = make_icc_reliability_bridge_design
+    iccbridge = make_icc_reliability_bridge_design,
+    ratiosensitivity = make_variance_ratio_sensitivity_design
   )
   counts <- study_condition_counts()
   offsets <- c(0L, cumsum(counts)[-length(counts)])
