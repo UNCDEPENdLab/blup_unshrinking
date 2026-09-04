@@ -1264,6 +1264,13 @@ condition_output_is_complete <- function(
   if (!all(out$pipeline_version == expected_pipeline_version)) {
     return(FALSE)
   }
+  # A row-complete file can still represent an interrupted Mplus executable or
+  # filesystem failure. Such conditions must be rerun instead of being accepted
+  # by resume solely because every method/replication row was written.
+  if ("mx_issue_class" %in% names(out) &&
+      any(out$mx_issue_class == "mplus_null_fit", na.rm = TRUE)) {
+    return(FALSE)
+  }
   if (!setequal(unique(out$method), expected_methods) ||
       !setequal(unique(out$rep), seq_len(expected_n_sim))) {
     return(FALSE)

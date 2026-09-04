@@ -62,9 +62,12 @@ mplus_message_lines <- function(messages) {
 #' @param model An `mplusObject`.
 #' @param model_file Path to the generated `.inp` file.
 #'
-#' @return The result from `MplusAutomation::mplusModeler()`, or `NULL` when it
-#'   throws an R error.
-run_mplus_modeler_writable_tmp <- function(model, model_file) {
+#' @param ... Additional arguments passed to `MplusAutomation::mplusModeler()`.
+#'
+#' @return The result from `MplusAutomation::mplusModeler()`. If model fitting
+#'   throws an R error, a `mplus_modeler_failure` object retaining the error and
+#'   warning messages is returned.
+run_mplus_modeler_writable_tmp <- function(model, model_file, ...) {
   model_dir <- normalizePath(dirname(model_file), mustWork = TRUE)
   scratch_dir <- tempfile(
     pattern = paste0("mplus-scratch-", Sys.getpid(), "-"),
@@ -84,15 +87,37 @@ run_mplus_modeler_writable_tmp <- function(model, model_file) {
   }, add = TRUE)
   Sys.setenv(TMPDIR = scratch_dir)
 
-  suppressWarnings(
-    tryCatch(
+  warning_messages <- character()
+  tryCatch(
+    withCallingHandlers(
       MplusAutomation::mplusModeler(
         model,
         run = 1L,
-        modelout = model_file
+        modelout = model_file,
+        ...
       ),
-      error = function(e) NULL
-    )
+      warning = function(w) {
+        warning_messages <<- unique(c(warning_messages, conditionMessage(w)))
+        invokeRestart("muffleWarning")
+      }
+    ),
+    error = function(e) {
+      messages <- unique(c(conditionMessage(e), warning_messages))
+      messages <- messages[!is.na(messages) & nzchar(messages)]
+      structure(
+        list(
+          message = if (length(messages)) {
+            paste(messages, collapse = "\n")
+          } else {
+            paste(class(e), collapse = "/")
+          },
+          error_message = conditionMessage(e),
+          warning_messages = warning_messages,
+          condition_class = class(e)
+        ),
+        class = c("mplus_modeler_failure", "list")
+      )
+    }
   )
 }
 
@@ -367,7 +392,12 @@ fit_mplus_blup_predictor <- function(level1_data, level2_data, join_by = dplyr::
   
   fit <- run_mplus_modeler_writable_tmp(model, model_file)
   
-  if (is.null(fit)) {
+  if (is.null(fit) || inherits(fit, "mplus_modeler_failure")) {
+    failure_detail <- if (inherits(fit, "mplus_modeler_failure")) {
+      fit$message
+    } else {
+      "mplusModeler returned NULL without throwing an R error."
+    }
     out <- dplyr::bind_cols(tibble::tibble(
       estimate = NA_real_,
       se = NA_real_,
@@ -375,7 +405,7 @@ fit_mplus_blup_predictor <- function(level1_data, level2_data, join_by = dplyr::
       ci_high = NA_real_,
       status_code = 2L,
       mx_issue_class = "mplus_null_fit",
-      mx_issue_detail = NA_character_
+      mx_issue_detail = failure_detail
     ), mplus_diagnostics_template())
   } else {
     out <- extract_mplus_stats(
@@ -469,7 +499,12 @@ fit_mplus_dual_process <- function(proc1_data, proc2_data, title = "dual_process
   
   fit <- run_mplus_modeler_writable_tmp(model, model_file)
   
-  if (is.null(fit)) {
+  if (is.null(fit) || inherits(fit, "mplus_modeler_failure")) {
+    failure_detail <- if (inherits(fit, "mplus_modeler_failure")) {
+      fit$message
+    } else {
+      "mplusModeler returned NULL without throwing an R error."
+    }
     out <- dplyr::bind_cols(tibble::tibble(
       estimate = NA_real_,
       se = NA_real_,
@@ -477,7 +512,7 @@ fit_mplus_dual_process <- function(proc1_data, proc2_data, title = "dual_process
       ci_high = NA_real_,
       status_code = 2L,
       mx_issue_class = "mplus_null_fit",
-      mx_issue_detail = NA_character_
+      mx_issue_detail = failure_detail
     ), mplus_diagnostics_template())
   } else {
     out <- extract_mplus_stats(
